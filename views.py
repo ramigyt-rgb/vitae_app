@@ -42,10 +42,6 @@ def render_header() -> None:
             st.markdown('</div>', unsafe_allow_html=True)
         else:
             st.warning("Logo no encontrado")
-def get_setting(key: str, default: Any = None) -> Any:
-    return default
-def set_setting(key: str, value: Any) -> None:
-    return None
 DEFAULT_FACT_LABELS = {
     "mes": "Mes",
     "afiliado": "Paciente / Afiliado",
@@ -174,17 +170,11 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
     st.caption(cfg["descripcion"])
     labels = get_fact_labels(module_name, cfg)
     tab_panel, tab_cargar, tab_importar, tab_editar, tab_columnas, tab_exportar = st.tabs([
-
         "📊 Panel PRO",
-
         "➕ Cargar",
-
         "📥 Importar",
-
         "✏️ Editar tabla",
-
         "🏷️ Editar columnas",
-
         "📤 Exportar",
     ])
     with tab_panel:
