@@ -104,18 +104,35 @@ def get_df(table: str) -> pd.DataFrame:
         return pd.DataFrame()
     return df
 def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
+
     ws = get_or_create_worksheet(table)
+
     df = df.copy()
+
     df = df.where(pd.notnull(df), "")
+
     df = df.astype(str)
-    ws.clear()
+
     if df.empty:
+
+        ws.clear()
+
         ws.update([["Sin datos"]])
-        st.cache_data.clear()
+
+        get_df.clear(table)
+
         return 0
+
     data = [df.columns.tolist()] + df.values.tolist()
+
+    ws.clear()
+
     ws.update(data)
-    st.cache_data.clear()
+
+    # Solo limpia la cache de ESTA tabla
+
+    get_df.clear(table)
+
     return len(df)
 def insert_row(table: str, data: Dict[str, Any]) -> None:
     df = get_df(table)
