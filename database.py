@@ -1,14 +1,25 @@
 # =========================================================
+
 # BASE DE DATOS - SOLO GOOGLE SHEETS
+
 # =========================================================
+
 import json
-import gspread
-import pandas as pd
-import streamlit as st
+
+import re
+
 from typing import Any, Dict, List
+
+import gspread
+
+import pandas as pd
+
+import streamlit as st
+
 from google.oauth2.service_account import Credentials
+
 from config import SHEET_ID
-from modules import MODULES
+
 @st.cache_resource
 
 def get_gs_client():
@@ -27,43 +38,41 @@ def get_gs_client():
 
         raise RuntimeError("Falta GOOGLE_SERVICE_ACCOUNT_JSON en Secrets.")
 
-    raw_json = str(raw_json).strip()
+    if isinstance(raw_json, dict):
 
-    # Limpia si viene con espacios raros
+        service_account_info = dict(raw_json)
 
-    raw_json = raw_json.replace("\r\n", "\n").replace("\r", "\n")
+    else:
 
-    try:
+        raw_json = str(raw_json).strip()
 
-        service_account_info = json.loads(raw_json)
+        raw_json = raw_json.replace("\r\n", "\n").replace("\r", "\n")
 
-    except json.JSONDecodeError:
+        try:
 
-        import re
+            service_account_info = json.loads(raw_json)
 
-        # Arregla SOLO el private_key, no todo el JSON
+        except json.JSONDecodeError:
 
-        def fix_private_key(match):
+            def fix_private_key(match):
 
-            key = match.group(1)
+                key = match.group(1).replace("\n", "\\n")
 
-            key = key.replace("\n", "\\n")
+                return f'"private_key": "{key}"'
 
-            return f'"private_key": "{key}"'
+            fixed_json = re.sub(
 
-        fixed_json = re.sub(
+                r'"private_key"\s*:\s*"([\s\S]*?)"',
 
-            r'"private_key"\s*:\s*"([\s\S]*?)"',
+                fix_private_key,
 
-            fix_private_key,
+                raw_json,
 
-            raw_json,
+                count=1,
 
-            count=1
+            )
 
-        )
-
-        service_account_info = json.loads(fixed_json)
+            service_account_info = json.loads(fixed_json)
 
     credentials = Credentials.from_service_account_info(
 
@@ -75,37 +84,65 @@ def get_gs_client():
 
     return gspread.authorize(credentials)
 
+@st.cache_resource
+
+def get_spreadsheet():
+
+    if not SHEET_ID:
+
+        raise RuntimeError("Falta GOOGLE_SHEET_ID en Secrets.")
+
+    return get_gs_client().open_by_key(SHEET_ID)
 
 @st.cache_resource
-def get_spreadsheet():
-    if not SHEET_ID:
-        raise RuntimeError("Falta GOOGLE_SHEET_ID en Secrets.")
-    return get_gs_client().open_by_key(SHEET_ID)
-def get_or_create_worksheet(table: str):
+
+def get_worksheet(table: str):
+
     sh = get_spreadsheet()
+
     try:
+
         return sh.worksheet(table)
+
     except gspread.WorksheetNotFound:
+
         return sh.add_worksheet(title=table, rows=1000, cols=40)
+
 @st.cache_data(ttl=300, show_spinner=False)
+
 def get_df(table: str) -> pd.DataFrame:
-    ws = get_or_create_worksheet(table)
+
+    ws = get_worksheet(table)
+
     values = ws.get_all_values()
+
     if not values or len(values) < 2:
+
         return pd.DataFrame()
+
     headers = [str(h).strip() for h in values[0]]
+
     rows = values[1:]
+
     df = pd.DataFrame(rows, columns=headers)
+
     df = df.dropna(how="all")
+
     df = df.loc[:, [c for c in df.columns if str(c).strip() != ""]]
+
     if df.empty:
+
         return pd.DataFrame()
+
     if len(df.columns) == 1 and str(df.iloc[0, 0]).strip().lower() == "sin datos":
+
         return pd.DataFrame()
+
     return df
+
 def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
 
-    ws = get_or_create_worksheet(table)
+    ws = get_worksheet(table)
 
     df = df.copy()
 
@@ -115,64 +152,88 @@ def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
 
     if df.empty:
 
-        ws.clear()
+        data = [["Sin datos"]]
 
-        ws.update([["Sin datos"]])
+        total = 0
 
-        get_df.clear(table)
+    else:
 
-        return 0
+        data = [df.columns.tolist()] + df.values.tolist()
 
-    data = [df.columns.tolist()] + df.values.tolist()
+        total = len(df)
 
     ws.clear()
 
-    ws.update(data)
+    ws.update("A1", data)
 
-    # Solo limpia la cache de ESTA tabla
+    get_df.clear()
 
-    get_df.clear(table)
+    return total
 
-    return len(df)
 def insert_row(table: str, data: Dict[str, Any]) -> None:
+
     df = get_df(table)
+
     new_row = pd.DataFrame([data])
-    if df.empty:
-        final_df = new_row
-    else:
-        final_df = pd.concat([df, new_row], ignore_index=True)
+
+    final_df = new_row if df.empty else pd.concat([df, new_row], ignore_index=True)
+
     sync_df_to_sheet(table, final_df)
+
 def bulk_insert_rows(table: str, rows: List[Dict[str, Any]]) -> int:
+
     if not rows:
+
         return 0
+
     df = get_df(table)
+
     new_df = pd.DataFrame(rows)
-    if df.empty:
-        final_df = new_df
-    else:
-        final_df = pd.concat([df, new_df], ignore_index=True)
+
+    final_df = new_df if df.empty else pd.concat([df, new_df], ignore_index=True)
+
     return sync_df_to_sheet(table, final_df)
+
 def replace_table_rows(table: str, rows: List[Dict[str, Any]]) -> int:
+
     df = pd.DataFrame(rows)
+
     return sync_df_to_sheet(table, df)
+
 def update_row(table: str, row_id: int, data: Dict[str, Any]) -> None:
+
     df = get_df(table)
-    if df.empty:
+
+    if df.empty or "id" not in df.columns:
+
         return
-    if "id" in df.columns:
-        df.loc[df["id"].astype(str) == str(row_id), list(data.keys())] = list(data.values())
+
+    df.loc[df["id"].astype(str) == str(row_id), list(data.keys())] = list(data.values())
+
     sync_df_to_sheet(table, df)
+
 def delete_row(table: str, row_id: int) -> None:
+
     df = get_df(table)
-    if df.empty:
+
+    if df.empty or "id" not in df.columns:
+
         return
-    if "id" in df.columns:
-        df = df[df["id"].astype(str) != str(row_id)]
+
+    df = df[df["id"].astype(str) != str(row_id)]
+
     sync_df_to_sheet(table, df)
+
 def sync_all_to_sheets() -> Dict[str, int]:
+
     return {}
+
 def restore_all_from_sheets() -> Dict[str, int]:
+
     return {}
+
 def restore_table_from_sheet(table: str) -> int:
+
     df = get_df(table)
+
     return len(df)
