@@ -65,6 +65,9 @@ DEFAULT_FACT_LABELS = {
     "estado": "Estado",
     "observaciones": "Observaciones",
 }
+def sum_money_col(series):
+
+    return pd.to_numeric(series.apply(money), errors="coerce").fillna(0).sum()
 def render_dashboard() -> None:
     render_header()
     st.markdown("### Resumen General")
@@ -139,21 +142,9 @@ def render_dashboard() -> None:
             egresos = df["egreso"].apply(money).sum() if "egreso" in df.columns else 0
             caja_bancos += ingresos - egresos
             if "ingreso" in df.columns:
-                ingresos_mes += pd.to_numeric(
-
-                    df.loc[es_mes, "ingreso"].apply(money),
-                
-                    errors="coerce"
-                
-                ).fillna(0).sum()
+                ingresos_mes += sum_money_col(df.loc[es_mes, "ingreso"])
             if "egreso" in df.columns:
-                egresos_mes += pd.to_numeric(
-
-                    df.loc[es_mes, "egreso"].apply(money),
-                
-                    errors="coerce"
-                
-                ).fillna(0).sum()
+                egresos_mes += sum_money_col(df.loc[es_mes, "egreso"])
         if name in ["Facturación VMR", "Facturación VM"]:
             if "valor_pesos" in df.columns:
                 total_facturado = df["valor_pesos"].apply(money).sum()
