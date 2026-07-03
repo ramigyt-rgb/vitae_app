@@ -402,37 +402,41 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
 
 def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
 
-    col_monto = _first_money_col(filtered)
+    df = filtered.copy()
 
-    total = filtered[col_monto].apply(money).sum() if col_monto else 0
+    col_monto = _first_money_col(df)
 
-    if "estado" in filtered.columns and col_monto:
+    total = _money_sum(df, col_monto)
 
-        cobrado_df = filtered[
+    if "pagado" in df.columns:
 
-            filtered["estado"].astype(str).str.lower().isin(["completo", "pagado", "cobrado"])
+        cobrado = _money_sum(df, "pagado")
+
+    elif "estado" in df.columns and col_monto:
+
+        estados_ok = ["completo", "pagado", "cobrado", "realizado", "finalizado"]
+
+        cobrado_df = df[
+
+            df["estado"].astype(str).str.lower().str.strip().isin(estados_ok)
 
         ]
 
-        cobrado = cobrado_df[col_monto].apply(money).sum()
-
-    elif "pagado" in filtered.columns:
-
-        cobrado = filtered["pagado"].apply(money).sum()
+        cobrado = _money_sum(cobrado_df, col_monto)
 
     else:
 
-        cobrado = 0
+        cobrado = 0.0
 
-    pendiente = total - cobrado
+    pendiente = float(total) - float(cobrado)
 
-    registros = len(filtered)
+    registros = len(df)
 
-    total_usd = _money_usd_sum(filtered, "importe_usd")
+    total_usd = _money_usd_sum(df, "importe_usd")
 
-    pagado_usd = _money_usd_sum(filtered, "pagado_usd")
+    pagado_usd = _money_usd_sum(df, "pagado_usd")
 
-    pendiente_usd = total_usd - pagado_usd
+    pendiente_usd = float(total_usd) - float(pagado_usd)
 
     if table == "cuenta_corriente_vm":
 
@@ -471,7 +475,6 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
         c3.metric("⏳ Pendiente", fmt_money(pendiente))
 
         c4.metric("👥 Registros", registros)
-
 def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
 
     if not {"importe", "pagado", "persona_entidad"}.issubset(filtered.columns):
