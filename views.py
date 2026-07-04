@@ -385,11 +385,11 @@ def _first_money_col(df):
 
     return None
 
-def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
+def render_tabla_limpia_panel(filtered: pd.DataFrame, table: str = "") -> None:
 
     st.divider()
 
-    st.markdown("### Tabla limpia")
+    st.markdown("#### Tabla limpia")
 
     tabla = filtered.copy()
 
@@ -397,23 +397,85 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
 
         columns=["id", "created_at", "updated_at", "responsable", "observaciones"],
 
-        errors="ignore"
+        errors="ignore",
 
     )
 
-    if "mes" in tabla.columns:
+    if table in ["cuenta_corriente_vm", "cuenta_corriente_vmr"]:
 
-        orden = parse_mes(tabla["mes"])
+        orden = [
 
-        tabla = tabla.assign(_orden=orden)
+            "fecha",
 
-        tabla = tabla.sort_values("_orden", ascending=False, na_position="last")
+            "persona_entidad",
 
-        tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
+            "concepto",
 
-        tabla["mes"] = tabla["mes"].fillna("")
+            "tipo",
 
-        tabla = tabla.drop(columns=["_orden"], errors="ignore")
+            "importe",
+
+            "pagado",
+
+            "vencimiento",
+
+            "estado",
+
+            "importe_usd",
+
+            "pagado_usd",
+
+            "saldo",
+
+            "saldo_usd",
+
+        ]
+
+    else:
+
+        orden = [
+
+            "mes",
+
+            "afiliado",
+
+            "obra_social",
+
+            "procedimiento",
+
+            "medico_responsable",
+
+            "fecha_factura",
+
+            "numero_factura",
+
+            "vencimiento",
+
+            "fecha_pago",
+
+            "valor_pesos",
+
+            "valor",
+
+            "estado",
+
+        ]
+
+    cols = [c for c in orden if c in tabla.columns]
+
+    resto = [c for c in tabla.columns if c not in cols]
+
+    tabla = tabla[cols + resto]
+
+    for col in ["mes", "fecha", "fecha_factura", "vencimiento", "fecha_pago"]:
+
+        if col in tabla.columns:
+
+            fechas = pd.to_datetime(tabla[col], errors="coerce", dayfirst=True)
+
+            if fechas.notna().any():
+
+                tabla[col] = fechas.dt.strftime("%d-%m-%Y").fillna("")
 
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 
@@ -851,7 +913,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
 
                 st.info("Dashboard VMR lo agregamos en el próximo bloque para no romper este.")
 
-            render_tabla_limpia_panel(filtered)
+            render_tabla_limpia_panel(filtered, table)
 
             render_analisis_mensual_2026(filtered)
 
