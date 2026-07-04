@@ -164,7 +164,7 @@ def render_dashboard() -> None:
             continue
         if name in ["Facturación VMR", "Facturación VM"] and "mes" in df.columns:
             fechas = pd.to_datetime(
-                df["mes"].astype(str).str.strip(),
+                safe_col(df, "mes"),
                 format="%Y-%m-%d",
                 errors="coerce"
             )
