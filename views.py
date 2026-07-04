@@ -342,38 +342,21 @@ def render_analisis_mensual_2026(df: pd.DataFrame):
     st.plotly_chart(fig2, use_container_width=True)
 
 
-def _money_sum(df: pd.DataFrame, col: str | None) -> float:
+def _money_sum(df, col):
 
-    if col is None or col not in df.columns:
+    if col not in df.columns:
 
-        return 0.0
+        return 0
 
-    s = df[col].astype(str).str.strip()
+    return df[col].apply(money).sum()
 
-    s = (
+def _money_usd_sum(df, col):
 
-        s.str.replace("$", "", regex=False)
+    if col not in df.columns:
 
-         .str.replace("USD", "", regex=False)
+        return 0
 
-         .str.replace("ARS", "", regex=False)
-
-         .str.replace(" ", "", regex=False)
-
-         .str.replace(".", "", regex=False)
-
-         .str.replace(",", ".", regex=False)
-
-         .replace(["", "nan", "None", "NaT"], "0")
-
-    )
-
-    return float(pd.to_numeric(s, errors="coerce").fillna(0).sum())
-
-def _money_usd_sum(df: pd.DataFrame, col: str | None) -> float:
-
-    return _money_sum(df, col)
-
+    return df[col].apply(money_usd).sum()
 
 def _first_money_col(df):
 
@@ -459,6 +442,10 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
 
         cobrado = 0.0
 
+    total = _safe_float(total)
+
+    cobrado = _safe_float(cobrado)
+
     pendiente = total - cobrado
 
     registros = len(df)
@@ -467,7 +454,7 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
 
     pagado_usd = _money_usd_sum(df, "pagado_usd")
 
-    pendiente_usd = total_usd - pagado_usd
+    pendiente_usd = float(total_usd) - float(pagado_usd)
 
     if table == "cuenta_corriente_vm":
 
