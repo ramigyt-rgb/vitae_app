@@ -88,6 +88,19 @@ def deuda_mod(nombre, dfs):
         mask = df["estado"].astype(str).str.lower().str.strip().isin(estados_deuda)
         return monto[mask].sum()
     return monto.sum()
+def safe_col(df, col):
+
+    if col not in df.columns:
+
+        return pd.Series([""] * len(df), index=df.index)
+
+    s = df.loc[:, col]
+
+    if isinstance(s, pd.DataFrame):
+
+        s = s.iloc[:, 0]
+
+    return s.astype(str).apply(lambda x: x.strip())
 def render_dashboard() -> None:
     render_header()
     st.markdown("### Resumen General")
