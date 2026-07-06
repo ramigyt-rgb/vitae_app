@@ -233,15 +233,32 @@ def apply_filters(df: pd.DataFrame, module_name: str) -> pd.DataFrame:
         df = df[norm(df["medico_responsable"]) == str(medico).strip().lower()]
     fecha_col = first_available_date_col(df, module_name)
     if fecha_col:
+
+        fecha_data = df[fecha_col]
+    
+        if isinstance(fecha_data, pd.DataFrame):
+    
+            fecha_data = fecha_data.iloc[:, 0]
+    
         fechas = pd.to_datetime(
-            df[fecha_col].astype(str).str.strip(),
+    
+            fecha_data.astype(str).str.strip(),
+    
             errors="coerce",
+    
             dayfirst=False
+    
         )
+    
         desde_ts = pd.Timestamp(fecha_desde)
+    
         hasta_ts = pd.Timestamp(fecha_hasta)
+    
         df = df[
+    
             (fechas >= desde_ts) &
+    
             (fechas <= hasta_ts)
+    
         ]
     return df
