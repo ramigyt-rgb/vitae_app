@@ -1,0 +1,2678 @@
+# =========================================================
+# VISTAS
+# ========================================================
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+from pathlib import Path
+from datetime import date, timedelta
+from typing import Any, Dict
+from config import APP_TITLE
+from modules import MODULES
+from database import *
+from helpers import *
+from importers import render_importer
+def safe_panel(func_name, *args, **kwargs):
+    func = globals().get(func_name)
+    if callable(func):
+        return func(*args, **kwargs)
+    return None
+@st.cache_data(ttl=300)
+def load_all_data():
+    data = {}
+    for cfg in MODULES.values():
+        tabla = cfg["table"]
+        if tabla not in data:
+            data[tabla] = add_balance_columns(get_df(tabla))
+    return data
+def render_header() -> None:
+    col1, col2 = st.columns([6.5, 1.2])
+    with col1:
+        st.markdown(
+            '<div class="main-title">🏥 Sistema de Gestión | VITAE </div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            '<div class="subtitle">VMR · Vitae Medicina Reproductiva | VM · Vitae Medical</div>',
+            unsafe_allow_html=True
+        )
+    with col2:
+        logo_path = Path("logo_vitae.png")
+        if logo_path.exists():
+            st.markdown(
+                """
+                <style>
+                .vitae-logo img {
+                    width: 170px !important;
+                    max-width: 170px !important;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown('<div class="vitae-logo">', unsafe_allow_html=True)
+            st.image(str(logo_path))
+            st.markdown('</div>', unsafe_allow_html=True)
+        else:
+            st.warning("Logo no encontrado")
+DEFAULT_FACT_LABELS = {
+    "mes": "Mes",
+    "afiliado": "Paciente / Afiliado",
+    "obra_social": "Obra social",
+    "procedimiento": "Procedimiento",
+    "medico_responsable": "Médico",
+    "fecha_factura": "Fecha factura",
+    "numero_factura": "N° factura",
+    "vencimiento": "Vencimiento",
+    "fecha_pago": "Fecha pago",
+    "valor_pesos": "Valor facturado",
+    "valor_usd": "Valor USD",
+    "estado": "Estado",
+    "observaciones": "Observaciones",
+}
+def sum_money_col(series):
+    return pd.to_numeric(series.apply(money), errors="coerce").fillna(0).sum()
+def deuda_mod(nombre, dfs):
+    df = dfs.get(nombre, pd.DataFrame())
+    if df.empty:
+        return 0.0
+    col_monto = next((c for c in ["saldo", "importe", "monto", "valor_pesos", "valor"] if c in df.columns), None)
+    if not col_monto:
+        return 0.0
+    monto = df[col_monto].apply(money)
+    if "pagado" in df.columns:
+        pagado = df["pagado"].apply(money)
+        return max(0.0, (monto - pagado).sum())
+    if "estado" in df.columns:
+        estados_deuda = ["pendiente", "a pagar", "adeudado", "deuda", "vencido"]
+        mask = df["estado"].astype(str).str.lower().str.strip().isin(estados_deuda)
+        return monto[mask].sum()
+    return monto.sum()
+def safe_col(df, col):
+
+    if col not in df.columns:
+
+        return pd.Series([""] * len(df), index=df.index)
+
+    s = df.loc[:, col]
+
+    if isinstance(s, pd.DataFrame):
+
+        s = s.iloc[:, 0]
+
+    return s.astype(str).apply(lambda x: x.strip())
+def render_dashboard() -> None:
+    render_header()
+    st.markdown("### Resumen General")
+    all_data = {}
+    for name, cfg in MODULES.items():
+        table = cfg["table"]
+        if table not in all_data:
+            try:
+                all_data[table] = add_balance_columns(get_df(table))
+            except Exception:
+                all_data[table] = pd.DataFrame()
+    dfs = {
+        name: all_data[cfg["table"]]
+        for name, cfg in MODULES.items()
+    }
+    def total_mod(nombre):
+        df = dfs.get(nombre, pd.DataFrame())
+        if df.empty:
+            return 0.0
+        if "saldo" in df.columns:
+            return df["saldo"].apply(money).sum()
+        if "saldo_movimiento" in df.columns:
+            return df["saldo_movimiento"].apply(money).sum()
+        if "importe" in df.columns:
+            return df["importe"].apply(money).sum()
+        if "valor_pesos" in df.columns:
+            return df["valor_pesos"].apply(money).sum()
+        if "monto" in df.columns:
+            return df["monto"].apply(money).sum()
+        return 0.0
+    caja_vmr = total_mod("Caja VMR")
+    banco_vmr = total_mod("Banco Macro VMR")
+    caja_vm = total_mod("Caja VM")
+    banco_vm = total_mod("Banco Galicia VM")
+    gine_vitae = total_mod("Gine Vitae")
+    pagos_pendientes = total_mod("Pagos pendientes Vitae")
+    planes_pago = total_mod("Planes de pagos y préstamos")
+    honorarios = total_mod("Honorarios médicos")
+    deuda_imp_vmr = total_mod("Deudas Impositivas VMR")
+    deuda_imp_vm = total_mod("Deudas Impositivas VM")
+    liquidez_total = caja_vmr + banco_vmr + caja_vm + banco_vm + gine_vitae
+    deuda_total_global = pagos_pendientes + planes_pago + honorarios + deuda_imp_vmr + deuda_imp_vm
+    caja_bancos = 0.0
+    ingresos_mes = 0.0
+    egresos_mes = 0.0
+    facturacion_mes = 0.0
+    cobrado_mes = 0.0
+    a_cobrar = 0.0
+    a_pagar = 0.0
+    deuda_total = 0.0
+    vencidos = 0
+    tareas_pend = 0
+    pacientes_mes = 0
+    medicos_activos = set()
+    hoy = pd.Timestamp.today().normalize()
+    inicio_mes = hoy.replace(day=1)
+    fin_mes = inicio_mes + pd.offsets.MonthEnd(0)
+    estados_cerrados = ["pagado", "cobrado", "completo", "realizado", "finalizada", "finalizado", "anulado", "cancelado"]
+    for name, df in dfs.items():
+        if df.empty:
+            continue
+        if name in ["Facturación VMR", "Facturación VM"] and "mes" in df.columns:
+            fechas = pd.to_datetime(
+                safe_col(df, "mes"),
+                format="%Y-%m-%d",
+                errors="coerce"
+            )
+        elif "fecha" in df.columns:
+            fechas = pd.to_datetime(df["fecha"], errors="coerce")
+        elif "fecha_factura" in df.columns:
+            fechas = pd.to_datetime(df["fecha_factura"], errors="coerce")
+        else:
+            fechas = pd.Series([pd.NaT] * len(df), index=df.index)
+        es_mes = fechas.notna() & (fechas >= inicio_mes) & (fechas <= fin_mes)
+        if name in ["Caja VMR", "Caja VM", "Banco Macro VMR", "Banco Galicia VM"]:
+            ingresos = df["ingreso"].apply(money).sum() if "ingreso" in df.columns else 0
+            egresos = df["egreso"].apply(money).sum() if "egreso" in df.columns else 0
+            caja_bancos += ingresos - egresos
+            if "ingreso" in df.columns:
+                ingresos_mes += sum_money_col(df.loc[es_mes, "ingreso"])
+            if "egreso" in df.columns:
+                egresos_mes += sum_money_col(df.loc[es_mes, "egreso"])
+        if name in ["Facturación VMR", "Facturación VM"]:
+            if "valor_pesos" in df.columns:
+                total_facturado = df["valor_pesos"].apply(money).sum()
+                facturacion_mes += df.loc[es_mes, "valor_pesos"].apply(money).sum()
+                estado = df["estado"].astype(str).str.lower().str.strip() if "estado" in df.columns else pd.Series([""] * len(df), index=df.index)
+                cobrado = df[estado.isin(["completo", "cobrado", "pagado"])]["valor_pesos"].apply(money).sum()
+                cobrado_mes += df.loc[es_mes & estado.isin(["completo", "cobrado", "pagado"]), "valor_pesos"].apply(money).sum()
+                a_cobrar += max(0, total_facturado - cobrado)
+                pacientes_mes += int(es_mes.sum())
+                if "medico_responsable" in df.columns:
+                    medicos_activos.update(
+                        df.loc[es_mes, "medico_responsable"]
+                        .dropna()
+                        .astype(str)
+                        .str.strip()
+                        .replace("", pd.NA)
+                        .dropna()
+                        .tolist()
+                    )
+        if name in ["Cuenta Corriente VMR", "Cuenta Corriente VM"]:
+            if "tipo" in df.columns and "importe" in df.columns:
+                tipo = df["tipo"].astype(str).str.lower()
+                pagado = df["pagado"].apply(money) if "pagado" in df.columns else 0
+                saldo = df["importe"].apply(money) - pagado
+                a_cobrar += saldo[tipo.eq("a cobrar")].sum()
+                a_pagar += saldo[tipo.eq("a pagar")].sum()
+        if name in ["Deudas Impositivas VMR", "Deudas Impositivas VM", "Planes de pagos y préstamos", "Pagos pendientes Vitae", "Deuda total", "Honorarios médicos"]:
+            if "saldo" in df.columns:
+                deuda_total += df["saldo"].apply(money).sum()
+            elif "importe" in df.columns:
+                pagado = df["pagado"].apply(money) if "pagado" in df.columns else 0
+                deuda_total += max(0, df["importe"].apply(money).sum() - pagado.sum())
+        if "vencimiento" in df.columns:
+            venc = pd.to_datetime(df["vencimiento"], errors="coerce")
+            estado = df["estado"].astype(str).str.lower().str.strip() if "estado" in df.columns else pd.Series([""] * len(df), index=df.index)
+            vencidos += int((venc.notna() & (venc < hoy) & (~estado.isin(estados_cerrados))).sum())
+        if name == "Tareas Pendientes" and "estado" in df.columns:
+            tareas_pend += int(df[~df["estado"].isin(["Finalizada", "Cancelada"])].shape[0])
+    resultado_mes = ingresos_mes + cobrado_mes - egresos_mes
+    pendiente_cobro = a_cobrar
+    promedio_facturacion = facturacion_mes / pacientes_mes if pacientes_mes > 0 else 0
+    cuenta_corriente_vmr = deuda_mod("Cuenta Corriente VMR", dfs)
+    cuenta_corriente_vm = deuda_mod("Cuenta Corriente VM", dfs)
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Liquidez actual", fmt_money(caja_bancos))
+    c2.metric("Facturación mes", fmt_money(facturacion_mes))
+    c3.metric("Cobrado mes", fmt_money(cobrado_mes))
+    c4.metric("A cobrar", fmt_money(pendiente_cobro))
+    c5.metric("Resultado mes", fmt_money(resultado_mes))
+    c6, c7, c8, c9, c10 = st.columns(5)
+    c6.metric("A pagar", fmt_money(a_pagar))
+    c7.metric("Deuda total", fmt_money(deuda_total))
+    c8.metric("Vencidos / críticos", vencidos)
+    c9.metric("Tareas pendientes", tareas_pend)
+    c10.metric("Promedio por paciente", fmt_money(promedio_facturacion))
+    c11, c12 = st.columns(2)
+    c11.metric(
+        "💸 Deuda Proveedores VMR",
+        fmt_money(cuenta_corriente_vmr)
+    )
+    c12.metric(
+        "💸 Deuda Proveedores VM",
+        fmt_money(cuenta_corriente_vm)
+    )
+    st.divider()
+    render_resumen_empresa("Resumen VMR", "VMR", dfs)
+    render_resumen_empresa("Resumen VM", "VM", dfs)
+    render_analisis_global_vitae(dfs)
+def get_fact_labels(module_name: str, cfg: Dict[str, Any]) -> Dict[str, str]:
+    labels = DEFAULT_FACT_LABELS.copy()
+    return labels
+def rename_fact_df(df: pd.DataFrame, labels: Dict[str, str]) -> pd.DataFrame:
+    return df.rename(columns={c: labels.get(c, c.replace("_", " ").title()) for c in df.columns})
+def format_facturacion_table(df: pd.DataFrame, labels: Dict[str, str]) -> pd.DataFrame:
+    if df.empty:
+        return df
+    show = df.copy()
+    if "mes" in show.columns:
+        show["mes"] = pd.to_datetime(
+            show["mes"],
+            errors="coerce"            
+        ).dt.strftime("%d/%m/%Y")
+    show = show.drop(
+        columns=[
+            "id",
+            "created_at",
+            "updated_at"
+        ],
+        errors="ignore"
+    )
+    for col in ["fecha_factura", "vencimiento", "fecha_pago"]:
+        if col in show.columns:
+            show[col] = pd.to_datetime(show[col], errors="coerce").dt.strftime("%d/%m/%Y")
+            show[col] = show[col].fillna("")
+    for col in ["valor_pesos"]:
+        if col in show.columns:
+            show[col] = show[col].apply(fmt_money)
+    if "valor_usd" in show.columns:
+        show["valor_usd"] = show["valor_usd"].apply(lambda x: f"USD {money(x):,.2f}")
+    show = show.rename(columns={c: labels.get(c, c.replace("_", " ").title()) for c in show.columns})
+    return show
+def render_analisis_mensual_2026(df: pd.DataFrame):
+    st.subheader("📈 Análisis mensual 2026")
+    if df.empty or "mes" not in df.columns:
+        st.info("No hay datos suficientes para analizar.")
+        return
+    data = df.copy()
+    data["mes"] = pd.to_datetime(data["mes"], errors="coerce")
+    data = data[data["mes"].dt.year == 2026]
+    if data.empty:
+        st.info("No hay registros de 2026.")
+        return
+    monto_col = None
+    for col in [
+        "valor_pesos",
+        "importe",
+        "monto",
+        "facturado",
+        "total"
+    ]:
+        if col in data.columns:
+            monto_col = col
+            break
+    if not monto_col:
+        st.warning("No encontré columna de monto para calcular facturación.")
+        return
+    data[monto_col] = data[monto_col].apply(money)
+    data["mes_nombre"] = data["mes"].dt.strftime("%Y-%m")
+    mensual = (
+        data.groupby("mes_nombre")[monto_col]
+        .sum()
+        .reset_index()
+        .rename(columns={monto_col: "facturacion"})
+    )
+    acumulado = mensual["facturacion"].sum()
+    promedio = mensual["facturacion"].mean()
+    mejor_mes = mensual.loc[mensual["facturacion"].idxmax()]
+    proyeccion = promedio * 12
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Facturación 2026", fmt_money(acumulado))
+    col2.metric("Promedio mensual", fmt_money(promedio))
+    col3.metric("Mejor mes", mejor_mes["mes_nombre"])
+    col4.metric("Proyección anual", fmt_money(proyeccion))
+    fig = px.bar(
+        mensual,
+        x="mes_nombre",
+        y="facturacion",
+        title="Facturación mensual 2026",
+        text_auto=".2s",
+    )
+    fig.update_layout(
+        xaxis_title="Mes",
+        yaxis_title="Facturación",
+        height=420,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+    mensual["acumulado"] = mensual["facturacion"].cumsum()
+    fig2 = px.line(
+        mensual,
+        x="mes_nombre",
+        y="acumulado",
+        markers=True,
+        title="Evolución acumulada 2026",
+    )
+    fig2.update_layout(
+        xaxis_title="Mes",
+        yaxis_title="Acumulado",
+        height=380,
+    )
+    st.plotly_chart(fig2, use_container_width=True)
+def _money_sum(df, col):
+    if col not in df.columns:
+        return 0
+    return df[col].apply(money).sum()
+def _money_usd_sum(df, col):
+    if col not in df.columns:
+        return 0
+    return pd.to_numeric(df[col], errors="coerce").fillna(0).sum()
+def _first_money_col(df):
+    for c in ["valor_pesos", "importe", "monto", "saldo", "valor"]:
+        if c in df.columns:
+            return c
+    return None
+def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
+    st.divider()
+    st.markdown("### Tabla limpia")
+    tabla = filtered.copy()
+    tabla = tabla.drop(
+        columns=["id", "created_at", "updated_at", "responsable", "observaciones"],
+        errors="ignore"
+    )
+    if "mes" in tabla.columns:
+        orden = parse_mes(tabla["mes"])
+        tabla = tabla.assign(_orden=orden)
+        tabla = tabla.sort_values("_orden", ascending=False, na_position="last")
+        tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
+        tabla["mes"] = tabla["mes"].fillna("")
+        tabla = tabla.drop(columns=["_orden"], errors="ignore")
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
+def _safe_float(value) -> float:
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except Exception:
+        return 0.0
+def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
+
+    df = filtered.copy()
+
+    col_monto = _first_money_col(df)
+
+    total = _money_sum(df, col_monto)
+
+    if "pagado" in df.columns:
+
+        cobrado = _money_sum(df, "pagado")
+
+    elif "estado" in df.columns and col_monto:
+
+        estados_ok = ["completo", "pagado", "cobrado", "realizado", "finalizado"]
+
+        cobrado_df = df[
+
+            df["estado"].astype(str).str.lower().str.strip().isin(estados_ok)
+
+        ]
+
+        cobrado = _money_sum(cobrado_df, col_monto)
+
+    else:
+
+        cobrado = 0.0
+
+    total = _safe_float(total)
+
+    cobrado = _safe_float(cobrado)
+
+    pendiente = total - cobrado
+
+    registros = len(df)
+
+    total_usd = _money_usd_sum(df, "importe_usd")
+
+    pagado_usd = _money_usd_sum(df, "pagado_usd")
+
+    pendiente_usd = float(total_usd) - float(pagado_usd)
+
+    if table == "cuenta_corriente_vm":
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.metric("💰 Total Facturas", fmt_money(total))
+
+        c2.metric("💸 Total Pagado", fmt_money(cobrado))
+
+        c3.metric("⏳ Deuda Total", fmt_money(pendiente))
+
+    elif table == "cuenta_corriente_vmr":
+
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
+
+        c1.metric("🛒 Compras ARS", fmt_money(total))
+
+        c2.metric("🛒 Compras USD", f"USD {total_usd:,.2f}")
+
+        c3.metric("💵 Pagado ARS", fmt_money(cobrado))
+
+        c4.metric("💵 Pagado USD", f"USD {pagado_usd:,.2f}")
+
+        c5.metric("📌 A Pagar ARS", fmt_money(pendiente))
+
+        c6.metric("📌 A Pagar USD", f"USD {pendiente_usd:,.2f}")
+
+    else:
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("💰 Facturado", fmt_money(total))
+
+        c2.metric("✅ Cobrado", fmt_money(cobrado))
+
+        c3.metric("⏳ Pendiente", fmt_money(pendiente))
+
+        c4.metric("👥 Registros", registros)
+def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
+    if not {"importe", "pagado", "persona_entidad"}.issubset(filtered.columns):
+        return
+    st.divider()
+    st.markdown("## 📊 Dashboard Financiero Proveedores VM")
+    graf = filtered.copy()
+    graf["Deuda"] = (
+        pd.to_numeric(graf["importe"], errors="coerce").fillna(0)
+        - pd.to_numeric(graf["pagado"], errors="coerce").fillna(0)
+    )
+    graf_deuda = (
+        graf[graf["Deuda"] > 0]
+        .groupby("persona_entidad", as_index=False)["Deuda"]
+        .sum()
+        .rename(columns={"persona_entidad": "Proveedor"})
+        .sort_values("Deuda", ascending=False)
+    )
+    if not graf_deuda.empty:
+        fig = px.bar(
+            graf_deuda,
+            x="Deuda",
+            y="Proveedor",
+            orientation="h",
+            text="Deuda",
+            title="💰 Ranking de deuda por proveedor",
+        )
+        fig.update_layout(height=500, yaxis=dict(categoryorder="total ascending"))
+        st.plotly_chart(fig, use_container_width=True)
+    if "vencimiento" in filtered.columns:
+        venc = filtered.copy()
+        venc["vencimiento"] = pd.to_datetime(venc["vencimiento"], dayfirst=True, errors="coerce")
+        venc["saldo"] = (
+            pd.to_numeric(venc["importe"], errors="coerce").fillna(0)
+            - pd.to_numeric(venc["pagado"], errors="coerce").fillna(0)
+        )
+        venc = venc[venc["saldo"] > 0]
+        venc_resumen = (
+            venc.groupby("vencimiento")["saldo"]
+            .sum()
+            .reset_index()
+            .sort_values("vencimiento")
+        )
+        if not venc_resumen.empty:
+            fig = px.bar(
+                venc_resumen,
+                x="vencimiento",
+                y="saldo",
+                text="saldo",
+                title="📅 Calendario de vencimientos",
+            )
+            fig.update_layout(height=400)
+            st.plotly_chart(fig, use_container_width=True)
+    pagado_total = pd.to_numeric(filtered["pagado"], errors="coerce").fillna(0).sum()
+    pendiente_total = pd.to_numeric(filtered["importe"], errors="coerce").fillna(0).sum() - pagado_total
+    pie_df = pd.DataFrame({
+        "Estado": ["Pagado", "Pendiente"],
+        "Monto": [pagado_total, pendiente_total],
+    })
+    fig = px.pie(pie_df, names="Estado", values="Monto", hole=0.55, title="💳 Pagado vs Pendiente")
+    fig.update_layout(height=450)
+    st.plotly_chart(fig, use_container_width=True)
+    st.divider()
+    st.markdown("### 🚨 Facturas más importantes pendientes")
+    top = filtered.copy()
+    top["saldo"] = (
+        pd.to_numeric(top["importe"], errors="coerce").fillna(0)
+        - pd.to_numeric(top["pagado"], errors="coerce").fillna(0)
+    )
+    top = top[top["saldo"] > 0].sort_values("saldo", ascending=False)
+    cols = [c for c in ["persona_entidad", "comprobante", "fecha", "vencimiento", "saldo"] if c in top.columns]
+    if not top.empty:
+        st.dataframe(top[cols].head(15), use_container_width=True, hide_index=True)
+def render_graficos_facturacion(filtered: pd.DataFrame) -> None:
+    st.divider()
+    st.markdown("### Gráficos útiles")
+    g1, g2 = st.columns(2)
+    if "valor_pesos" in filtered.columns:
+        graph = filtered.copy()
+        fecha_col = None
+        if "fecha_factura" in graph.columns:
+            tmp = pd.to_datetime(graph["fecha_factura"], errors="coerce")
+            if tmp.notna().sum() > 0:
+                fecha_col = "fecha_factura"
+        if fecha_col is None and "mes" in graph.columns:
+            tmp = pd.to_datetime(graph["mes"], errors="coerce", dayfirst=True)
+            if tmp.notna().sum() > 0:
+                fecha_col = "mes"
+        if fecha_col:
+            graph[fecha_col] = pd.to_datetime(graph[fecha_col], errors="coerce", dayfirst=True)
+            graph = graph[graph[fecha_col].notna()]
+            graph["Mes"] = graph[fecha_col].dt.to_period("M").astype(str)
+            chart = (
+                graph.groupby("Mes")["valor_pesos"]
+                .apply(lambda x: x.apply(money).sum())
+                .reset_index()
+            )
+            fig = px.bar(chart, x="Mes", y="valor_pesos", title="Facturación por mes")
+            g1.plotly_chart(fig, use_container_width=True)
+    if "obra_social" in filtered.columns and "valor_pesos" in filtered.columns:
+        chart = (
+            filtered.groupby("obra_social")["valor_pesos"]
+            .apply(lambda x: x.apply(money).sum())
+            .reset_index()
+            .sort_values("valor_pesos", ascending=False)
+            .head(10)
+        )
+        fig = px.bar(chart, x="obra_social", y="valor_pesos", title="Facturación por obra social")
+        g2.plotly_chart(fig, use_container_width=True)
+    g3, g4 = st.columns(2)
+    if "medico_responsable" in filtered.columns and "valor_pesos" in filtered.columns:
+        chart = (
+            filtered.groupby("medico_responsable")["valor_pesos"]
+            .apply(lambda x: x.apply(money).sum())
+            .reset_index()
+            .sort_values("valor_pesos", ascending=False)
+            .head(10)
+        )
+        fig = px.bar(chart, x="medico_responsable", y="valor_pesos", title="Facturación por médico")
+        g3.plotly_chart(fig, use_container_width=True)
+    if "procedimiento" in filtered.columns and "valor_pesos" in filtered.columns:
+        chart = (
+            filtered.groupby("procedimiento")["valor_pesos"]
+            .apply(lambda x: x.apply(money).sum())
+            .reset_index()
+            .sort_values("valor_pesos", ascending=False)
+            .head(10)
+        )
+        fig = px.bar(chart, x="procedimiento", y="valor_pesos", title="Facturación por procedimiento")
+        g4.plotly_chart(fig, use_container_width=True)
+# =========================================================
+
+# AGENDA QUIRÓFANO PRO
+
+# =========================================================
+
+def render_agenda_quirofano_pro(
+
+    df_original: pd.DataFrame,
+
+    guardar_callback=None,
+
+) -> pd.DataFrame:
+
+    """
+
+    Agenda quirúrgica profesional.
+
+    Parámetros
+
+    ----------
+
+    df_original:
+
+        DataFrame leído desde Google Sheets.
+
+    guardar_callback:
+
+        Función existente que recibe el DataFrame completo actualizado
+
+        y lo guarda nuevamente en Google Sheets.
+
+        Ejemplo:
+
+        guardar_callback(df_actualizado)
+
+    Retorna
+
+    -------
+
+    pd.DataFrame:
+
+        DataFrame actualizado.
+
+    """
+
+    import calendar
+
+    import html
+
+    import unicodedata
+
+    from datetime import date, datetime, timedelta
+
+    import pandas as pd
+
+    import plotly.express as px
+
+    import streamlit as st
+
+    # -----------------------------------------------------
+
+    # CONFIGURACIÓN
+
+    # -----------------------------------------------------
+
+    ESTADOS_AGENDA = [
+
+        "Consulta",
+
+        "Pendiente de autorización",
+
+        "Autorizado",
+
+        "Programado",
+
+        "Confirmado",
+
+        "En quirófano",
+
+        "Realizado",
+
+        "Reprogramado",
+
+        "Suspendido",
+
+        "Cancelado",
+
+    ]
+
+    ESTADOS_KANBAN = [
+
+        "Consulta",
+
+        "Pendiente de autorización",
+
+        "Autorizado",
+
+        "Programado",
+
+        "Confirmado",
+
+        "Realizado",
+
+    ]
+
+    CAMPOS_BASE = {
+
+        "fecha": "",
+
+        "hora_inicio": "",
+
+        "hora_fin": "",
+
+        "duracion_min": 60,
+
+        "sala": "",
+
+        "paciente": "",
+
+        "procedimiento": "",
+
+        "medico": "",
+
+        "estado": "Consulta",
+
+        "anestesista": "",
+
+        "obra_social": "",
+
+        "numero_afiliado": "",
+
+        "autorizacion": "",
+
+        "telefono": "",
+
+        "observaciones": "",
+
+    }
+
+    # -----------------------------------------------------
+
+    # FUNCIONES INTERNAS
+
+    # -----------------------------------------------------
+
+    def normalizar_nombre_columna(valor) -> str:
+
+        texto = str(valor or "").strip().lower()
+
+        texto = unicodedata.normalize("NFKD", texto)
+
+        texto = "".join(
+
+            caracter
+
+            for caracter in texto
+
+            if not unicodedata.combining(caracter)
+
+        )
+
+        reemplazos = {
+
+            " ": "_",
+
+            "-": "_",
+
+            "/": "_",
+
+            ".": "",
+
+            "(": "",
+
+            ")": "",
+
+        }
+
+        for anterior, nuevo in reemplazos.items():
+
+            texto = texto.replace(anterior, nuevo)
+
+        while "__" in texto:
+
+            texto = texto.replace("__", "_")
+
+        return texto.strip("_")
+
+    def texto_limpio(valor) -> str:
+
+        if pd.isna(valor):
+
+            return ""
+
+        texto = str(valor).strip()
+
+        if texto.lower() in {"nan", "none", "nat"}:
+
+            return ""
+
+        return texto
+
+    def convertir_fecha(valor):
+
+        if pd.isna(valor) or texto_limpio(valor) == "":
+
+            return pd.NaT
+
+        fecha_convertida = pd.to_datetime(
+
+            valor,
+
+            errors="coerce",
+
+            dayfirst=True,
+
+        )
+
+        return fecha_convertida
+
+    def normalizar_hora(valor, hora_default="08:00") -> str:
+
+        texto = texto_limpio(valor)
+
+        if not texto:
+
+            return hora_default
+
+        try:
+
+            if ":" in texto:
+
+                partes = texto.split(":")
+
+                hora = int(float(partes[0]))
+
+                minuto = int(float(partes[1]))
+
+                return f"{hora:02d}:{minuto:02d}"
+
+            numero = float(texto)
+
+            # Hora guardada como fracción de día en Sheets/Excel.
+
+            if 0 <= numero < 1:
+
+                minutos_totales = round(numero * 24 * 60)
+
+                hora = minutos_totales // 60
+
+                minuto = minutos_totales % 60
+
+                return f"{hora:02d}:{minuto:02d}"
+
+            hora = int(numero)
+
+            return f"{hora:02d}:00"
+
+        except Exception:
+
+            return hora_default
+
+    def calcular_hora_fin(fila) -> str:
+
+        hora_fin = normalizar_hora(fila.get("hora_fin"), "")
+
+        if hora_fin:
+
+            return hora_fin
+
+        hora_inicio = normalizar_hora(
+
+            fila.get("hora_inicio"),
+
+            "08:00",
+
+        )
+
+        try:
+
+            duracion = int(float(fila.get("duracion_min", 60) or 60))
+
+        except Exception:
+
+            duracion = 60
+
+        try:
+
+            inicio = datetime.strptime(hora_inicio, "%H:%M")
+
+            fin = inicio + timedelta(minutes=duracion)
+
+            return fin.strftime("%H:%M")
+
+        except Exception:
+
+            return hora_inicio
+
+    def guardar_df(df_nuevo: pd.DataFrame) -> bool:
+
+        if guardar_callback is None:
+
+            st.warning(
+
+                "El cambio quedó preparado, pero todavía no se configuró "
+
+                "la función que guarda en Google Sheets."
+
+            )
+
+            return False
+
+        try:
+
+            guardar_callback(df_nuevo.copy())
+
+            st.cache_data.clear()
+
+            st.success("Cambio guardado correctamente en Google Sheets.")
+
+            return True
+
+        except Exception as error:
+
+            st.error(
+
+                "No se pudo guardar el cambio en Google Sheets.\n\n"
+
+                f"Detalle: {error}"
+
+            )
+
+            return False
+
+    def crear_fecha_hora(fila, columna_hora):
+
+        fecha = fila.get("_fecha_dt")
+
+        if pd.isna(fecha):
+
+            return pd.NaT
+
+        hora = normalizar_hora(
+
+            fila.get(columna_hora),
+
+            "08:00",
+
+        )
+
+        try:
+
+            return pd.to_datetime(
+
+                f"{fecha.strftime('%Y-%m-%d')} {hora}"
+
+            )
+
+        except Exception:
+
+            return pd.NaT
+
+    def badge_estado(estado: str) -> str:
+
+        estilos = {
+
+            "Consulta": ("#E8F0FE", "#174EA6"),
+
+            "Pendiente de autorización": ("#FFF4E5", "#A15C00"),
+
+            "Autorizado": ("#E6F4EA", "#137333"),
+
+            "Programado": ("#E8EAED", "#3C4043"),
+
+            "Confirmado": ("#E6F4EA", "#0D652D"),
+
+            "En quirófano": ("#FCE8E6", "#B31412"),
+
+            "Realizado": ("#D7F8E2", "#086B34"),
+
+            "Reprogramado": ("#F3E8FD", "#681DA8"),
+
+            "Suspendido": ("#FDE7E9", "#A50E0E"),
+
+            "Cancelado": ("#F1F3F4", "#5F6368"),
+
+        }
+
+        fondo, texto = estilos.get(
+
+            estado,
+
+            ("#F1F3F4", "#3C4043"),
+
+        )
+
+        return (
+
+            f"<span style='"
+
+            f"background:{fondo};"
+
+            f"color:{texto};"
+
+            "padding:4px 9px;"
+
+            "border-radius:999px;"
+
+            "font-size:12px;"
+
+            "font-weight:700;"
+
+            "white-space:nowrap;"
+
+            f"'>{html.escape(estado)}</span>"
+
+        )
+
+    # -----------------------------------------------------
+
+    # CSS EXCLUSIVO DE LA AGENDA
+
+    # -----------------------------------------------------
+
+    st.markdown(
+
+        """
+
+        <style>
+
+        .agenda-hero {{
+
+            padding: 22px 24px;
+
+            border: 1px solid rgba(120, 120, 120, 0.18);
+
+            border-radius: 18px;
+
+            margin-bottom: 18px;
+
+            background:
+
+                linear-gradient(
+
+                    135deg,
+
+                    rgba(255, 75, 75, 0.07),
+
+                    rgba(70, 120, 255, 0.04)
+
+                );
+
+        }}
+
+        .agenda-hero-title {{
+
+            font-size: 31px;
+
+            line-height: 1.15;
+
+            font-weight: 800;
+
+            margin-bottom: 5px;
+
+        }}
+
+        .agenda-hero-subtitle {{
+
+            color: rgba(100, 100, 110, 0.95);
+
+            font-size: 15px;
+
+        }}
+
+        .agenda-card {{
+
+            border: 1px solid rgba(120, 120, 120, 0.20);
+
+            border-radius: 14px;
+
+            padding: 13px 14px;
+
+            margin-bottom: 10px;
+
+            background: rgba(255, 255, 255, 0.62);
+
+            box-shadow: 0 2px 12px rgba(0, 0, 0, 0.035);
+
+        }}
+
+        .agenda-card-title {{
+
+            font-size: 15px;
+
+            font-weight: 750;
+
+            margin-bottom: 5px;
+
+        }}
+
+        .agenda-card-detail {{
+
+            color: #6B7280;
+
+            font-size: 13px;
+
+            line-height: 1.5;
+
+        }}
+
+        .agenda-kanban-header {{
+
+            font-size: 15px;
+
+            font-weight: 800;
+
+            padding: 9px 10px;
+
+            border-radius: 10px;
+
+            text-align: center;
+
+            background: rgba(120, 120, 120, 0.10);
+
+            margin-bottom: 10px;
+
+        }}
+
+        .agenda-month {{
+
+            width: 100%;
+
+            border-collapse: separate;
+
+            border-spacing: 6px;
+
+        }}
+
+        .agenda-month th {{
+
+            text-align: center;
+
+            font-size: 12px;
+
+            color: #6B7280;
+
+            padding: 5px;
+
+        }}
+
+        .agenda-month td {{
+
+            width: 14.28%;
+
+            height: 92px;
+
+            vertical-align: top;
+
+            border: 1px solid rgba(120, 120, 120, 0.17);
+
+            border-radius: 10px;
+
+            padding: 7px;
+
+            font-size: 12px;
+
+        }}
+
+        .agenda-month-day {{
+
+            font-weight: 800;
+
+            font-size: 13px;
+
+            margin-bottom: 7px;
+
+        }}
+
+        .agenda-month-count {{
+
+            display: inline-block;
+
+            background: rgba(255, 75, 75, 0.13);
+
+            border-radius: 999px;
+
+            padding: 3px 7px;
+
+            font-weight: 700;
+
+        }}
+
+        .agenda-empty {{
+
+            padding: 28px 15px;
+
+            text-align: center;
+
+            border: 1px dashed rgba(120, 120, 120, 0.30);
+
+            border-radius: 13px;
+
+            color: #7A7A84;
+
+        }}
+
+        </style>
+
+        """,
+
+        unsafe_allow_html=True,
+
+    )
+
+    # -----------------------------------------------------
+
+    # PREPARAR DATOS SIN MODIFICAR EL ORIGINAL
+
+    # -----------------------------------------------------
+
+    if df_original is None:
+
+        df_original = pd.DataFrame()
+
+    df = df_original.copy()
+
+    # Normaliza nombres para que la agenda trabaje correctamente.
+
+    columnas_originales = list(df.columns)
+
+    mapa_columnas = {
+
+        columna: normalizar_nombre_columna(columna)
+
+        for columna in columnas_originales
+
+    }
+
+    df = df.rename(columns=mapa_columnas)
+
+    alias_columnas = {
+
+        "fecha_cirugia": "fecha",
+
+        "fecha_procedimiento": "fecha",
+
+        "fecha_turno": "fecha",
+
+        "hora": "hora_inicio",
+
+        "inicio": "hora_inicio",
+
+        "fin": "hora_fin",
+
+        "nombre_paciente": "paciente",
+
+        "apellido_y_nombre": "paciente",
+
+        "apellido_nombre": "paciente",
+
+        "medico_responsable": "medico",
+
+        "profesional": "medico",
+
+        "cirujano": "medico",
+
+        "practica": "procedimiento",
+
+        "cirugia": "procedimiento",
+
+        "obra_social_prepaga": "obra_social",
+
+        "cobertura": "obra_social",
+
+        "n_afiliado": "numero_afiliado",
+
+        "numero_de_afiliado": "numero_afiliado",
+
+        "nro_afiliado": "numero_afiliado",
+
+        "estado_agenda": "estado",
+
+    }
+
+    for columna_actual, columna_estandar in alias_columnas.items():
+
+        if (
+
+            columna_actual in df.columns
+
+            and columna_estandar not in df.columns
+
+        ):
+
+            df = df.rename(
+
+                columns={columna_actual: columna_estandar}
+
+            )
+
+    # Agrega solamente en memoria campos faltantes.
+
+    for columna, valor_default in CAMPOS_BASE.items():
+
+        if columna not in df.columns:
+
+            df[columna] = valor_default
+
+    df["_fila_original"] = range(len(df))
+
+    df["_fecha_dt"] = df["fecha"].apply(convertir_fecha)
+    df["_fecha_dt"] = pd.to_datetime(df["_fecha_dt"], errors="coerce")
+
+    df["estado"] = (
+
+        df["estado"]
+
+        .apply(texto_limpio)
+
+        .replace("", "Consulta")
+
+    )
+
+    df["paciente"] = df["paciente"].apply(texto_limpio)
+
+    df["procedimiento"] = df["procedimiento"].apply(texto_limpio)
+
+    df["medico"] = df["medico"].apply(texto_limpio)
+
+    df["sala"] = df["sala"].apply(texto_limpio)
+
+    df["obra_social"] = df["obra_social"].apply(texto_limpio)
+
+    df["observaciones"] = df["observaciones"].apply(texto_limpio)
+
+    df["_hora_inicio_normalizada"] = df["hora_inicio"].apply(
+
+        lambda valor: normalizar_hora(valor, "08:00")
+
+    )
+
+    df["_hora_fin_normalizada"] = df.apply(
+
+        calcular_hora_fin,
+
+        axis=1,
+
+    )
+
+    df["_inicio_dt"] = df.apply(
+
+        lambda fila: crear_fecha_hora(
+
+            fila,
+            "_hora_inicio_normalizada",
+        ),
+        axis=1,
+    )
+    df["_fin_dt"] = df.apply(
+        lambda fila: crear_fecha_hora(
+            fila,
+            "_hora_fin_normalizada",
+        ),
+        axis=1,
+    )
+    # -----------------------------------------------------
+    # ENCABEZADO
+    # -----------------------------------------------------
+    st.title("🏥 Agenda Quirúrgica")
+
+    st.caption("Programación, autorizaciones, consultas y seguimiento integral de pacientes quirúrgicos.")
+
+    st.divider()
+    # -----------------------------------------------------
+
+    # FILTROS PROPIOS DE QUIRÓFANO
+
+    # -----------------------------------------------------
+
+    with st.container(border=True):
+
+        st.markdown("### 🔎 Filtros de agenda")
+
+        fila_filtros_1 = st.columns([1.7, 1.3, 1.3, 1.3])
+
+        with fila_filtros_1[0]:
+
+            buscar = st.text_input(
+
+                "Buscar paciente, médico o procedimiento",
+
+                key="agenda_buscar_general",
+
+                placeholder="Ej.: María Pérez, histeroscopia...",
+
+            )
+
+        estados_disponibles = sorted(
+
+            set(ESTADOS_AGENDA + df["estado"].dropna().tolist())
+
+        )
+
+        with fila_filtros_1[1]:
+
+            estados_seleccionados = st.multiselect(
+
+                "Estado",
+
+                options=estados_disponibles,
+
+                default=[],
+
+                key="agenda_filtro_estado",
+
+                placeholder="Todos",
+
+            )
+
+        procedimientos = sorted(
+
+            [
+
+                valor
+
+                for valor in df["procedimiento"].dropna().unique()
+
+                if texto_limpio(valor)
+
+            ]
+
+        )
+
+        with fila_filtros_1[2]:
+
+            procedimientos_seleccionados = st.multiselect(
+
+                "Procedimiento",
+
+                options=procedimientos,
+
+                default=[],
+
+                key="agenda_filtro_procedimiento",
+
+                placeholder="Todos",
+
+            )
+
+        medicos = sorted(
+
+            [
+
+                valor
+
+                for valor in df["medico"].dropna().unique()
+
+                if texto_limpio(valor)
+
+            ]
+
+        )
+
+        with fila_filtros_1[3]:
+
+            medicos_seleccionados = st.multiselect(
+
+                "Médico",
+
+                options=medicos,
+
+                default=[],
+
+                key="agenda_filtro_medico",
+
+                placeholder="Todos",
+
+            )
+
+        fila_filtros_2 = st.columns([1.2, 1.2, 1.2, 1.2])
+
+        hoy = date.today()
+
+        fechas_validas = df["_fecha_dt"].dropna()
+
+        fecha_minima = (
+
+            fechas_validas.min().date()
+
+            if not fechas_validas.empty
+
+            else hoy - timedelta(days=30)
+
+        )
+
+        fecha_maxima = (
+
+            fechas_validas.max().date()
+
+            if not fechas_validas.empty
+
+            else hoy + timedelta(days=90)
+
+        )
+
+        with fila_filtros_2[0]:
+
+            fecha_desde = st.date_input(
+
+                "Desde",
+
+                value=min(hoy, fecha_minima),
+
+                key="agenda_fecha_desde",
+
+            )
+
+        with fila_filtros_2[1]:
+
+            fecha_hasta = st.date_input(
+
+                "Hasta",
+
+                value=max(hoy + timedelta(days=30), fecha_maxima),
+
+                key="agenda_fecha_hasta",
+
+            )
+
+        salas = sorted(
+
+            [
+
+                valor
+
+                for valor in df["sala"].dropna().unique()
+
+                if texto_limpio(valor)
+
+            ]
+
+        )
+
+        with fila_filtros_2[2]:
+
+            salas_seleccionadas = st.multiselect(
+
+                "Sala",
+
+                options=salas,
+
+                default=[],
+
+                key="agenda_filtro_sala",
+
+                placeholder="Todas",
+
+            )
+
+        obras_sociales = sorted(
+
+            [
+
+                valor
+
+                for valor in df["obra_social"].dropna().unique()
+
+                if texto_limpio(valor)
+
+            ]
+
+        )
+
+        with fila_filtros_2[3]:
+
+            obras_seleccionadas = st.multiselect(
+
+                "Obra social",
+
+                options=obras_sociales,
+
+                default=[],
+
+                key="agenda_filtro_obra_social",
+
+                placeholder="Todas",
+
+            )
+
+    # -----------------------------------------------------
+
+    # APLICAR FILTROS
+
+    # -----------------------------------------------------
+
+    df_filtrado = df.copy()
+
+    if buscar.strip():
+
+        texto_busqueda = buscar.strip().lower()
+
+        mascara_busqueda = (
+
+            df_filtrado["paciente"]
+
+            .astype(str)
+
+            .str.lower()
+
+            .str.contains(texto_busqueda, na=False)
+
+            |
+
+            df_filtrado["procedimiento"]
+
+            .astype(str)
+
+            .str.lower()
+
+            .str.contains(texto_busqueda, na=False)
+
+            |
+
+            df_filtrado["medico"]
+
+            .astype(str)
+
+            .str.lower()
+
+            .str.contains(texto_busqueda, na=False)
+
+            |
+
+            df_filtrado["obra_social"]
+
+            .astype(str)
+
+            .str.lower()
+
+            .str.contains(texto_busqueda, na=False)
+
+        )
+
+        df_filtrado = df_filtrado[mascara_busqueda]
+
+    if estados_seleccionados:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["estado"].isin(estados_seleccionados)
+
+        ]
+
+    if procedimientos_seleccionados:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["procedimiento"].isin(
+
+                procedimientos_seleccionados
+
+            )
+
+        ]
+
+    if medicos_seleccionados:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["medico"].isin(medicos_seleccionados)
+
+        ]
+
+    if salas_seleccionadas:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["sala"].isin(salas_seleccionadas)
+
+        ]
+
+    if obras_seleccionadas:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["obra_social"].isin(
+
+                obras_seleccionadas
+
+            )
+
+        ]
+
+    if fecha_desde:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["_fecha_dt"].isna()
+
+            | (
+
+                df_filtrado["_fecha_dt"].dt.date
+
+                >= fecha_desde
+
+            )
+
+        ]
+
+    if fecha_hasta:
+
+        df_filtrado = df_filtrado[
+
+            df_filtrado["_fecha_dt"].isna()
+
+            | (
+
+                df_filtrado["_fecha_dt"].dt.date
+
+                <= fecha_hasta
+
+            )
+
+        ]
+
+    # -----------------------------------------------------
+
+    # INDICADORES QUIRÚRGICOS
+
+    # -----------------------------------------------------
+
+    total_consultas = int(
+
+        df_filtrado["estado"].eq("Consulta").sum()
+
+    )
+
+    total_pendientes = int(
+
+        df_filtrado["estado"]
+
+        .eq("Pendiente de autorización")
+
+        .sum()
+
+    )
+
+    total_programados = int(
+
+        df_filtrado["estado"]
+
+        .isin(["Programado", "Confirmado", "En quirófano"])
+
+        .sum()
+
+    )
+
+    total_realizados = int(
+
+        df_filtrado["estado"].eq("Realizado").sum()
+
+    )
+
+    total_hoy = int(
+
+        (
+
+            df_filtrado["_fecha_dt"].dt.date
+
+            == hoy
+
+        ).fillna(False).sum()
+
+    )
+
+    metricas = st.columns(5)
+
+    metricas[0].metric(
+
+        "💬 Consultas",
+
+        total_consultas,
+
+    )
+
+    metricas[1].metric(
+
+        "⏳ Pendientes autorización",
+
+        total_pendientes,
+
+    )
+
+    metricas[2].metric(
+
+        "📅 Programados",
+
+        total_programados,
+
+    )
+
+    metricas[3].metric(
+
+        "✅ Realizados",
+
+        total_realizados,
+
+    )
+
+    metricas[4].metric(
+
+        "🏥 Cirugías de hoy",
+
+        total_hoy,
+
+    )
+
+    st.markdown("")
+
+    # -----------------------------------------------------
+
+    # VISTAS PRINCIPALES
+
+    # -----------------------------------------------------
+
+    (
+
+        tab_kanban,
+
+        tab_diaria,
+
+        tab_semanal,
+
+        tab_mensual,
+
+        tab_anual,
+
+        tab_listado,
+
+    ) = st.tabs(
+
+        [
+
+            "▦ Flujo de pacientes",
+
+            "📆 Día",
+
+            "🗓️ Semana",
+
+            "📅 Mes",
+
+            "📊 Año",
+
+            "📋 Listado",
+
+        ]
+
+    )
+    # ==========================================================
+
+    # TABLERO TIPO TRELLO
+
+    # ==========================================================
+
+    st.markdown("---")
+
+    st.subheader("📋 Gestión Visual de Pacientes")
+
+    # Si no existe la columna
+
+    if "estado" not in df.columns:
+
+        df["estado"] = "Programado"
+
+    columnas = [
+
+        "Consulta",
+
+        "Pendiente Autorización",
+
+        "Programado",
+
+        "En Quirófano",
+
+        "Finalizado",
+
+        "Suspendido"
+
+    ]
+
+    trello = st.columns(len(columnas))
+
+    for i, estado in enumerate(columnas):
+
+        with trello[i]:
+
+            color = {
+
+                "Consulta":"#4FA3FF",
+
+                "Pendiente Autorización":"orange",
+
+                "Programado":"green",
+
+                "En Quirófano":"red",
+
+                "Finalizado":"gray",
+
+                "Suspendido":"black"
+
+            }.get(estado,"gray")
+
+            st.markdown(
+                f"""
+                <div style="
+                    background:{color};
+                    color:white;
+                    padding:8px;
+                    border-radius:8px;
+                    text-align:center;
+                    font-weight:bold;">
+                    {estado}
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+            datos = df[df["estado"] == estado]
+            if len(datos)==0:
+                st.info("Sin pacientes")
+
+            else:
+
+                for idx,row in datos.iterrows():
+
+                    paciente = row.get("paciente","")
+
+                    proc = row.get("procedimiento","")
+
+                    medico = row.get("medico","")
+
+                    sala = row.get("sala","")
+
+                    hora = row.get("hora_inicio","")
+
+                    with st.container(border=True):
+
+                        st.markdown(f"### 👤 {paciente}")
+
+                        st.caption(proc)
+
+                        st.write("🕒",hora)
+
+                        st.write("👨‍⚕️",medico)
+
+                        st.write("🏥",sala)
+
+                        nuevo_estado = st.selectbox(
+
+                            "Mover",
+
+                            columnas,
+
+                            index=columnas.index(estado),
+
+                            key=f"{idx}_estado"
+
+                        )
+
+                        if nuevo_estado != estado:
+
+                            df.loc[idx,"estado"] = nuevo_estado
+
+                            save_table(cfg["table"],df)
+
+                            st.success("Paciente actualizado")
+
+                            st.rerun()
+
+    # ==========================================================
+
+    # PACIENTES DEL DÍA
+
+    # ==========================================================
+
+    st.markdown("---")
+
+    st.subheader("📅 Agenda del Día")
+
+    hoy = pd.Timestamp.today().date()
+
+    if "fecha" in df.columns:
+
+        agenda_hoy = df[
+
+            pd.to_datetime(df["fecha"],errors="coerce").dt.date == hoy
+
+        ].sort_values("hora_inicio")
+
+        if len(agenda_hoy):
+
+            for _,r in agenda_hoy.iterrows():
+
+                with st.container(border=True):
+
+                    c1,c2,c3,c4 = st.columns([1,3,2,2])
+
+                    c1.metric("Hora",r["hora_inicio"])
+
+                    c2.write("### "+str(r["paciente"]))
+
+                    c2.caption(r["procedimiento"])
+
+                    c3.write("👨‍⚕️")
+
+                    c3.write(r["medico"])
+
+                    c4.write("🏥")
+
+                    c4.write(r["sala"])
+
+        else:
+
+            st.info("No hay procedimientos para hoy.")
+
+    # ==========================================================
+
+    # ESTADÍSTICAS
+
+    # ==========================================================
+
+    st.markdown("---")
+
+    st.subheader("📊 Indicadores")
+
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+
+    c1.metric(
+
+        "Consultas",
+
+        len(df[df["estado"]=="Consulta"])
+
+    )
+
+    c2.metric(
+
+        "Pendientes",
+
+        len(df[df["estado"]=="Pendiente Autorización"])
+
+    )
+
+    c3.metric(
+
+        "Programados",
+
+        len(df[df["estado"]=="Programado"])
+
+    )
+
+    c4.metric(
+
+        "En Quirófano",
+
+        len(df[df["estado"]=="En Quirófano"])
+
+    )
+
+    c5.metric(
+
+        "Finalizados",
+
+        len(df[df["estado"]=="Finalizado"])
+
+    )
+
+    c6.metric(
+
+        "Suspendidos",
+
+        len(df[df["estado"]=="Suspendido"])
+
+    )
+
+    # ==========================================================
+
+    # PRÓXIMAS CIRUGÍAS
+
+    # ==========================================================
+
+    st.markdown("---")
+
+    st.subheader("⏰ Próximas Cirugías")
+
+    if "fecha" in df.columns:
+
+        proximas = (
+
+            df.sort_values("fecha")
+
+            .head(10)
+
+        )
+
+        st.dataframe(
+
+            proximas,
+
+            use_container_width=True,
+
+            hide_index=True
+
+        )
+
+    # ==========================================================
+
+    # CALENDARIO DE OCUPACIÓN
+
+    # ==========================================================
+
+    st.markdown("---")
+
+    st.subheader("📆 Ocupación del Quirófano")
+
+    if "fecha" in df.columns:
+
+        ocupacion = (
+
+            df.groupby("fecha")
+
+            .size()
+
+            .reset_index(name="Cirugías")
+
+        )
+
+        st.bar_chart(
+
+            ocupacion.set_index("fecha")
+
+        )
+
+    # ==========================================================
+
+    # ALERTAS
+
+    # ==========================================================
+
+    st.markdown("---")
+
+    st.subheader("🚨 Alertas")
+
+    if "estado" in df.columns:
+
+        pendientes = len(df[df["estado"]=="Pendiente Autorización"])
+
+        if pendientes:
+
+            st.warning(
+
+                f"Hay {pendientes} pacientes pendientes de autorización."
+
+            )
+
+    if "fecha" in df.columns:
+
+        manana = hoy + pd.Timedelta(days=1)
+
+        manana_df = df[
+
+            pd.to_datetime(df["fecha"],errors="coerce").dt.date == manana
+
+        ]
+
+        if len(manana_df):
+
+            st.info(
+
+                f"Mañana hay {len(manana_df)} procedimientos programados."
+
+            )
+
+    st.success("Agenda cargada correctamente.")
+def parse_mes(series):
+    s = series.astype(str).str.strip()
+    fecha_ymd = pd.to_datetime(
+        s,
+        format="%Y-%m-%d",
+        errors="coerce"
+    )
+    fecha_dmy = pd.to_datetime(
+        s,
+        format="%d/%m/%Y",
+        errors="coerce"
+    )
+    return fecha_ymd.fillna(fecha_dmy)
+def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
+    table = cfg["table"]
+    try:
+        df_base = get_df(table)
+    except Exception as e:
+        st.error(f"No se pudo leer Google Sheets para {table}: {e}")
+        df_base = pd.DataFrame()
+    render_header()
+    st.header(module_name)
+    st.caption(cfg.get("descripcion", ""))
+    labels = get_fact_labels(module_name, cfg)
+    tab_panel, tab_cargar, tab_importar, tab_editar, tab_columnas, tab_exportar = st.tabs([
+        "📊 Panel PRO",
+        "➕ Cargar",
+        "📥 Importar",
+        "✏️ Editar tabla",
+        "🏷️ Editar columnas",
+        "📤 Exportar",
+    ])
+    with tab_panel:
+        df_panel = add_balance_columns(df_base.copy())
+        if df_panel.empty:
+            st.warning("No hay registros cargados.")
+        else:
+            filtered = apply_filters(df_panel, module_name)
+            if table in ["caja_vm", "caja_vmr"]:
+                safe_panel("render_caja_pro_panel", filtered, module_name)
+            if table in ["banco_galicia_vm", "banco_macro_vmr"]:
+                render_banco_pro_panel(filtered, module_name)
+            if table == "cuenta_corriente_vm":
+                filtered = filtered.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")
+            # =====================================================
+            # AGENDA QUIRÓFANO PRO
+            # =====================================================
+            if table == "agenda_quirofano":
+                render_agenda_quirofano_pro(filtered)
+                return
+            render_metricas_panel(filtered, table)
+            if table == "cuenta_corriente_vm":
+                render_dashboard_proveedores_vm(filtered)
+            if table == "cuenta_corriente_vmr":
+                st.info("Dashboard VMR lo agregamos en el próximo bloque para no romper este.")
+            render_tabla_limpia_panel(filtered)
+            render_analisis_mensual_2026(filtered)
+            render_graficos_facturacion(filtered)
+    with tab_cargar:
+        st.subheader("Nuevo registro")
+        with st.form(f"form_add_{table}", clear_on_submit=False):
+            data: Dict[str, Any] = {}
+            cols = st.columns(2)
+            for i, field in enumerate(cfg["fields"]):
+                with cols[i % 2]:
+                    raw = input_field(field, f"add_{table}")
+                    data[field[0]] = clean_for_db(raw, field[1])
+            submitted = st.form_submit_button("Guardar registro", type="primary")
+            if submitted:
+                errors = validate_required(cfg, data)
+                if errors:
+                    st.error("Faltan completar campos obligatorios: " + ", ".join(errors))
+                    st.write("DEBUG DATA:", data)
+                else:
+                    try:
+                        insert_row(table, data)
+                        st.success("Registro guardado correctamente.")
+                        st.cache_data.clear()
+                        st.rerun()
+                    except Exception as e:
+                        st.error("Error al guardar el registro")
+                        st.exception(e)
+    with tab_importar:
+        render_importer(module_name, cfg)
+    with tab_editar:
+        st.subheader("Editar registros cargados")
+        df = add_balance_columns(df_base.copy())
+        if df.empty:
+            st.warning("No hay registros para editar.")
+        else:
+            df_edit = df.copy()
+            if table == "cuenta_corriente_vm":
+                df_edit = df_edit.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")
+            df_edit = df_edit.drop(columns=["created_at", "updated_at"], errors="ignore")
+            if "mes" in df_edit.columns:
+                orden = parse_mes(df_edit["mes"])
+                df_edit = df_edit.assign(_orden=orden)
+                df_edit = df_edit.sort_values("_orden", ascending=False, na_position="last")
+                df_edit["mes"] = df_edit["_orden"].dt.strftime("%d/%m/%Y")
+                df_edit["mes"] = df_edit["mes"].fillna("")
+                df_edit = df_edit.drop(columns=["_orden"], errors="ignore")
+            edited_df = st.data_editor(
+                df_edit,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                key=f"editor_{table}",
+            )
+            if st.button("Guardar cambios", type="primary", key=f"guardar_editor_{table}"):
+                try:
+                    limpio = edited_df.copy()
+                    limpio = limpio.drop(
+                        columns=["saldo", "saldo_usd", "saldo_movimiento"],
+                        errors="ignore"
+                    )
+                    if "mes" in limpio.columns:
+                        fechas = parse_mes(limpio["mes"])
+                        limpio["mes"] = fechas.dt.strftime("%Y-%m-%d")
+                        limpio["mes"] = limpio["mes"].replace("NaT", "")
+                        limpio["mes"] = limpio["mes"].fillna("")
+                    sync_df_to_sheet(table, limpio)
+                    st.success(f"Cambios guardados correctamente. Registros procesados: {len(limpio)}")
+                    st.cache_data.clear()
+                    st.rerun()
+                except Exception as e:
+                    st.error("ERROR AL GUARDAR")
+                    st.exception(e)
+    with tab_columnas:
+        st.info("Editor de columnas pendiente.")
+    with tab_exportar:
+        df = add_balance_columns(df_base.copy())
+        if table == "cuenta_corriente_vm":
+            df = df.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")
+        if df.empty:
+            st.info("No hay datos para exportar.")
+        else:
+            export_df = format_facturacion_table(df, labels)
+            csv = export_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "Descargar CSV",
+                data=csv,
+                file_name=f"{table}.csv",
+                mime="text/csv"
+            )
+            xlsx_path = Path(f"{table}.xlsx")
+            export_df.to_excel(xlsx_path, index=False)
+            with open(xlsx_path, "rb") as f:
+                st.download_button(
+                    "Descargar Excel",
+                    data=f,
+                    file_name=f"{table}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                )
+def total_mod(nombre, dfs):
+    df = dfs.get(nombre, pd.DataFrame())
+    if df.empty:
+        return 0.0
+    for col in ["saldo", "saldo_movimiento", "importe", "valor_pesos", "monto", "ingreso"]:
+        if col in df.columns:
+            return sum_money_col(df[col])
+    return 0.0
+def render_analisis_global_vitae(dfs):
+    ANIO_ANALISIS = 2026
+    st.divider()
+    st.markdown(f"## 📊 Análisis Global VITAE {ANIO_ANALISIS}")
+    rows = []
+    for module_name, cfg in MODULES.items():
+        df = dfs.get(module_name, pd.DataFrame()).copy()
+        if df.empty:
+            continue
+        empresa = cfg.get("empresa", "VITAE")
+        for _, row in df.iterrows():
+            fecha = (
+                row.get("fecha")
+                or row.get("vencimiento")
+                or row.get("created_at")
+            )
+            fecha = pd.to_datetime(fecha, errors="coerce")
+            if pd.isna(fecha):
+                continue
+            if fecha.year != ANIO_ANALISIS:
+                continue
+            ingreso = money(row.get("ingreso", 0))
+            egreso = money(row.get("egreso", 0))
+            valor = (
+                money(row.get("valor_pesos", 0))
+                or money(row.get("importe", 0))
+                or money(row.get("monto", 0))
+                or money(row.get("valor", 0))
+            )
+            estado = str(row.get("estado", "")).lower()
+            facturado = valor if valor else ingreso
+            cobrado = (
+                valor
+                if estado in [
+                    "cobrado",
+                    "pagado",
+                    "realizado",
+                    "completo",
+                    "finalizado"
+                ]
+                else ingreso
+            )
+            pendiente = (
+                valor
+                if estado in [
+                    "pendiente",
+                    "a cobrar",
+                    "adeudado",
+                    "deuda"
+                ]
+                else 0
+            )
+            rows.append({
+                "Fecha": fecha,
+                "Mes": fecha.strftime("%Y-%m"),
+                "Empresa": empresa,
+                "Módulo": module_name,
+                "Facturado": facturado,
+                "Cobrado": cobrado,
+                "Pendiente": pendiente,
+                "Egreso": egreso,
+                "Resultado": cobrado - egreso,
+            })
+    if not rows:
+        st.info("No hay datos de 2026 para analizar.")
+        return
+    global_df = pd.DataFrame(rows)
+    facturado_total = global_df["Facturado"].sum()
+    cobrado_total = global_df["Cobrado"].sum()
+    pendiente_total = global_df["Pendiente"].sum()
+    egreso_total = global_df["Egreso"].sum()
+    resultado_total = global_df["Resultado"].sum()
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric(
+        "💰 Facturado",
+        fmt_money(facturado_total)
+    )
+    c2.metric(
+        "✅ Cobrado",
+        fmt_money(cobrado_total)
+    )
+    c3.metric(
+        "⏳ Pendiente",
+        fmt_money(pendiente_total)
+    )
+    c4.metric(
+        "📤 Egresos",
+        fmt_money(egreso_total)
+    )
+    c5.metric(
+        "📈 Resultado",
+        fmt_money(resultado_total)
+    )
+    mensual = global_df.groupby(
+        "Mes",
+        as_index=False
+    )[
+        [
+            "Facturado",
+            "Cobrado",
+            "Pendiente",
+            "Egreso",
+            "Resultado"
+        ]
+    ].sum()
+    st.markdown("### 📅 Resumen mensual 2026")
+    fig = px.bar(
+        mensual,
+        x="Mes",
+        y=[
+            "Facturado",
+            "Cobrado",
+            "Pendiente",
+            "Egreso"
+        ],
+        barmode="group",
+        title="Movimientos mensuales"
+    )
+    fig.update_layout(height=450)
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="global_mensual_2026"
+    )
+    mensual["Acumulado"] = mensual["Resultado"].cumsum()
+    st.markdown("### 📈 Evolución acumulada")
+    fig2 = px.line(
+        mensual,
+        x="Mes",
+        y="Acumulado",
+        markers=True,
+        title="Resultado acumulado 2026"
+    )
+    fig2.update_layout(height=400)
+    st.plotly_chart(
+        fig2,
+        use_container_width=True,
+        key="global_acumulado_2026"
+    )
+    resumen_modulos = global_df.groupby(
+        ["Módulo", "Empresa"],
+        as_index=False
+    )[
+        [
+            "Facturado",
+            "Cobrado",
+            "Pendiente",
+            "Egreso",
+            "Resultado"
+        ]
+    ].sum()
+    st.markdown("### 📋 Resumen por módulo")
+    st.dataframe(
+        resumen_modulos.sort_values(
+            "Facturado",
+            ascending=False
+        ),
+        use_container_width=True,
+        hide_index=True
+    )
+
+    def deuda_mod(nombre):
+        df = dfs.get(nombre, pd.DataFrame())
+        if df.empty:
+            return 0.0
+        col_monto = None
+        for c in ["valor_pesos", "importe", "monto", "saldo", "valor"]:
+            if c in df.columns:
+                col_monto = c
+                break
+        if not col_monto:
+            return 0.0
+        if "estado" not in df.columns:
+            return df[col_monto].apply(money).sum()
+        estados_deuda = ["pendiente", "a pagar", "adeudado", "deuda"]
+        deuda = df[
+            df["estado"].astype(str).str.lower().isin(estados_deuda)
+        ]
+        return deuda[col_monto].apply(money).sum()
+    caja_vmr = total_mod("Caja VMR", dfs)
+    banco_vmr = total_mod("Banco Macro VMR", dfs)
+    caja_vm = total_mod("Caja VM", dfs)
+    banco_vm = total_mod("Banco Galicia VM", dfs)
+    gine_vitae = total_mod("Gine Vitae", dfs)
+    pagos_pendientes = total_mod("Pagos pendientes Vitae", dfs)
+    planes_pago = total_mod("Planes de pagos y préstamos", dfs)
+    honorarios = total_mod("Honorarios médicos", dfs)
+    deuda_imp_vmr = total_mod("Deudas Impositivas VMR", dfs)
+    deuda_imp_vm = total_mod("Deudas Impositivas VM", dfs)
+    liquidez_total = caja_vmr + banco_vmr + caja_vm + banco_vm + gine_vitae
+    deuda_total_global = pagos_pendientes + planes_pago + honorarios + deuda_imp_vmr + deuda_imp_vm   
+def render_resumen_empresa(titulo, empresa, dfs):
+        for name, cfg in MODULES.items():
+            df = dfs.get(name, pd.DataFrame()).copy()
+            if df.empty:
+                continue
+        mods = {
+            name: dfs.get(name, pd.DataFrame())
+            for name, cfg in MODULES.items()
+            if cfg.get("empresa") == empresa
+        }
+        liquidez = 0
+        facturacion = 0
+        cobrado = 0
+        a_cobrar = 0
+        a_pagar_emp = 0
+        deuda_emp = 0
+        vencidos_emp = 0
+        tareas_emp = 0
+        pacientes = 0
+        for name, df in mods.items():
+            if df.empty:
+                continue    
+            tipo = MODULES[name].get("tipo", "")
+            if tipo in ["caja", "banco"]:
+                liquidez += total_mod(name)
+            if "valor_pesos" in df.columns:
+                facturacion += df["valor_pesos"].apply(money).sum()
+                pacientes += len(df)
+                if "estado" in df.columns:
+                    cobrado += df[df["estado"].astype(str).str.lower().isin(["completo", "cobrado", "pagado"])]["valor_pesos"].apply(money).sum()
+                    a_cobrar += df[df["estado"].astype(str).str.lower().isin(["pendiente", "parcial", "vencido"])]["valor_pesos"].apply(money).sum()
+            if "monto" in df.columns and "estado" in df.columns:
+                a_pagar_emp += df[df["estado"].astype(str).str.lower().isin(["pendiente", "vencido"])]["monto"].apply(money).sum()
+            if "vencimiento" in df.columns:
+                vencidos_emp += len(df)
+            if name == "Tareas Pendientes" and "estado" in df.columns:
+                tareas_emp += len(df[~df["estado"].astype(str).str.lower().isin(["finalizada", "cancelada"])])
+        resultado = cobrado - a_pagar_emp
+        promedio = facturacion / pacientes if pacientes > 0 else 0
+        st.divider()
+        st.markdown(f"### {titulo}")
+        r1, r2, r3, r4, r5 = st.columns(5)
+        r1.metric("Liquidez actual", fmt_money(liquidez))
+        r2.metric("Facturación mes", fmt_money(facturacion))
+        r3.metric("Cobrado mes", fmt_money(cobrado))
+        r4.metric("A cobrar", fmt_money(a_cobrar))
+        r5.metric("Resultado mes", fmt_money(resultado))
+        r6, r7, r8, r9, r10 = st.columns(5)
+        r6.metric("A pagar", fmt_money(a_pagar_emp))
+        r7.metric("Deuda total", fmt_money(deuda_emp))
+        r8.metric("Vencidos / críticos", vencidos_emp)
+        r9.metric("Tareas pendientes", tareas_emp)
+        r10.metric("Promedio por paciente", fmt_money(promedio))
+        rows = []
+        for name, cfg in MODULES.items():
+            df = dfs.get(name, pd.DataFrame())
+            if df.empty:
+                continue
+            if "valor_pesos" in df.columns:
+                total = df["valor_pesos"].apply(money).sum()
+            elif "importe" in df.columns:
+                total = df["importe"].apply(money).sum()
+            else:
+                total = 0
+            if total > 0:
+                rows.append({
+                "Módulo": name,
+                "Empresa": MODULES[name]["empresa"],
+                "Total": total,
+                "Registros": len(df),
+            })
+        resumen = pd.DataFrame(rows)           
+        st.divider()                                
+
+def render_configuracion() -> None:
+    render_header()
+    st.header("Configuración")
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "👤 Usuarios",
+        "🔐 Permisos",
+        "🏢 Empresas",
+        "⚙️ Sistema"
+    ])
+    with tab1:
+        st.subheader("Usuarios")
+        st.info("Acá irá la gestión de usuarios.")
+    with tab2:
+        st.subheader("Permisos")
+        st.info("Acá irá la gestión de permisos.")
+    with tab3:
+        st.subheader("Empresas")
+        st.info("Acá irá la gestión de empresas.")
+    with tab4:
+        st.subheader("Sistema")
+        st.info("Acá irá la configuración general del sistema.")
+        st.markdown("### 🗑️ Borrar base de un módulo")
+        modulo_borrar = st.selectbox(
+            "Módulo a borrar",
+            list(MODULES.keys()),
+            key="modulo_borrar_db"
+        )
+        confirmar = st.checkbox(
+            f"Confirmo borrar todos los datos de {modulo_borrar}",
+            key="confirmar_borrar_db"
+        )
+        st.markdown("### 🗑️ Borrar base de un módulo")
+        modulo_borrar = st.selectbox(
+            "Módulo a borrar",
+            list(MODULES.keys()),
+            key="modulo_borrar_db_2"
+        )
+        confirmar = st.checkbox(
+            f"Confirmo borrar todos los datos de {modulo_borrar}",
+            key="confirmar_borrar_db_2"
+        )
+    st.markdown("### Sincronización Google Sheets")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("⬆️ Subir datos actuales a Google Sheets"):
+            try:
+                result = sync_all_to_sheets()
+                st.success("Sincronización ejecutada.")
+                st.write(result)
+            except Exception as e:
+                st.error("No se pudo subir a Google Sheets.")
+                st.exception(e)
+    with col2:
+        if st.button("⬇️ Leer datos desde Google Sheets"):
+            try:
+                restore_all_from_sheets()
+                st.success("Datos restaurados desde Google Sheets.")
+                st.rerun()
+            except Exception as e:
+                st.error(f"No se pudo leer desde Google Sheets: {e}")
+def seed_examples() -> None:
+    examples = [
+        ("caja_vmr", {"fecha": date.today().strftime(DATE_FMT), "concepto": "Ingreso muestra fertilidad", "categoria": "Ingreso", "medio": "Efectivo", "ingreso": 150000, "egreso": 0, "responsable": "Administración", "observaciones": "Ejemplo"}),
+        ("banco_galicia_vm", {"fecha": date.today().strftime(DATE_FMT), "concepto": "Pago proveedor quirófano", "tipo_movimiento": "Débito", "referencia": "OP-001", "ingreso": 0, "egreso": 80000, "conciliado": 1, "observaciones": "Ejemplo"}),
+        ("pagos_pendientes_vitae", {"fecha": date.today().strftime(DATE_FMT), "empresa": "VITAE", "proveedor": "Proveedor insumos", "concepto": "Insumos médicos", "importe": 120000, "pagado": 0, "vencimiento": (date.today() + timedelta(days=7)).strftime(DATE_FMT), "prioridad": "Alta", "estado": "Pendiente", "observaciones": "Ejemplo"}),
+        ("tareas_pendientes", {"fecha": date.today().strftime(DATE_FMT), "empresa": "VM", "tarea": "Revisar stock quirófano", "responsable": "Enfermería", "prioridad": "Alta", "vencimiento": (date.today() + timedelta(days=3)).strftime(DATE_FMT), "estado": "Pendiente", "observaciones": "Ejemplo"}),
+    ]
+    for table, data in examples:
+        insert_row(table, data)
+        st.cache_data.clear()
