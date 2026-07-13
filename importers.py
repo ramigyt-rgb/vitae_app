@@ -153,8 +153,24 @@ def clean_import_value(value: Any, field: Tuple) -> Any:
     _name, ftype = field[0], field[1]
     options = field[3] if len(field) > 3 else None
     if ftype == "date":
-        parsed = parse_date(value)
-        return parsed.strftime(DATE_FMT) if parsed else ""
+        if value is None:
+            return ""    
+        texto = str(value).strip()   
+        # Si ya es una fecha normal, usarla    
+        parsed = parse_date(texto)    
+        if parsed:    
+            return parsed.strftime(DATE_FMT)
+        # Si viene solamente el nombre del mes    
+        meses = {    
+            "ENERO": 1, "FEBRERO": 2, "MARZO": 3,
+            "ABRIL": 4, "MAYO": 5, "JUNIO": 6,    
+            "JULIO": 7, "AGOSTO": 8, "SEPTIEMBRE": 9,
+            "OCTUBRE": 10, "NOVIEMBRE": 11, "DICIEMBRE": 12    
+        }    
+        t = texto.upper()    
+        if t in meses:    
+            return f"2026-{meses[t]:02d}-01"
+        return ""
     if ftype in {"money", "number"}:
         num = pd.to_numeric(normalize_money_string(value), errors="coerce")
         return 0.0 if pd.isna(num) else float(num)
