@@ -3,6 +3,7 @@
 # =========================================================
 import pandas as pd
 import streamlit as st
+from helpers import show_business_table
 from typing import Any, Dict, List, Tuple
 from database import *
 from modules import MODULES
