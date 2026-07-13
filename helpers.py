@@ -202,12 +202,32 @@ def apply_filters(df: pd.DataFrame, module_name: str) -> pd.DataFrame:
                 ["Todos"] + sorted(df["procedimiento"].dropna().astype(str).unique().tolist())
             )
     with c5:
+
         medico = "Todos"
-        if "medico_responsable" in df.columns:
-            medico = st.selectbox(
-                "Médico",
-                ["Todos"] + sorted(df["medico_responsable"].dropna().astype(str).unique().tolist())
-            )
+    
+        if module_name == "Honorarios médicos":
+    
+            if "medico" in df.columns:
+    
+                medico = st.selectbox(
+    
+                    "Médico",
+    
+                    ["Todos"] + sorted(df["medico"].dropna().astype(str).unique().tolist())
+    
+                )
+    
+        else:
+    
+            if "medico_responsable" in df.columns:
+    
+                medico = st.selectbox(
+    
+                    "Médico",
+    
+                    ["Todos"] + sorted(df["medico_responsable"].dropna().astype(str).unique().tolist())
+    
+                )
     from datetime import date, timedelta
     
     with c6:
@@ -229,8 +249,15 @@ def apply_filters(df: pd.DataFrame, module_name: str) -> pd.DataFrame:
         df = df[norm(df["obra_social"]) == str(obra_social).strip().lower()]
     if "procedimiento" in df.columns and procedimiento != "Todos":
         df = df[norm(df["procedimiento"]) == str(procedimiento).strip().lower()]
-    if "medico_responsable" in df.columns and medico != "Todos":
-        df = df[norm(df["medico_responsable"]) == str(medico).strip().lower()]
+    if medico != "Todos":
+
+        if module_name == "Honorarios médicos" and "medico" in df.columns:
+    
+            df = df[norm(df["medico"]) == str(medico).strip().lower()]
+    
+        elif "medico_responsable" in df.columns:
+    
+            df = df[norm(df["medico_responsable"]) == str(medico).strip().lower()]
     fecha_col = first_available_date_col(df, module_name)
     if fecha_col:
 
