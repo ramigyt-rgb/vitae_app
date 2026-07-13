@@ -7,6 +7,7 @@ from helpers import show_business_table
 from typing import Any, Dict, List, Tuple
 from helpers import clean_for_db, default_value
 from helpers import parse_date
+from helpers import normalize_money_string
 from database import *
 from modules import MODULES
 import numpy as np
