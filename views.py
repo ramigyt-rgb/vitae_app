@@ -433,6 +433,9 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
     if table == "contratos":
 
         st.metric("👥 Registros", registros)
+    if table == "vencimientos":
+
+        st.metric("👥 Registros", registros)
 
     elif table == "cuenta_corriente_vm":
 
