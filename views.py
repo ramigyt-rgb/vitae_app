@@ -430,12 +430,7 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
     pagado_usd = _money_usd_sum(df, "pagado_usd")
 
     pendiente_usd = float(total_usd) - float(pagado_usd)
-    if table == "contratos":
-
-        st.metric("👥 Registros", registros)
-    if table == "vencimientos":
-
-        st.metric("👥 Registros", registros)
+    
 
     elif table == "cuenta_corriente_vm":
 
@@ -474,6 +469,12 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
         c3.metric("⏳ Pendiente", fmt_money(pendiente))
 
         c4.metric("👥 Registros", registros)
+    if table == "contratos":
+
+        st.metric("👥 Registros", registros)
+    if table == "vencimientos":
+
+        st.metric("👥 Registros", registros)
 def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
     if not {"importe", "pagado", "persona_entidad"}.issubset(filtered.columns):
         return
