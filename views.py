@@ -442,9 +442,7 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
         tabla["mes"] = tabla["mes"].fillna("")
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
-    if table in ["facturacion_vm", "facturacion_vmr"]:
-
-        render_vencimientos_proximos(filtered)
+    
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 def _safe_float(value) -> float:
     try:
@@ -2314,6 +2312,9 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             render_tabla_limpia_panel(filtered)
             render_analisis_mensual_2026(filtered)
             render_graficos_facturacion(filtered)
+            if table in ["facturacion_vm", "facturacion_vmr"]:
+
+            render_vencimientos_proximos(filtered)
     with tab_cargar:
         st.subheader("Nuevo registro")
         with st.form(f"form_add_{table}", clear_on_submit=False):
