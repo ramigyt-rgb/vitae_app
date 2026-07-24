@@ -366,6 +366,67 @@ def _first_money_col(df):
         if c in df.columns:
             return c
     return None
+def render_vencimientos_proximos(df: pd.DataFrame):
+
+    if "vencimiento" not in df.columns:
+
+        return
+
+    hoy = pd.Timestamp.today().normalize()
+
+    venc = df.copy()
+
+    venc["vencimiento"] = pd.to_datetime(
+
+        venc["vencimiento"],
+
+        errors="coerce"
+
+    )
+
+    proximos = (
+
+        venc[
+
+            (venc["vencimiento"] >= hoy) &
+
+            (venc["vencimiento"] <= hoy + pd.Timedelta(days=7))
+
+        ]
+
+        .sort_values("vencimiento")
+
+    )
+
+    if proximos.empty:
+
+        return
+
+    st.warning("⚠️ Vencimientos próximos")
+
+    st.dataframe(
+
+        proximos[
+
+            [
+
+                "vencimiento",
+
+                "afiliado",
+
+                "obra_social",
+
+                "importe"
+
+            ]
+
+        ],
+
+        use_container_width=True,
+
+        hide_index=True
+
+    )
 def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
     st.divider()
     st.markdown("### Tabla limpia")
@@ -381,6 +442,9 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
         tabla["mes"] = tabla["mes"].fillna("")
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
+    if table in ["facturacion_vm", "facturacion_vmr"]:
+
+        render_vencimientos_proximos(filtered)
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 def _safe_float(value) -> float:
     try:
