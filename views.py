@@ -366,67 +366,6 @@ def _first_money_col(df):
         if c in df.columns:
             return c
     return None
-def render_vencimientos_proximos(df: pd.DataFrame):
-
-    if "vencimiento" not in df.columns:
-
-        return
-
-    hoy = pd.Timestamp.today().normalize()
-
-    venc = df.copy()
-
-    venc["vencimiento"] = pd.to_datetime(
-
-        venc["vencimiento"],
-
-        errors="coerce"
-
-    )
-
-    proximos = (
-
-        venc[
-
-            (venc["vencimiento"] >= hoy) &
-
-            (venc["vencimiento"] <= hoy + pd.Timedelta(days=7))
-
-        ]
-
-        .sort_values("vencimiento")
-
-    )
-
-    if proximos.empty:
-
-        return
-
-    st.warning("⚠️ Vencimientos próximos")
-
-    st.dataframe(
-
-        proximos[
-
-            [
-
-                "vencimiento",
-
-                "afiliado",
-
-                "obra_social",
-
-                "importe"
-
-            ]
-
-        ],
-
-        use_container_width=True,
-
-        hide_index=True
-
-    )
 def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
     st.divider()
     st.markdown("### Tabla limpia")
@@ -442,7 +381,6 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
         tabla["mes"] = tabla["mes"].fillna("")
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
-    
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 def _safe_float(value) -> float:
     try:
@@ -492,9 +430,7 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
     pagado_usd = _money_usd_sum(df, "pagado_usd")
 
     pendiente_usd = float(total_usd) - float(pagado_usd)
-    if table == "Contratos":
-
-        st.metric("👥 Registros", registros)
+    
 
     elif table == "cuenta_corriente_vm":
 
@@ -533,6 +469,12 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
         c3.metric("⏳ Pendiente", fmt_money(pendiente))
 
         c4.metric("👥 Registros", registros)
+    if table == "contratos":
+
+        st.metric("👥 Registros", registros)
+    if table == "vencimientos":
+
+        st.metric("👥 Registros", registros)
 def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
     if not {"importe", "pagado", "persona_entidad"}.issubset(filtered.columns):
         return
@@ -2312,9 +2254,6 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             render_tabla_limpia_panel(filtered)
             render_analisis_mensual_2026(filtered)
             render_graficos_facturacion(filtered)
-            if table in ["facturacion_vm", "facturacion_vmr"]:
-
-            render_vencimientos_proximos(filtered)
     with tab_cargar:
         st.subheader("Nuevo registro")
         with st.form(f"form_add_{table}", clear_on_submit=False):
