@@ -117,6 +117,33 @@ def render_dashboard() -> None:
         name: all_data[cfg["table"]]
         for name, cfg in MODULES.items()
     }
+    st.divider()
+
+st.subheader("🤖 Director IA de Vitae")
+
+pregunta = st.text_input(
+
+    "Preguntale al Director IA sobre todo el sistema",
+
+    key="dashboard_ia"
+
+)
+
+if st.button("Consultar", key="consultar_dashboard"):
+
+    if pregunta.strip():
+
+        with st.spinner("Analizando todo Vitae..."):
+
+            respuesta = preguntar_dashboard(
+
+                dfs,
+
+                pregunta
+
+            )
+
+        st.success(respuesta)
     def total_mod(nombre):
         df = dfs.get(nombre, pd.DataFrame())
         if df.empty:
