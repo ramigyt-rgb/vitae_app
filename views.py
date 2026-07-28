@@ -383,7 +383,7 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         tabla["mes"] = tabla["mes"].fillna("")
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
     st.dataframe(tabla, use_container_width=True, hide_index=True)
-    st.dataframe(tabla, use_container_width=True, hide_index=True)
+    
 
     st.divider()
     
