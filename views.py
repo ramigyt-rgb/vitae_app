@@ -13,6 +13,7 @@ from database import *
 from helpers import *
 from importers import render_importer
 from assistant import preguntar_ia
+from assistant import preguntar_dashboard
 def safe_panel(func_name, *args, **kwargs):
     func = globals().get(func_name)
     if callable(func):
