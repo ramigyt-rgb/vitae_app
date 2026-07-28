@@ -5,7 +5,9 @@ from pathlib import Path
 import streamlit as st
 import os
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+
 
 APP_TITLE = "Sistema de Gestión"
 DB_PATH = Path("vitae_gestion.db")
