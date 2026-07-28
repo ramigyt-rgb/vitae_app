@@ -12,6 +12,7 @@ from modules import MODULES
 from database import *
 from helpers import *
 from importers import render_importer
+from assistant import preguntar_ia
 def safe_panel(func_name, *args, **kwargs):
     func = globals().get(func_name)
     if callable(func):
@@ -382,6 +383,35 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         tabla["mes"] = tabla["mes"].fillna("")
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
     st.dataframe(tabla, use_container_width=True, hide_index=True)
+    st.dataframe(tabla, use_container_width=True, hide_index=True)
+
+    st.divider()
+    
+    st.subheader("🤖 Asistente IA")
+    
+    pregunta = st.text_input(
+    
+        "Preguntale algo sobre esta tabla",
+    
+        key="pregunta_ia"
+    
+    )
+    
+    if st.button("Consultar IA", key="btn_ia"):
+    
+        with st.spinner("Analizando información..."):
+    
+            respuesta = preguntar_ia(
+    
+                modulo="Tabla",
+    
+                df=filtered,
+    
+                pregunta=pregunta
+    
+            )
+    
+        st.success(respuesta)
 def _safe_float(value) -> float:
     try:
         if value is None or value == "":
