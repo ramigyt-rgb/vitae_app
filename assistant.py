@@ -1,19 +1,12 @@
-from openai import OpenAI
+from google import genai
 
 import pandas as pd
 
-from config import OPENAI_API_KEY
-from openai import OpenAI
+from config import GEMINI_API_KEY
 
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 
 def preguntar_ia(modulo: str, df: pd.DataFrame, pregunta: str) -> str:
-
-    """
-
-    IA de solo lectura para un módulo de Vitae.
-
-    """
 
     datos = df.head(100).to_string(index=False)
 
@@ -21,30 +14,28 @@ def preguntar_ia(modulo: str, df: pd.DataFrame, pregunta: str) -> str:
 
 Sos el asistente del sistema Vitae.
 
-Estás dentro del módulo:
+Módulo:
 
 {modulo}
 
-Solo podés responder utilizando la información de este módulo.
-
-Estos son los datos:
+Datos:
 
 {datos}
 
-Pregunta del usuario:
+Pregunta:
 
 {pregunta}
 
-Respondé en español, de forma clara y concreta.
+Respondé únicamente usando la información disponible.
 
 """
 
-    respuesta = client.responses.create(
+    respuesta = client.models.generate_content(
 
-        model="gpt-4.1-mini",
+        model="gemini-2.5-flash",
 
-        input=prompt,
+        contents=prompt,
 
     )
 
-    return respuesta.output_text
+    return respuesta.text
