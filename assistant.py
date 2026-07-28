@@ -8,7 +8,7 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 def preguntar_ia(modulo: str, df: pd.DataFrame, pregunta: str) -> str:
 
-    datos = df.head(100).to_string(index=False)
+    datos = df.head(1000).to_string(index=False)
 
     prompt = f"""
 
