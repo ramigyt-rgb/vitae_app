@@ -11,3 +11,4 @@ xlsxwriter>=3.2.0
 gspread
 
 google-auth
+openai>=1.0.0
