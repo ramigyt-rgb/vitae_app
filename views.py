@@ -3916,7 +3916,74 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
         else:
             filtered = apply_filters(df_panel, module_name)
             if table in ["caja_vm", "caja_vmr"]:
-                safe_panel("render_caja_pro_panel", filtered, module_name)
+
+                render_caja_pro_panel(
+
+                    filtered,
+
+                    module_name,
+
+                    df_panel
+
+                )
+
+            else:
+
+                if table in ["banco_galicia_vm", "banco_macro_vmr"]:
+
+                    render_banco_pro_panel(filtered, module_name)
+
+                if table == "cuenta_corriente_vm":
+
+                    filtered = filtered.drop(
+
+                        columns=["importe_usd", "pagado_usd"],
+
+                        errors="ignore"
+
+                    )
+
+                # =====================================================
+
+                # AGENDA QUIRÓFANO PRO
+
+                # =====================================================
+
+                if table == "agenda_quirofano":
+
+                    render_agenda_quirofano_pro(filtered)
+
+                    return
+
+                if (
+
+                    table == "honorarios_medicos"
+
+                    or "honorarios" in module_name.lower()
+
+                ):
+
+                    render_honorarios_medicos_pro(filtered)
+
+                else:
+
+                    render_metricas_panel(filtered, table)
+
+                    if table == "cuenta_corriente_vm":
+
+                        render_dashboard_proveedores_vm(filtered)
+
+                    if table == "cuenta_corriente_vmr":
+
+                        st.info(
+
+                            "Dashboard VMR lo agregamos en el próximo "
+
+                            "bloque para no romper este."
+
+                        )
+
+
             if table in ["banco_galicia_vm", "banco_macro_vmr"]:
                 render_banco_pro_panel(filtered, module_name)
             if table == "cuenta_corriente_vm":
