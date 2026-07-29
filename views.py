@@ -3272,31 +3272,31 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
                 filtered = filtered.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")
             if table == "honorarios_medicos" or "honorarios" in module_name.lower():
 
-            render_honorarios_medicos_pro(filtered)
-        
-        else:
-        
-            render_metricas_panel(filtered, table)
-        
+                render_honorarios_medicos_pro(filtered)
+            
+            else:
+            
+                render_metricas_panel(filtered, table)
+            
             if table == "cuenta_corriente_vm":
-        
+            
                 render_dashboard_proveedores_vm(filtered)
-        
+            
             if table == "cuenta_corriente_vmr":
-        
+            
                 st.info(
-        
+            
                     "Dashboard VMR lo agregamos en el próximo bloque para no romper este."
-        
+            
                 )
-        
-            render_tabla_limpia_panel(filtered)
-        
-            render_analisis_anual_2026(df_base)
-        
-            render_analisis_mensual_2026(filtered)
-        
-            render_graficos_facturacion(filtered)
+            
+                render_tabla_limpia_panel(filtered)
+            
+                render_analisis_anual_2026(df_base)
+            
+                render_analisis_mensual_2026(filtered)
+            
+                render_graficos_facturacion(filtered)
     with tab_cargar:
         st.subheader("Nuevo registro")
         with st.form(f"form_add_{table}", clear_on_submit=False):
