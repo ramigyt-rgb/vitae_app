@@ -3239,6 +3239,657 @@ def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
             mime="text/csv",
             key="descargar_honorarios_analizados",
         )
+def render_caja_pro_panel(
+    df: pd.DataFrame,
+    module_name: str,
+    df_total: pd.DataFrame | None = None,
+) -> None:
+    """Panel profesional compartido por Caja VM y Caja VMR."""
+    import re
+    import unicodedata
+
+    import pandas as pd
+    import plotly.express as px
+    import streamlit as st
+
+    nombre_caja = str(module_name or "Caja").strip()
+    clave_widget = re.sub(r"[^a-z0-9]+", "_", nombre_caja.lower()).strip("_") or "caja"
+
+    st.markdown(f"## 💵 Centro de Control · {nombre_caja}")
+    st.caption(
+        "Ingresos, egresos, saldo real, evolución, categorías, responsables "
+        "y controles de calidad de la caja."
+    )
+
+    if df is None or df.empty:
+        st.info("No hay movimientos de caja para analizar con los filtros actuales.")
+        return
+
+    def normalizar_texto(valor: object) -> str:
+        texto = unicodedata.normalize("NFKD", str(valor or ""))
+        texto = "".join(c for c in texto if not unicodedata.combining(c))
+        texto = texto.strip().lower()
+        return re.sub(r"[^a-z0-9]+", "_", texto).strip("_")
+
+    def numero(valor: object) -> float:
+        if valor is None or (not isinstance(valor, str) and pd.isna(valor)):
+            return 0.0
+        if isinstance(valor, bool):
+            return float(valor)
+        if isinstance(valor, (int, float)):
+            try:
+                return float(valor)
+            except Exception:
+                return 0.0
+
+        texto = str(valor).strip()
+        if not texto:
+            return 0.0
+
+        negativo_parentesis = texto.startswith("(") and texto.endswith(")")
+        texto = re.sub(r"[^0-9,.-]", "", texto)
+        if texto in {"", "-", ".", ","}:
+            return 0.0
+
+        if "," in texto and "." in texto:
+            if texto.rfind(",") > texto.rfind("."):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        elif "," in texto:
+            partes = texto.split(",")
+            if len(partes[-1]) in (1, 2):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        elif texto.count(".") > 1:
+            partes = texto.split(".")
+            if len(partes[-1]) in (1, 2):
+                texto = "".join(partes[:-1]) + "." + partes[-1]
+            else:
+                texto = "".join(partes)
+
+        try:
+            resultado = float(texto)
+            return -abs(resultado) if negativo_parentesis else resultado
+        except Exception:
+            return 0.0
+
+    def moneda(valor: float) -> str:
+        valor = float(valor or 0)
+        texto = f"{abs(valor):,.2f}"
+        texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
+        signo = "-" if valor < 0 else ""
+        return f"{signo}$ {texto}"
+
+    def porcentaje(valor: float) -> str:
+        if pd.isna(valor):
+            valor = 0.0
+        texto = f"{float(valor):,.1f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{texto}%"
+
+    def preparar(origen: pd.DataFrame | None) -> tuple[pd.DataFrame, dict[str, str | None]]:
+        if origen is None or origen.empty:
+            return pd.DataFrame(), {}
+
+        base = origen.copy()
+        columnas = {normalizar_texto(col): col for col in base.columns}
+
+        def buscar(*opciones: str) -> str | None:
+            for opcion in opciones:
+                encontrada = columnas.get(normalizar_texto(opcion))
+                if encontrada is not None:
+                    return encontrada
+            return None
+
+        cols = {
+            "fecha": buscar("fecha", "fecha_movimiento", "dia", "mes"),
+            "concepto": buscar("concepto", "descripcion", "detalle", "movimiento", "motivo"),
+            "categoria": buscar("categoria", "rubro", "tipo", "clasificacion"),
+            "medio": buscar("medio", "medio_pago", "forma_pago", "metodo_pago", "canal"),
+            "ingreso": buscar("ingreso", "ingresos", "entrada", "entradas", "haber", "credito", "monto_ingreso"),
+            "egreso": buscar("egreso", "egresos", "salida", "salidas", "debe", "debito", "monto_egreso"),
+            "monto": buscar("monto", "importe", "valor", "valor_pesos", "total"),
+            "responsable": buscar("responsable", "usuario", "cargado_por", "operador"),
+            "observaciones": buscar("observaciones", "observacion", "notas", "nota", "comentario"),
+            "saldo": buscar("saldo", "balance", "saldo_acumulado", "saldo_actual"),
+        }
+
+        resultado = pd.DataFrame(index=base.index)
+
+        if cols["fecha"]:
+            serie_fecha = base[cols["fecha"]]
+            fecha = pd.to_datetime(serie_fecha, errors="coerce", dayfirst=True)
+            if fecha.isna().any():
+                fecha_iso = pd.to_datetime(serie_fecha, format="%Y-%m-%d", errors="coerce")
+                fecha = fecha.fillna(fecha_iso)
+            resultado["_fecha"] = fecha
+        else:
+            resultado["_fecha"] = pd.NaT
+
+        def texto_col(nombre: str, defecto: str) -> pd.Series:
+            col = cols.get(nombre)
+            if col:
+                serie = base[col].fillna("").astype(str).str.strip()
+                return serie.replace("", defecto)
+            return pd.Series(defecto, index=base.index, dtype="object")
+
+        resultado["_concepto"] = texto_col("concepto", "Sin concepto")
+        resultado["_categoria"] = texto_col("categoria", "Sin categoría")
+        resultado["_medio"] = texto_col("medio", "Sin medio")
+        resultado["_responsable"] = texto_col("responsable", "Sin responsable")
+        resultado["_observaciones"] = texto_col("observaciones", "")
+
+        if cols["ingreso"]:
+            resultado["_ingreso"] = base[cols["ingreso"]].map(numero)
+        else:
+            resultado["_ingreso"] = 0.0
+
+        if cols["egreso"]:
+            resultado["_egreso"] = base[cols["egreso"]].map(numero)
+        else:
+            resultado["_egreso"] = 0.0
+
+        resultado["_sin_clasificar"] = 0.0
+
+        if not cols["ingreso"] and not cols["egreso"] and cols["monto"]:
+            montos = base[cols["monto"]].map(numero)
+            clasificador = (
+                resultado["_categoria"].astype(str) + " " + resultado["_concepto"].astype(str)
+            ).map(normalizar_texto)
+
+            palabras_ingreso = (
+                r"ingreso|entrada|cobro|cobrado|venta|aporte|deposito|recibido|"
+                r"reintegro|devolucion_a_favor|transferencia_recibida"
+            )
+            palabras_egreso = (
+                r"egreso|salida|pago|pagado|gasto|compra|retiro|honorario|"
+                r"impuesto|servicio|proveedor|transferencia_enviada"
+            )
+
+            es_ingreso = clasificador.str.contains(palabras_ingreso, regex=True, na=False)
+            es_egreso = clasificador.str.contains(palabras_egreso, regex=True, na=False)
+            resultado.loc[es_ingreso, "_ingreso"] = montos[es_ingreso].abs()
+            resultado.loc[es_egreso, "_egreso"] = montos[es_egreso].abs()
+            resultado.loc[~es_ingreso & ~es_egreso, "_sin_clasificar"] = montos[~es_ingreso & ~es_egreso]
+
+        ingreso_negativo = resultado["_ingreso"] < 0
+        egreso_negativo = resultado["_egreso"] < 0
+        resultado.loc[ingreso_negativo, "_egreso"] += resultado.loc[ingreso_negativo, "_ingreso"].abs()
+        resultado.loc[ingreso_negativo, "_ingreso"] = 0.0
+        resultado.loc[egreso_negativo, "_ingreso"] += resultado.loc[egreso_negativo, "_egreso"].abs()
+        resultado.loc[egreso_negativo, "_egreso"] = 0.0
+
+        resultado["_ingreso"] = pd.to_numeric(resultado["_ingreso"], errors="coerce").fillna(0.0)
+        resultado["_egreso"] = pd.to_numeric(resultado["_egreso"], errors="coerce").fillna(0.0)
+        resultado["_neto"] = resultado["_ingreso"] - resultado["_egreso"]
+        resultado["_tipo"] = "Sin movimiento"
+        resultado.loc[resultado["_ingreso"] > 0, "_tipo"] = "Ingreso"
+        resultado.loc[resultado["_egreso"] > 0, "_tipo"] = "Egreso"
+        resultado.loc[
+            (resultado["_ingreso"] > 0) & (resultado["_egreso"] > 0),
+            "_tipo",
+        ] = "Mixto"
+
+        if cols["saldo"]:
+            resultado["_saldo_origen"] = base[cols["saldo"]].map(numero)
+        else:
+            resultado["_saldo_origen"] = pd.NA
+
+        resultado["_orden_original"] = range(len(resultado))
+        resultado = resultado.sort_values(
+            ["_fecha", "_orden_original"],
+            ascending=[True, True],
+            na_position="last",
+        )
+        resultado["_saldo_periodo"] = resultado["_neto"].cumsum()
+        return resultado, cols
+
+    data, columnas_detectadas = preparar(df)
+    total_data, _ = preparar(df_total if df_total is not None else df)
+
+    if data.empty:
+        st.info("No hay movimientos válidos para analizar.")
+        return
+
+    faltantes_criticos = []
+    if not columnas_detectadas.get("fecha"):
+        faltantes_criticos.append("fecha")
+    if not columnas_detectadas.get("ingreso") and not columnas_detectadas.get("egreso") and not columnas_detectadas.get("monto"):
+        faltantes_criticos.append("ingreso/egreso")
+
+    if faltantes_criticos:
+        st.error(
+            "No se pudieron identificar estas columnas: " + ", ".join(faltantes_criticos) + "."
+        )
+        st.caption(
+            "La función reconoce nombres como fecha, concepto, categoría, medio, "
+            "ingreso, egreso, responsable y observaciones."
+        )
+        return
+
+    ingresos = float(data["_ingreso"].sum())
+    egresos = float(data["_egreso"].sum())
+    flujo_neto = ingresos - egresos
+    movimientos = int(len(data))
+    movimientos_ingreso = int((data["_ingreso"] > 0).sum())
+    movimientos_egreso = int((data["_egreso"] > 0).sum())
+    ingreso_promedio = ingresos / movimientos_ingreso if movimientos_ingreso else 0.0
+    egreso_promedio = egresos / movimientos_egreso if movimientos_egreso else 0.0
+    cobertura = ingresos / egresos * 100 if egresos else (100.0 if ingresos else 0.0)
+
+    saldo_calculado_total = float(total_data["_neto"].sum()) if not total_data.empty else flujo_neto
+    saldo_origen = pd.to_numeric(total_data.get("_saldo_origen"), errors="coerce") if "_saldo_origen" in total_data else pd.Series(dtype=float)
+    saldo_origen = saldo_origen.dropna()
+    caja_actual = float(saldo_origen.iloc[-1]) if not saldo_origen.empty else saldo_calculado_total
+    saldo_inicio_periodo = caja_actual - flujo_neto if df_total is not None else 0.0
+
+    fechas_validas = data["_fecha"].dropna()
+    if not fechas_validas.empty:
+        desde = fechas_validas.min().normalize()
+        hasta = fechas_validas.max().normalize()
+        periodo_texto = f"{desde.strftime('%d/%m/%Y')} al {hasta.strftime('%d/%m/%Y')}"
+    else:
+        desde = hasta = None
+        periodo_texto = "sin fechas válidas"
+
+    delta_ingresos = None
+    delta_egresos = None
+    delta_neto = None
+    if desde is not None and hasta is not None and not total_data.empty:
+        dias = max((hasta - desde).days + 1, 1)
+        prev_hasta = desde - pd.Timedelta(days=1)
+        prev_desde = prev_hasta - pd.Timedelta(days=dias - 1)
+        anterior = total_data[
+            total_data["_fecha"].between(prev_desde, prev_hasta, inclusive="both")
+        ]
+        if not anterior.empty:
+            ant_ingresos = float(anterior["_ingreso"].sum())
+            ant_egresos = float(anterior["_egreso"].sum())
+            ant_neto = ant_ingresos - ant_egresos
+            delta_ingresos = ingresos - ant_ingresos
+            delta_egresos = egresos - ant_egresos
+            delta_neto = flujo_neto - ant_neto
+
+    st.caption(f"Período analizado: {periodo_texto}")
+
+    k1, k2, k3, k4, k5 = st.columns(5)
+    k1.metric("💼 Caja actual", moneda(caja_actual))
+    k2.metric(
+        "📥 Ingresos",
+        moneda(ingresos),
+        delta=moneda(delta_ingresos) if delta_ingresos is not None else None,
+    )
+    k3.metric(
+        "📤 Egresos",
+        moneda(egresos),
+        delta=moneda(delta_egresos) if delta_egresos is not None else None,
+        delta_color="inverse",
+    )
+    k4.metric(
+        "⚖️ Flujo neto",
+        moneda(flujo_neto),
+        delta=moneda(delta_neto) if delta_neto is not None else None,
+    )
+    k5.metric("🧾 Movimientos", f"{movimientos:,}".replace(",", "."))
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Ingreso promedio", moneda(ingreso_promedio))
+    s2.metric("Egreso promedio", moneda(egreso_promedio))
+    s3.metric("Cobertura ingresos/egresos", porcentaje(cobertura))
+    s4.metric(
+        "Saldo al inicio del período",
+        moneda(saldo_inicio_periodo),
+        help="Se calcula con la caja total menos el flujo del período filtrado.",
+    )
+
+    if flujo_neto > 0:
+        st.success(f"🟢 La caja generó un flujo positivo de {moneda(flujo_neto)} en el período.")
+    elif flujo_neto < 0:
+        st.error(f"🔴 Los egresos superaron a los ingresos en {moneda(abs(flujo_neto))}.")
+    else:
+        st.info("⚪ Ingresos y egresos quedaron equilibrados en el período.")
+
+    sin_clasificar = float(data["_sin_clasificar"].abs().sum())
+    if sin_clasificar:
+        st.warning(
+            f"Hay {moneda(sin_clasificar)} sin poder clasificar como ingreso o egreso. "
+            "Revisá la categoría o el concepto de esos registros."
+        )
+
+    tab_resumen, tab_evolucion, tab_movimientos, tab_control = st.tabs(
+        ["📊 Resumen", "📈 Evolución", "🧾 Movimientos", "🚨 Control"]
+    )
+
+    with tab_resumen:
+        izquierda, derecha = st.columns(2)
+
+        resumen_categoria = (
+            data.groupby("_categoria", dropna=False)
+            .agg(
+                ingresos=("_ingreso", "sum"),
+                egresos=("_egreso", "sum"),
+                movimientos=("_neto", "size"),
+            )
+            .reset_index()
+            .rename(columns={"_categoria": "categoría"})
+        )
+        resumen_categoria["neto"] = resumen_categoria["ingresos"] - resumen_categoria["egresos"]
+        resumen_categoria = resumen_categoria.sort_values("egresos", ascending=False)
+
+        with izquierda:
+            st.markdown("### Egresos por categoría")
+            categorias_egreso = resumen_categoria[resumen_categoria["egresos"] > 0]
+            if categorias_egreso.empty:
+                st.info("No hay egresos en el período.")
+            else:
+                fig = px.bar(
+                    categorias_egreso.sort_values("egresos", ascending=True).tail(12),
+                    x="egresos",
+                    y="categoría",
+                    orientation="h",
+                    text_auto=".2s",
+                )
+                fig.update_layout(
+                    xaxis_title="Egresos",
+                    yaxis_title="",
+                    height=420,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        with derecha:
+            st.markdown("### Ingresos por categoría")
+            categorias_ingreso = resumen_categoria[resumen_categoria["ingresos"] > 0]
+            if categorias_ingreso.empty:
+                st.info("No hay ingresos en el período.")
+            else:
+                fig = px.bar(
+                    categorias_ingreso.sort_values("ingresos", ascending=True).tail(12),
+                    x="ingresos",
+                    y="categoría",
+                    orientation="h",
+                    text_auto=".2s",
+                )
+                fig.update_layout(
+                    xaxis_title="Ingresos",
+                    yaxis_title="",
+                    height=420,
+                    margin=dict(l=10, r=10, t=10, b=10),
+                )
+                st.plotly_chart(fig, use_container_width=True)
+
+        st.markdown("### Resultado por categoría")
+        tabla_categoria = resumen_categoria.copy()
+        for col in ["ingresos", "egresos", "neto"]:
+            tabla_categoria[col] = tabla_categoria[col].map(moneda)
+        st.dataframe(tabla_categoria, use_container_width=True, hide_index=True)
+
+        resumen_medio = (
+            data.groupby("_medio", dropna=False)
+            .agg(
+                ingresos=("_ingreso", "sum"),
+                egresos=("_egreso", "sum"),
+                movimientos=("_neto", "size"),
+            )
+            .reset_index()
+            .rename(columns={"_medio": "medio"})
+        )
+        resumen_medio["neto"] = resumen_medio["ingresos"] - resumen_medio["egresos"]
+        resumen_medio = resumen_medio.sort_values("movimientos", ascending=False)
+
+        st.markdown("### Movimiento por medio de pago")
+        tabla_medio = resumen_medio.copy()
+        for col in ["ingresos", "egresos", "neto"]:
+            tabla_medio[col] = tabla_medio[col].map(moneda)
+        st.dataframe(tabla_medio, use_container_width=True, hide_index=True)
+
+        resumen_responsable = (
+            data.groupby("_responsable", dropna=False)
+            .agg(
+                ingresos=("_ingreso", "sum"),
+                egresos=("_egreso", "sum"),
+                movimientos=("_neto", "size"),
+            )
+            .reset_index()
+            .rename(columns={"_responsable": "responsable"})
+        )
+        resumen_responsable["neto"] = (
+            resumen_responsable["ingresos"] - resumen_responsable["egresos"]
+        )
+        resumen_responsable = resumen_responsable.sort_values("movimientos", ascending=False)
+
+        with st.expander("👤 Ver control por responsable", expanded=False):
+            tabla_responsable = resumen_responsable.copy()
+            for col in ["ingresos", "egresos", "neto"]:
+                tabla_responsable[col] = tabla_responsable[col].map(moneda)
+            st.dataframe(tabla_responsable, use_container_width=True, hide_index=True)
+
+    with tab_evolucion:
+        validas = data.dropna(subset=["_fecha"]).copy()
+        if validas.empty:
+            st.info("No hay fechas válidas para construir la evolución.")
+        else:
+            diario = (
+                validas.assign(día=validas["_fecha"].dt.normalize())
+                .groupby("día")
+                .agg(ingresos=("_ingreso", "sum"), egresos=("_egreso", "sum"))
+                .reset_index()
+                .sort_values("día")
+            )
+            diario["neto"] = diario["ingresos"] - diario["egresos"]
+            diario["saldo_acumulado_periodo"] = diario["neto"].cumsum()
+
+            fig = px.line(
+                diario,
+                x="día",
+                y="saldo_acumulado_periodo",
+                markers=True,
+                title="Saldo acumulado dentro del período filtrado",
+            )
+            fig.update_layout(
+                xaxis_title="Fecha",
+                yaxis_title="Saldo acumulado",
+                height=400,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            diario_largo = diario.melt(
+                id_vars="día",
+                value_vars=["ingresos", "egresos"],
+                var_name="tipo",
+                value_name="importe",
+            )
+            fig = px.bar(
+                diario_largo,
+                x="día",
+                y="importe",
+                color="tipo",
+                barmode="group",
+                title="Ingresos y egresos por día",
+            )
+            fig.update_layout(
+                xaxis_title="Fecha",
+                yaxis_title="Importe",
+                height=420,
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            mensual = validas.copy()
+            mensual["mes"] = mensual["_fecha"].dt.to_period("M").astype(str)
+            mensual = (
+                mensual.groupby("mes")
+                .agg(ingresos=("_ingreso", "sum"), egresos=("_egreso", "sum"))
+                .reset_index()
+            )
+            mensual["neto"] = mensual["ingresos"] - mensual["egresos"]
+
+            st.markdown("### Cierre mensual")
+            tabla_mensual = mensual.copy()
+            for col in ["ingresos", "egresos", "neto"]:
+                tabla_mensual[col] = tabla_mensual[col].map(moneda)
+            st.dataframe(tabla_mensual, use_container_width=True, hide_index=True)
+
+            st.markdown("### Cierre diario")
+            tabla_diaria = diario.sort_values("día", ascending=False).copy()
+            tabla_diaria["día"] = tabla_diaria["día"].dt.strftime("%d/%m/%Y")
+            for col in ["ingresos", "egresos", "neto", "saldo_acumulado_periodo"]:
+                tabla_diaria[col] = tabla_diaria[col].map(moneda)
+            st.dataframe(tabla_diaria.head(31), use_container_width=True, hide_index=True)
+
+    with tab_movimientos:
+        st.markdown("### Buscador de movimientos")
+        c_buscar, c_tipo, c_categoria = st.columns([2, 1, 1])
+        with c_buscar:
+            buscar_texto = st.text_input(
+                "Buscar concepto, responsable u observación",
+                key=f"buscar_movimientos_{clave_widget}",
+            )
+        with c_tipo:
+            opciones_tipo = ["Todos", "Ingreso", "Egreso", "Mixto", "Sin movimiento"]
+            filtro_tipo = st.selectbox(
+                "Tipo",
+                opciones_tipo,
+                key=f"tipo_movimientos_{clave_widget}",
+            )
+        with c_categoria:
+            opciones_categoria = ["Todas"] + sorted(data["_categoria"].dropna().astype(str).unique().tolist())
+            filtro_categoria = st.selectbox(
+                "Categoría",
+                opciones_categoria,
+                key=f"categoria_movimientos_{clave_widget}",
+            )
+
+        detalle = data.copy()
+        if buscar_texto.strip():
+            patron = re.escape(buscar_texto.strip())
+            universo = (
+                detalle["_concepto"].astype(str)
+                + " "
+                + detalle["_responsable"].astype(str)
+                + " "
+                + detalle["_observaciones"].astype(str)
+            )
+            detalle = detalle[universo.str.contains(patron, case=False, regex=True, na=False)]
+        if filtro_tipo != "Todos":
+            detalle = detalle[detalle["_tipo"] == filtro_tipo]
+        if filtro_categoria != "Todas":
+            detalle = detalle[detalle["_categoria"] == filtro_categoria]
+
+        detalle = detalle.sort_values(
+            ["_fecha", "_orden_original"],
+            ascending=[False, False],
+            na_position="last",
+        )
+        tabla_detalle = pd.DataFrame(
+            {
+                "fecha": detalle["_fecha"].dt.strftime("%d/%m/%Y").fillna(""),
+                "concepto": detalle["_concepto"],
+                "categoría": detalle["_categoria"],
+                "medio": detalle["_medio"],
+                "ingreso": detalle["_ingreso"],
+                "egreso": detalle["_egreso"],
+                "neto": detalle["_neto"],
+                "responsable": detalle["_responsable"],
+                "observaciones": detalle["_observaciones"],
+            }
+        )
+
+        st.dataframe(
+            tabla_detalle,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "ingreso": st.column_config.NumberColumn("Ingreso", format="$ %.2f"),
+                "egreso": st.column_config.NumberColumn("Egreso", format="$ %.2f"),
+                "neto": st.column_config.NumberColumn("Neto", format="$ %.2f"),
+            },
+        )
+        st.caption(f"Movimientos mostrados: {len(tabla_detalle)}")
+
+        exportar = tabla_detalle.copy()
+        csv = exportar.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+        st.download_button(
+            "📥 Descargar movimientos analizados",
+            data=csv,
+            file_name=f"{clave_widget}_movimientos.csv",
+            mime="text/csv",
+            key=f"descargar_movimientos_{clave_widget}",
+        )
+
+    with tab_control:
+        sin_fecha = int(data["_fecha"].isna().sum())
+        sin_concepto = int((data["_concepto"] == "Sin concepto").sum())
+        sin_categoria = int((data["_categoria"] == "Sin categoría").sum())
+        en_cero = int(((data["_ingreso"] == 0) & (data["_egreso"] == 0)).sum())
+        ambos = int(((data["_ingreso"] > 0) & (data["_egreso"] > 0)).sum())
+
+        columnas_dup = ["_fecha", "_concepto", "_ingreso", "_egreso"]
+        duplicados_mask = data.duplicated(subset=columnas_dup, keep=False)
+        duplicados = int(duplicados_mask.sum())
+
+        q1, q2, q3, q4, q5 = st.columns(5)
+        q1.metric("Sin fecha", sin_fecha)
+        q2.metric("Sin concepto", sin_concepto)
+        q3.metric("Sin categoría", sin_categoria)
+        q4.metric("Importe en cero", en_cero)
+        q5.metric("Posibles duplicados", duplicados)
+
+        if not any([sin_fecha, sin_concepto, sin_categoria, en_cero, duplicados, ambos]):
+            st.success("✅ No se detectaron problemas evidentes en los movimientos filtrados.")
+        else:
+            if sin_fecha:
+                st.warning(f"Hay {sin_fecha} movimientos sin una fecha válida.")
+            if sin_concepto:
+                st.warning(f"Hay {sin_concepto} movimientos sin concepto.")
+            if sin_categoria:
+                st.warning(f"Hay {sin_categoria} movimientos sin categoría.")
+            if en_cero:
+                st.warning(f"Hay {en_cero} movimientos sin ingreso ni egreso.")
+            if ambos:
+                st.warning(f"Hay {ambos} filas que tienen ingreso y egreso simultáneamente.")
+            if duplicados:
+                st.error(f"Se detectaron {duplicados} filas que podrían estar duplicadas.")
+                duplicados_df = data[duplicados_mask].copy().sort_values("_fecha", ascending=False)
+                tabla_duplicados = pd.DataFrame(
+                    {
+                        "fecha": duplicados_df["_fecha"].dt.strftime("%d/%m/%Y").fillna(""),
+                        "concepto": duplicados_df["_concepto"],
+                        "categoría": duplicados_df["_categoria"],
+                        "ingreso": duplicados_df["_ingreso"],
+                        "egreso": duplicados_df["_egreso"],
+                        "responsable": duplicados_df["_responsable"],
+                    }
+                )
+                st.dataframe(tabla_duplicados, use_container_width=True, hide_index=True)
+
+        egresos_validos = data[data["_egreso"] > 0]
+        if not egresos_validos.empty and egresos > 0:
+            top_categoria = (
+                egresos_validos.groupby("_categoria")["_egreso"].sum().sort_values(ascending=False)
+            )
+            categoria_principal = str(top_categoria.index[0])
+            importe_principal = float(top_categoria.iloc[0])
+            concentracion = importe_principal / egresos * 100
+            st.markdown("### Concentración del gasto")
+            st.write(
+                f"La categoría con mayor egreso es **{categoria_principal}**, con "
+                f"{moneda(importe_principal)} ({porcentaje(concentracion)} del total de egresos)."
+            )
+
+        st.markdown("### Columnas detectadas")
+        columnas_mostrar = {
+            nombre: (columna if columna else "No encontrada")
+            for nombre, columna in columnas_detectadas.items()
+        }
+        st.dataframe(
+            pd.DataFrame(
+                columnas_mostrar.items(),
+                columns=["dato", "columna utilizada"],
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
 def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
     table = cfg["table"]
     try:
