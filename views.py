@@ -2665,6 +2665,580 @@ def parse_mes(series):
         errors="coerce"
     )
     return fecha_ymd.fillna(fecha_dmy)
+def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
+    """Panel ejecutivo exclusivo para el módulo Honorarios médicos."""
+    import re
+    import unicodedata
+
+    st.markdown("## 🩺 Centro de Control de Honorarios Médicos")
+    st.caption(
+        "Facturación asociada, honorarios generados, pagos, saldos pendientes "
+        "y productividad por médico."
+    )
+
+    if df is None or df.empty:
+        st.info("No hay registros de honorarios para analizar.")
+        return
+
+    data = df.copy()
+
+    # ---------------------------------------------------------
+    # NORMALIZACIÓN DE COLUMNAS Y VALORES
+    # ---------------------------------------------------------
+    def normalizar_nombre(valor: object) -> str:
+        texto = unicodedata.normalize("NFKD", str(valor))
+        texto = "".join(c for c in texto if not unicodedata.combining(c))
+        texto = texto.strip().lower()
+        texto = re.sub(r"[^a-z0-9]+", "_", texto)
+        return texto.strip("_")
+
+    columnas = {normalizar_nombre(col): col for col in data.columns}
+
+    def buscar_columna(*opciones: str):
+        for opcion in opciones:
+            encontrada = columnas.get(normalizar_nombre(opcion))
+            if encontrada is not None:
+                return encontrada
+        return None
+
+    def numero(valor: object) -> float:
+        if valor is None or pd.isna(valor):
+            return 0.0
+        if isinstance(valor, bool):
+            return float(valor)
+        if isinstance(valor, (int, float)):
+            try:
+                return float(valor)
+            except Exception:
+                return 0.0
+
+        texto = str(valor).strip()
+        if not texto:
+            return 0.0
+
+        texto = re.sub(r"[^0-9,.-]", "", texto)
+        if not texto or texto in {"-", ".", ","}:
+            return 0.0
+
+        if "," in texto and "." in texto:
+            if texto.rfind(",") > texto.rfind("."):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        elif "," in texto:
+            texto = texto.replace(".", "").replace(",", ".")
+        elif texto.count(".") > 1:
+            texto = texto.replace(".", "")
+
+        try:
+            return float(texto)
+        except Exception:
+            return 0.0
+
+    def fmt_ars(valor: object) -> str:
+        valor_num = numero(valor)
+        formato = f"{valor_num:,.2f}"
+        formato = formato.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"$ {formato}"
+
+    fecha_col = buscar_columna("fecha", "mes", "fecha procedimiento", "fecha atención")
+    empresa_col = buscar_columna("empresa", "sociedad")
+    medico_col = buscar_columna("medico", "médico", "profesional")
+    paciente_col = buscar_columna("paciente", "nombre paciente")
+    procedimiento_col = buscar_columna("procedimiento", "prestacion", "prestación", "practica", "práctica")
+    facturado_col = buscar_columna(
+        "importe facturado",
+        "monto facturado",
+        "facturado",
+        "facturación asociada",
+        "importe_facturado",
+    )
+    honorario_col = buscar_columna(
+        "monto a pagar",
+        "honorario",
+        "honorarios",
+        "importe honorario",
+        "monto honorario",
+        "valor honorario",
+    )
+    pagado_col = buscar_columna(
+        "pagado",
+        "monto pagado",
+        "importe pagado",
+        "honorario pagado",
+    )
+    fecha_pago_col = buscar_columna("fecha pago", "fecha de pago", "fecha_pago")
+    estado_col = buscar_columna("estado", "estado pago", "estado de pago")
+
+    if honorario_col is None:
+        st.error(
+            "No encuentro la columna del honorario. Debe llamarse “Monto a pagar”, "
+            "“Honorario” o “Importe honorario”."
+        )
+        st.caption("Columnas disponibles: " + ", ".join(map(str, data.columns)))
+        return
+
+    data["_fecha"] = (
+        pd.to_datetime(data[fecha_col], errors="coerce", dayfirst=True)
+        if fecha_col
+        else pd.NaT
+    )
+    data["_empresa"] = (
+        data[empresa_col].fillna("").astype(str).str.strip()
+        if empresa_col
+        else "SIN EMPRESA"
+    )
+    data["_medico"] = (
+        data[medico_col].fillna("").astype(str).str.strip()
+        if medico_col
+        else "SIN MÉDICO"
+    )
+    data["_paciente"] = (
+        data[paciente_col].fillna("").astype(str).str.strip()
+        if paciente_col
+        else ""
+    )
+    data["_procedimiento"] = (
+        data[procedimiento_col].fillna("").astype(str).str.strip()
+        if procedimiento_col
+        else "SIN PROCEDIMIENTO"
+    )
+    data["_facturado"] = (
+        data[facturado_col].apply(numero)
+        if facturado_col
+        else 0.0
+    )
+    data["_honorario"] = data[honorario_col].apply(numero)
+    data["_pagado"] = (
+        data[pagado_col].apply(numero)
+        if pagado_col
+        else 0.0
+    )
+    data["_fecha_pago"] = (
+        pd.to_datetime(data[fecha_pago_col], errors="coerce", dayfirst=True)
+        if fecha_pago_col
+        else pd.NaT
+    )
+    data["_estado_original"] = (
+        data[estado_col].fillna("").astype(str).str.strip().str.lower()
+        if estado_col
+        else ""
+    )
+
+    data["_empresa"] = data["_empresa"].replace("", "SIN EMPRESA")
+    data["_medico"] = data["_medico"].replace("", "SIN MÉDICO")
+    data["_procedimiento"] = data["_procedimiento"].replace("", "SIN PROCEDIMIENTO")
+
+    # Si "pagado" contiene Sí/True o el estado dice Pagado, toma el honorario completo.
+    if pagado_col:
+        marca_pagado = (
+            data[pagado_col]
+            .fillna("")
+            .astype(str)
+            .str.strip()
+            .str.lower()
+            .isin({"si", "sí", "true", "pagado", "abonado", "cancelado", "completo"})
+        )
+    else:
+        marca_pagado = pd.Series(False, index=data.index)
+
+    estado_pagado = data["_estado_original"].isin(
+        {"pagado", "abonado", "cancelado", "completo", "finalizado"}
+    )
+    data.loc[(marca_pagado | estado_pagado) & (data["_pagado"] <= 0), "_pagado"] = data["_honorario"]
+
+    data["_saldo"] = (data["_honorario"] - data["_pagado"]).clip(lower=0)
+    data["_estado_calculado"] = "Pendiente"
+    data.loc[data["_honorario"] <= 0, "_estado_calculado"] = "Sin honorario cargado"
+    data.loc[
+        (data["_honorario"] > 0)
+        & (data["_pagado"] > 0)
+        & (data["_saldo"] > 0),
+        "_estado_calculado",
+    ] = "Pago parcial"
+    data.loc[
+        (data["_honorario"] > 0) & (data["_saldo"] <= 0),
+        "_estado_calculado",
+    ] = "Pagado"
+
+    hoy = pd.Timestamp.today().normalize()
+    data["_dias_pendiente"] = (hoy - data["_fecha"]).dt.days
+    data["_pendiente_30"] = (
+        (data["_saldo"] > 0)
+        & data["_dias_pendiente"].gt(30)
+    )
+
+    # ---------------------------------------------------------
+    # KPIs EJECUTIVOS
+    # ---------------------------------------------------------
+    registros = len(data)
+    medicos = data.loc[data["_medico"] != "SIN MÉDICO", "_medico"].nunique()
+    pacientes = data.loc[data["_paciente"] != "", "_paciente"].nunique()
+    facturacion_total = float(data["_facturado"].sum())
+    honorarios_total = float(data["_honorario"].sum())
+    pagado_total = float(data["_pagado"].sum())
+    pendiente_total = float(data["_saldo"].sum())
+    porcentaje_pagado = (
+        pagado_total / honorarios_total * 100
+        if honorarios_total > 0
+        else 0.0
+    )
+    promedio_honorario = (
+        honorarios_total / registros
+        if registros > 0
+        else 0.0
+    )
+    relacion_honorarios = (
+        honorarios_total / facturacion_total * 100
+        if facturacion_total > 0
+        else 0.0
+    )
+    sin_honorario = int((data["_honorario"] <= 0).sum())
+    pendientes_30 = int(data["_pendiente_30"].sum())
+
+    fila_1 = st.columns(4)
+    fila_1[0].metric("💵 Facturación asociada", fmt_ars(facturacion_total))
+    fila_1[1].metric("🩺 Honorarios generados", fmt_ars(honorarios_total))
+    fila_1[2].metric("✅ Honorarios pagados", fmt_ars(pagado_total))
+    fila_1[3].metric("⏳ Saldo pendiente", fmt_ars(pendiente_total))
+
+    fila_2 = st.columns(4)
+    fila_2[0].metric("🎯 Porcentaje pagado", f"{porcentaje_pagado:,.1f}%".replace(".", ","))
+    fila_2[1].metric("👨‍⚕️ Médicos", medicos)
+    fila_2[2].metric("👥 Pacientes", pacientes)
+    fila_2[3].metric("📋 Prestaciones", registros)
+
+    st.caption(
+        f"Promedio por prestación: **{fmt_ars(promedio_honorario)}** · "
+        f"Honorarios sobre facturación asociada: **{relacion_honorarios:,.1f}%**".replace(".", ",")
+    )
+
+    if pendiente_total <= 0 and honorarios_total > 0:
+        st.success("✅ No existen honorarios pendientes dentro del período filtrado.")
+    elif pendientes_30 > 0:
+        st.warning(
+            f"⚠️ Hay {pendientes_30} prestaciones con saldo pendiente desde hace más de 30 días, "
+            f"por un total de {fmt_ars(data.loc[data['_pendiente_30'], '_saldo'].sum())}."
+        )
+    elif pendiente_total > 0:
+        st.info(f"ℹ️ El saldo pendiente del período es {fmt_ars(pendiente_total)}.")
+
+    if sin_honorario > 0:
+        st.warning(
+            f"🧾 Hay {sin_honorario} registros sin monto de honorario cargado. "
+            "No se incluyen como deuda hasta completar el importe."
+        )
+
+    # ---------------------------------------------------------
+    # RESÚMENES
+    # ---------------------------------------------------------
+    resumen_medicos = (
+        data.groupby("_medico", dropna=False)
+        .agg(
+            Prestaciones=("_medico", "size"),
+            Pacientes=("_paciente", lambda s: s.replace("", pd.NA).nunique()),
+            Facturacion=("_facturado", "sum"),
+            Honorarios=("_honorario", "sum"),
+            Pagado=("_pagado", "sum"),
+            Pendiente=("_saldo", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"_medico": "Médico"})
+    )
+    resumen_medicos["% pagado"] = resumen_medicos.apply(
+        lambda row: row["Pagado"] / row["Honorarios"] * 100
+        if row["Honorarios"] > 0
+        else 0.0,
+        axis=1,
+    )
+    resumen_medicos = resumen_medicos.sort_values(
+        ["Pendiente", "Honorarios"],
+        ascending=[False, False],
+    )
+
+    resumen_procedimientos = (
+        data.groupby("_procedimiento", dropna=False)
+        .agg(
+            Prestaciones=("_procedimiento", "size"),
+            Facturacion=("_facturado", "sum"),
+            Honorarios=("_honorario", "sum"),
+            Pagado=("_pagado", "sum"),
+            Pendiente=("_saldo", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"_procedimiento": "Procedimiento"})
+        .sort_values("Honorarios", ascending=False)
+    )
+
+    resumen_empresas = (
+        data.groupby("_empresa", dropna=False)
+        .agg(
+            Prestaciones=("_empresa", "size"),
+            Facturacion=("_facturado", "sum"),
+            Honorarios=("_honorario", "sum"),
+            Pagado=("_pagado", "sum"),
+            Pendiente=("_saldo", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"_empresa": "Empresa"})
+        .sort_values("Honorarios", ascending=False)
+    )
+
+    tab_medicos, tab_evolucion, tab_procedimientos, tab_control = st.tabs(
+        [
+            "👨‍⚕️ Médicos",
+            "📈 Evolución",
+            "🩺 Procedimientos y empresas",
+            "🚨 Control y detalle",
+        ]
+    )
+
+    # ---------------------------------------------------------
+    # MÉDICOS
+    # ---------------------------------------------------------
+    with tab_medicos:
+        st.subheader("Resumen por médico")
+
+        tabla_medicos = resumen_medicos.copy()
+        for col in ["Facturacion", "Honorarios", "Pagado", "Pendiente"]:
+            tabla_medicos[col] = tabla_medicos[col].apply(fmt_ars)
+        tabla_medicos["% pagado"] = tabla_medicos["% pagado"].apply(
+            lambda x: f"{x:,.1f}%".replace(".", ",")
+        )
+        tabla_medicos = tabla_medicos.rename(
+            columns={"Facturacion": "Facturación asociada"}
+        )
+        st.dataframe(tabla_medicos, use_container_width=True, hide_index=True)
+
+        top = resumen_medicos.head(12).sort_values("Honorarios", ascending=True)
+        if not top.empty:
+            fig_medicos = px.bar(
+                top,
+                x="Honorarios",
+                y="Médico",
+                orientation="h",
+                title="Honorarios generados por médico",
+                hover_data=["Prestaciones", "Pagado", "Pendiente"],
+            )
+            fig_medicos.update_layout(
+                xaxis_title="Honorarios",
+                yaxis_title="",
+                legend_title_text="",
+            )
+            st.plotly_chart(fig_medicos, use_container_width=True)
+
+        opciones_medicos = [
+            medico
+            for medico in resumen_medicos["Médico"].astype(str).tolist()
+            if medico != "SIN MÉDICO"
+        ]
+        if opciones_medicos:
+            st.markdown("### Ficha individual")
+            medico_elegido = st.selectbox(
+                "Seleccionar médico",
+                opciones_medicos,
+                key="honorarios_medico_detalle",
+            )
+            ficha = data[data["_medico"] == medico_elegido].copy()
+            f1, f2, f3, f4 = st.columns(4)
+            f1.metric("Prestaciones", len(ficha))
+            f2.metric("Honorarios", fmt_ars(ficha["_honorario"].sum()))
+            f3.metric("Pagado", fmt_ars(ficha["_pagado"].sum()))
+            f4.metric("Pendiente", fmt_ars(ficha["_saldo"].sum()))
+
+            ficha_tabla = pd.DataFrame(
+                {
+                    "Fecha": ficha["_fecha"].dt.strftime("%d/%m/%Y").fillna(""),
+                    "Paciente": ficha["_paciente"],
+                    "Procedimiento": ficha["_procedimiento"],
+                    "Empresa": ficha["_empresa"],
+                    "Facturación asociada": ficha["_facturado"].apply(fmt_ars),
+                    "Honorario": ficha["_honorario"].apply(fmt_ars),
+                    "Pagado": ficha["_pagado"].apply(fmt_ars),
+                    "Pendiente": ficha["_saldo"].apply(fmt_ars),
+                    "Estado": ficha["_estado_calculado"],
+                }
+            )
+            st.dataframe(ficha_tabla, use_container_width=True, hide_index=True)
+
+    # ---------------------------------------------------------
+    # EVOLUCIÓN MENSUAL
+    # ---------------------------------------------------------
+    with tab_evolucion:
+        st.subheader("Evolución mensual")
+        con_fecha = data[data["_fecha"].notna()].copy()
+        if con_fecha.empty:
+            st.info("No hay fechas válidas para construir la evolución mensual.")
+        else:
+            con_fecha["Mes"] = con_fecha["_fecha"].dt.to_period("M").astype(str)
+            mensual = (
+                con_fecha.groupby("Mes", as_index=False)[
+                    ["_facturado", "_honorario", "_pagado", "_saldo"]
+                ]
+                .sum()
+                .rename(
+                    columns={
+                        "_facturado": "Facturación asociada",
+                        "_honorario": "Honorarios",
+                        "_pagado": "Pagado",
+                        "_saldo": "Pendiente",
+                    }
+                )
+                .sort_values("Mes")
+            )
+
+            fig_mensual = px.line(
+                mensual,
+                x="Mes",
+                y=["Honorarios", "Pagado", "Pendiente"],
+                markers=True,
+                title="Honorarios, pagos y saldos por mes",
+            )
+            fig_mensual.update_layout(
+                yaxis_title="Importe",
+                xaxis_title="Mes",
+                legend_title_text="",
+            )
+            st.plotly_chart(fig_mensual, use_container_width=True)
+
+            mensual_tabla = mensual.copy()
+            for col in ["Facturación asociada", "Honorarios", "Pagado", "Pendiente"]:
+                mensual_tabla[col] = mensual_tabla[col].apply(fmt_ars)
+            st.dataframe(mensual_tabla, use_container_width=True, hide_index=True)
+
+    # ---------------------------------------------------------
+    # PROCEDIMIENTOS Y EMPRESAS
+    # ---------------------------------------------------------
+    with tab_procedimientos:
+        col_proc, col_empresa = st.columns(2)
+
+        with col_proc:
+            st.subheader("Por procedimiento")
+            tabla_proc = resumen_procedimientos.copy()
+            for col in ["Facturacion", "Honorarios", "Pagado", "Pendiente"]:
+                tabla_proc[col] = tabla_proc[col].apply(fmt_ars)
+            tabla_proc = tabla_proc.rename(
+                columns={"Facturacion": "Facturación asociada"}
+            )
+            st.dataframe(tabla_proc, use_container_width=True, hide_index=True)
+
+        with col_empresa:
+            st.subheader("Por empresa")
+            tabla_emp = resumen_empresas.copy()
+            for col in ["Facturacion", "Honorarios", "Pagado", "Pendiente"]:
+                tabla_emp[col] = tabla_emp[col].apply(fmt_ars)
+            tabla_emp = tabla_emp.rename(
+                columns={"Facturacion": "Facturación asociada"}
+            )
+            st.dataframe(tabla_emp, use_container_width=True, hide_index=True)
+
+        top_proc = resumen_procedimientos.head(12).sort_values("Honorarios", ascending=True)
+        if not top_proc.empty:
+            fig_proc = px.bar(
+                top_proc,
+                x="Honorarios",
+                y="Procedimiento",
+                orientation="h",
+                title="Honorarios por procedimiento",
+                hover_data=["Prestaciones", "Pagado", "Pendiente"],
+            )
+            fig_proc.update_layout(xaxis_title="Honorarios", yaxis_title="")
+            st.plotly_chart(fig_proc, use_container_width=True)
+
+    # ---------------------------------------------------------
+    # CONTROL, ALERTAS Y DETALLE
+    # ---------------------------------------------------------
+    with tab_control:
+        st.subheader("Control de pagos y calidad de datos")
+
+        campos_duplicado = [
+            col
+            for col in ["_fecha", "_medico", "_paciente", "_procedimiento"]
+            if col in data.columns
+        ]
+        duplicados = (
+            data.duplicated(subset=campos_duplicado, keep=False)
+            if campos_duplicado
+            else pd.Series(False, index=data.index)
+        )
+        pagos_excedidos = data["_pagado"] > data["_honorario"]
+        sin_medico = data["_medico"].eq("SIN MÉDICO")
+        facturacion_cero = (data["_facturado"] <= 0) & (data["_honorario"] > 0)
+
+        controles = st.columns(4)
+        controles[0].metric("Sin honorario", int((data["_honorario"] <= 0).sum()))
+        controles[1].metric("Pendientes +30 días", pendientes_30)
+        controles[2].metric("Posibles duplicados", int(duplicados.sum()))
+        controles[3].metric("Pagos mayores al honorario", int(pagos_excedidos.sum()))
+
+        if duplicados.any():
+            st.warning(
+                "Se detectaron posibles duplicados con igual fecha, médico, paciente y procedimiento."
+            )
+        if pagos_excedidos.any():
+            st.error("Hay registros donde el monto pagado supera el honorario cargado.")
+        if sin_medico.any():
+            st.warning(f"Hay {int(sin_medico.sum())} registros sin médico identificado.")
+        if facturacion_cero.any():
+            st.info(
+                f"Hay {int(facturacion_cero.sum())} honorarios con facturación asociada en $ 0,00."
+            )
+
+        estados = ["Todos", "Pendiente", "Pago parcial", "Pagado", "Sin honorario cargado"]
+        estado_elegido = st.selectbox(
+            "Mostrar estado",
+            estados,
+            key="honorarios_estado_detalle",
+        )
+        detalle = data.copy()
+        if estado_elegido != "Todos":
+            detalle = detalle[detalle["_estado_calculado"] == estado_elegido]
+
+        detalle = detalle.sort_values(
+            ["_saldo", "_fecha"],
+            ascending=[False, False],
+            na_position="last",
+        )
+        detalle_tabla = pd.DataFrame(
+            {
+                "Fecha": detalle["_fecha"].dt.strftime("%d/%m/%Y").fillna(""),
+                "Empresa": detalle["_empresa"],
+                "Médico": detalle["_medico"],
+                "Paciente": detalle["_paciente"],
+                "Procedimiento": detalle["_procedimiento"],
+                "Facturación asociada": detalle["_facturado"].apply(fmt_ars),
+                "Honorario": detalle["_honorario"].apply(fmt_ars),
+                "Pagado": detalle["_pagado"].apply(fmt_ars),
+                "Pendiente": detalle["_saldo"].apply(fmt_ars),
+                "Estado": detalle["_estado_calculado"],
+                "Fecha de pago": detalle["_fecha_pago"].dt.strftime("%d/%m/%Y").fillna(""),
+            }
+        )
+        st.dataframe(detalle_tabla, use_container_width=True, hide_index=True)
+
+        exportar = pd.DataFrame(
+            {
+                "fecha": data["_fecha"].dt.strftime("%Y-%m-%d").fillna(""),
+                "empresa": data["_empresa"],
+                "medico": data["_medico"],
+                "paciente": data["_paciente"],
+                "procedimiento": data["_procedimiento"],
+                "importe_facturado": data["_facturado"],
+                "honorario": data["_honorario"],
+                "pagado": data["_pagado"],
+                "pendiente": data["_saldo"],
+                "estado_calculado": data["_estado_calculado"],
+                "fecha_pago": data["_fecha_pago"].dt.strftime("%Y-%m-%d").fillna(""),
+            }
+        )
+        csv = exportar.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+        st.download_button(
+            "📥 Descargar análisis de honorarios",
+            data=csv,
+            file_name="honorarios_medicos_analizados.csv",
+            mime="text/csv",
+            key="descargar_honorarios_analizados",
+        )
 def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
     table = cfg["table"]
     try:
@@ -2696,20 +3270,32 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
                 render_banco_pro_panel(filtered, module_name)
             if table == "cuenta_corriente_vm":
                 filtered = filtered.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")
-            # =====================================================
-            # AGENDA QUIRÓFANO PRO
-            # =====================================================
-            if table == "agenda_quirofano":
-                render_agenda_quirofano_pro(filtered)
-                return
+            if table == "honorarios_medicos" or "honorarios" in module_name.lower():
+
+            render_honorarios_medicos_pro(filtered)
+        
+        else:
+        
             render_metricas_panel(filtered, table)
+        
             if table == "cuenta_corriente_vm":
+        
                 render_dashboard_proveedores_vm(filtered)
+        
             if table == "cuenta_corriente_vmr":
-                st.info("Dashboard VMR lo agregamos en el próximo bloque para no romper este.")
+        
+                st.info(
+        
+                    "Dashboard VMR lo agregamos en el próximo bloque para no romper este."
+        
+                )
+        
             render_tabla_limpia_panel(filtered)
+        
             render_analisis_anual_2026(df_base)
+        
             render_analisis_mensual_2026(filtered)
+        
             render_graficos_facturacion(filtered)
     with tab_cargar:
         st.subheader("Nuevo registro")
