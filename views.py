@@ -3479,8 +3479,35 @@ def render_caja_pro_panel(
     cobertura = ingresos / egresos * 100 if egresos else (100.0 if ingresos else 0.0)
 
     saldo_calculado_total = float(total_data["_neto"].sum()) if not total_data.empty else flujo_neto
-    saldo_origen = pd.to_numeric(total_data.get("_saldo_origen"), errors="coerce") if "_saldo_origen" in total_data else pd.Series(dtype=float)
+    saldo_origen = (
+
+        pd.to_numeric(total_data.get("_saldo_origen"), errors="coerce")
+    
+        if "_saldo_origen" in total_data
+    
+        else pd.Series(dtype=float)
+    
+    )
+    
     saldo_origen = saldo_origen.dropna()
+    
+    # Si existe un saldo actual cargado, lo utiliza.
+    
+    # Si no existe, toma la caja actual informada como $0.
+    
+    caja_actual = (
+    
+        float(saldo_origen.iloc[-1])
+    
+        if not saldo_origen.empty
+    
+        else 0.0
+    
+    )
+    
+    # Saldo inicial + flujo neto = caja actual
+    
+    saldo_inicio_periodo = caja_actual - flujo_neto
     caja_actual = float(saldo_origen.iloc[-1]) if not saldo_origen.empty else saldo_calculado_total
     saldo_inicio_periodo = caja_actual - flujo_neto if df_total is not None else 0.0
 
