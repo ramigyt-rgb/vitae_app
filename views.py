@@ -3933,7 +3933,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             
                 render_dashboard_proveedores_vm(filtered)
             
-            if table == "cuenta_corriente_vmr":
+            if table in ["facturacion_vm", "facturacion_vmr"]:
             
                 st.info(
             
