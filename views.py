@@ -3935,11 +3935,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             
             if table in ["facturacion_vm", "facturacion_vmr"]:
             
-                st.info(
-            
-                    "Dashboard VMR lo agregamos en el próximo bloque para no romper este."
-            
-                )
+                
             if table in ["facturacion_vm", "facturacion_vmr"]:
                 render_tabla_limpia_panel(filtered)
             
