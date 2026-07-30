@@ -3998,7 +3998,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
 
                     if table == "cuenta_corriente_vm":
 
-                        render_dashboard_proveedores_vm(filtered)
+                    render_dashboard_proveedores_vm(filtered)
 
                     if table == "cuenta_corriente_vmr":
 
@@ -4041,7 +4041,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             
                 render_analisis_mensual_2026(filtered)
             
-                render_graficos_facturacion(filtered)
+                
     with tab_cargar:
         st.subheader("Nuevo registro")
         with st.form(f"form_add_{table}", clear_on_submit=False):
