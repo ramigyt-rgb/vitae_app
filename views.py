@@ -4011,35 +4011,55 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
                         )
 
 
-            if table in ["banco_galicia_vm", "banco_macro_vmr"]:
-                render_banco_pro_panel(filtered, module_name)
-            if table == "cuenta_corriente_vm":
-                filtered = filtered.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")
-            if table == "honorarios_medicos" or "honorarios" in module_name.lower():
+                        if table in ["banco_galicia_vm", "banco_macro_vmr"]:
 
-                render_honorarios_medicos_pro(filtered)
+                            render_banco_pro_panel(filtered, module_name)
             
-            else:
+                        if table == "cuenta_corriente_vm":
             
-                render_metricas_panel(filtered, table)
+                            filtered = filtered.drop(
             
-            if table == "cuenta_corriente_vm":
+                                columns=["importe_usd", "pagado_usd"],
             
-                render_dashboard_proveedores_vm(filtered)
+                                errors="ignore"
             
-            if table == "cuenta_corriente_vmr":
+                            )
             
-                st.info(
+                        if table == "honorarios_medicos" or "honorarios" in module_name.lower():
             
-                    "Dashboard VMR lo agregamos en el próximo bloque para no romper este."
+                            render_honorarios_medicos_pro(filtered)
             
-                )
+                        else:
             
-                render_tabla_limpia_panel(filtered)
+                            # Evita duplicar las métricas en Facturación VM y VMR
             
-                render_analisis_anual_2026(df_base)
+                            if table not in ["facturacion_vm", "facturacion_vmr"]:
             
-                render_analisis_mensual_2026(filtered)
+                                render_metricas_panel(filtered, table)
+            
+                            if table == "cuenta_corriente_vm":
+            
+                                render_dashboard_proveedores_vm(filtered)
+            
+                            if table == "cuenta_corriente_vmr":
+            
+                                st.info(
+            
+                                    "Dashboard VMR lo agregamos en el próximo bloque "
+            
+                                    "para no romper este."
+            
+                                )
+            
+                            render_tabla_limpia_panel(filtered)
+            
+                            if table in ["facturacion_vm", "facturacion_vmr"]:
+            
+                                render_analisis_anual_2026(df_base)
+            
+                                render_analisis_mensual_2026(filtered)
+            
+                                render_graficos_facturacion(filtered)
             
                 
     with tab_cargar:
