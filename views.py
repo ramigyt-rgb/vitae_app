@@ -6099,12 +6099,20 @@ def render_resumen_empresas_pro(
             .metrica-valor {
 
                 color: #252938;
-
+            
                 font-size: 1.08rem;
-
+            
                 font-weight: 760;
-
+            
                 line-height: 1.25;
+            
+                white-space: nowrap;
+            
+                word-break: normal;
+            
+                overflow-wrap: normal;
+            
+                font-variant-numeric: tabular-nums;
 
             }
 
