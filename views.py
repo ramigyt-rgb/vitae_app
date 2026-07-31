@@ -889,7 +889,7 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
 
     pagado_usd = _money_usd_sum(df, "pagado_usd")
 
-    pendiente_usd = float(total_usd) - float(pagado_usd)
+    pendiente_usd = _money_usd_sum(df, "saldo_usd")
     if table == "Contratos":
 
         st.metric("👥 Registros", registros)
