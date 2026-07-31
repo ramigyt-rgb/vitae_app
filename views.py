@@ -5021,7 +5021,47 @@ def render_resumen_empresas_pro(
         if df.empty:
 
             return 0.0
+        # Las cajas del resumen mensual deben usar exactamente
 
+        # los ingresos y egresos correspondientes al mes actual.
+
+        if nombre_modulo in ["Caja VM", "Caja VMR"]:
+
+            fechas_caja = obtener_fechas(df)
+
+            es_mes_actual = (
+
+                fechas_caja.notna()
+
+                & (fechas_caja >= inicio_mes)
+
+                & (fechas_caja <= fin_mes)
+
+            )
+
+            df_mes_caja = df.loc[es_mes_actual].copy()
+
+            ingresos_caja = (
+
+                df_mes_caja["ingreso"].apply(money).sum()
+
+                if "ingreso" in df_mes_caja.columns
+
+                else 0.0
+
+            )
+
+            egresos_caja = (
+
+                df_mes_caja["egreso"].apply(money).sum()
+
+                if "egreso" in df_mes_caja.columns
+
+                else 0.0
+
+            )
+
+            return float(ingresos_caja - egresos_caja)
         fechas = obtener_fechas(df)
 
         if fechas.notna().any():
