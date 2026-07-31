@@ -4044,6 +4044,402 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
                     file_name=f"{table}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+
+def render_cuenta_corriente_pro(df, table=""):
+    import re
+    import unicodedata
+    import numpy as np
+    import pandas as pd
+    import plotly.express as px
+    import streamlit as st
+
+    # 1. Trabajamos sobre una copia: la planilla no se toca.
+    if df is None or df.empty:
+        st.info("Todavía no hay registros para analizar.")
+        return
+
+    d = df.copy()
+    empresa = "VMR" if str(table).lower().endswith("_vmr") else "VM"
+    key = f"cc_pro_{empresa.lower()}"
+
+    def nombre_limpio(valor):
+        valor = unicodedata.normalize("NFKD", str(valor))
+        valor = valor.encode("ascii", "ignore").decode("ascii")
+        return re.sub(r"[^a-zA-Z0-9]+", "_", valor.lower()).strip("_")
+
+    def a_numero(valor):
+        if pd.isna(valor):
+            return 0.0
+        if isinstance(valor, (int, float, np.integer, np.floating)):
+            return float(valor)
+
+        texto = str(valor).strip()
+        if not texto or texto.lower() in {"nan", "none", "null", "-"}:
+            return 0.0
+
+        texto = (
+            texto.replace("US$", "")
+            .replace("USD", "")
+            .replace("$", "")
+            .replace(" ", "")
+        )
+
+        if "," in texto and "." in texto:
+            if texto.rfind(",") > texto.rfind("."):
+                texto = texto.replace(".", "").replace(",", ".")
+            else:
+                texto = texto.replace(",", "")
+        elif "," in texto:
+            texto = texto.replace(".", "").replace(",", ".")
+
+        texto = re.sub(r"[^0-9.\-]", "", texto)
+
+        try:
+            return float(texto)
+        except ValueError:
+            return 0.0
+
+    def columna(nombre, defecto=""):
+        if nombre in d.columns:
+            return d[nombre]
+        return pd.Series(defecto, index=d.index)
+
+    def moneda(valor, simbolo="$"):
+        texto = f"{float(valor or 0):,.2f}"
+        texto = texto.replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"{simbolo} {texto}"
+
+    d.columns = [nombre_limpio(c) for c in d.columns]
+    d = d.loc[:, ~d.columns.duplicated()].copy()
+
+    d["_fecha"] = pd.to_datetime(columna("fecha", pd.NaT), errors="coerce")
+    d["_vencimiento"] = pd.to_datetime(
+        columna("vencimiento", pd.NaT),
+        errors="coerce",
+    )
+    d["_observaciones"] = columna("observaciones", "")
+
+    # 2. Adaptamos las dos planillas diferentes al mismo formato.
+    if empresa == "VMR":
+        d["_entidad"] = columna("entidad", "Sin entidad")
+        d["_documento"] = columna("factura", "")
+        d["_tipo"] = columna("estado", "A pagar")
+        d["_estado_planilla"] = ""
+
+        # En VMR, según tu planilla:
+        # pagado = importe original
+        # saldo = importe todavía pendiente
+        importe_original = columna("pagado", 0).apply(a_numero)
+        saldo_pendiente = columna("saldo", 0).apply(a_numero).clip(lower=0)
+
+        d["_importe"] = pd.concat(
+            [importe_original, saldo_pendiente],
+            axis=1,
+        ).max(axis=1)
+        d["_saldo"] = saldo_pendiente
+        d["_pagado"] = (d["_importe"] - d["_saldo"]).clip(lower=0)
+
+    else:
+        d["_entidad"] = columna("persona_entidad", "Sin entidad")
+        d["_documento"] = columna("concepto", "")
+        d["_tipo"] = columna("tipo", "A pagar")
+        d["_estado_planilla"] = columna("estado", "")
+
+        d["_importe"] = columna("importe", 0).apply(a_numero).clip(lower=0)
+        d["_pagado"] = columna("pagado", 0).apply(a_numero).clip(lower=0)
+        d["_saldo"] = (d["_importe"] - d["_pagado"]).clip(lower=0)
+
+    d["_pagado_usd"] = columna("pagado_usd", 0).apply(a_numero).clip(lower=0)
+    d["_saldo_usd"] = columna("saldo_usd", 0).apply(a_numero).clip(lower=0)
+
+    for c in [
+        "_entidad",
+        "_documento",
+        "_tipo",
+        "_estado_planilla",
+        "_observaciones",
+    ]:
+        d[c] = d[c].fillna("").astype(str).str.strip()
+
+    d["_entidad"] = d["_entidad"].replace("", "Sin entidad")
+    d["_tipo"] = d["_tipo"].replace("", "A pagar")
+
+    # 3. Calculamos la situación real de cada comprobante.
+    hoy = pd.Timestamp.today().normalize()
+    d["_situacion"] = "Pendiente"
+    d.loc[d["_saldo"] <= 0.01, "_situacion"] = "Pagado"
+
+    es_vencido = (
+        (d["_saldo"] > 0.01)
+        & d["_vencimiento"].notna()
+        & (d["_vencimiento"] < hoy)
+    )
+    d.loc[es_vencido, "_situacion"] = "Vencido"
+
+    vence_7 = (
+        (d["_saldo"] > 0.01)
+        & d["_vencimiento"].between(
+            hoy,
+            hoy + pd.Timedelta(days=7),
+            inclusive="both",
+        )
+    )
+    d.loc[vence_7, "_situacion"] = "Vence en 7 días"
+
+    vence_30 = (
+        (d["_saldo"] > 0.01)
+        & d["_vencimiento"].between(
+            hoy + pd.Timedelta(days=8),
+            hoy + pd.Timedelta(days=30),
+            inclusive="both",
+        )
+    )
+    d.loc[vence_30, "_situacion"] = "Vence en 30 días"
+
+    d["_es_cobrar"] = d["_tipo"].str.lower().str.contains("cobrar", na=False)
+
+    # 4. Panel y filtros.
+    st.markdown(f"## 💳 Cuenta Corriente {empresa} · Panel PRO")
+    st.caption(
+        "Saldos, pagos, vencimientos, entidades y dólares en un solo lugar."
+    )
+
+    f1, f2, f3 = st.columns(3)
+
+    with f1:
+        situacion = st.selectbox(
+            "Situación",
+            [
+                "Todos",
+                "Pendiente",
+                "Pagado",
+                "Vencido",
+                "Vence en 7 días",
+                "Vence en 30 días",
+            ],
+            key=f"{key}_situacion",
+        )
+
+    with f2:
+        entidades = st.multiselect(
+            "Entidad",
+            sorted(d["_entidad"].unique().tolist()),
+            placeholder="Todas",
+            key=f"{key}_entidades",
+        )
+
+    with f3:
+        buscar = st.text_input(
+            "Buscar",
+            placeholder="Entidad, factura o concepto",
+            key=f"{key}_buscar",
+        ).strip().lower()
+
+    x = d.copy()
+
+    if situacion != "Todos":
+        x = x[x["_situacion"].eq(situacion)]
+
+    if entidades:
+        x = x[x["_entidad"].isin(entidades)]
+
+    if buscar:
+        texto = (
+            x["_entidad"]
+            + " "
+            + x["_documento"]
+            + " "
+            + x["_tipo"]
+            + " "
+            + x["_estado_planilla"]
+            + " "
+            + x["_observaciones"]
+        ).str.lower()
+        x = x[texto.str.contains(buscar, regex=False, na=False)]
+
+    if x.empty:
+        st.warning("No hay registros para esos filtros.")
+        return
+
+    total = x["_importe"].sum()
+    pagado = x["_pagado"].sum()
+    saldo = x["_saldo"].sum()
+    vencido = x.loc[x["_situacion"].eq("Vencido"), "_saldo"].sum()
+    a_cobrar = x.loc[x["_es_cobrar"], "_saldo"].sum()
+    a_pagar = x.loc[~x["_es_cobrar"], "_saldo"].sum()
+    saldo_usd = x["_saldo_usd"].sum()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total registrado", moneda(total))
+    m2.metric("Pagado / regularizado", moneda(pagado))
+    m3.metric("Saldo pendiente", moneda(saldo))
+    m4.metric("Saldo vencido", moneda(vencido))
+
+    m5, m6, m7 = st.columns(3)
+    m5.metric("A pagar", moneda(a_pagar))
+    m6.metric("A cobrar", moneda(a_cobrar))
+    m7.metric("Saldo pendiente USD", moneda(saldo_usd, "US$"))
+
+    avance = pagado / total if total > 0 else 0
+    st.progress(min(max(avance, 0.0), 1.0))
+    st.caption(f"Regularización total: {avance * 100:.1f}%")
+
+    tab1, tab2, tab3 = st.tabs(
+        ["📊 Resumen", "⏰ Vencimientos", "📋 Detalle"]
+    )
+
+    with tab1:
+        izquierda, derecha = st.columns(2)
+
+        estados = (
+            x.groupby("_situacion", as_index=False)["_saldo"]
+            .sum()
+            .rename(columns={"_situacion": "Situación", "_saldo": "Saldo"})
+        )
+
+        with izquierda:
+            st.markdown("#### Saldo por situación")
+            if estados["Saldo"].sum() > 0:
+                fig = px.pie(
+                    estados,
+                    names="Situación",
+                    values="Saldo",
+                    hole=0.55,
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.success("No hay saldo pendiente.")
+
+        top = (
+            x.groupby("_entidad", as_index=False)["_saldo"]
+            .sum()
+            .sort_values("_saldo", ascending=False)
+            .head(10)
+            .rename(columns={"_entidad": "Entidad", "_saldo": "Saldo"})
+        )
+
+        with derecha:
+            st.markdown("#### Top 10 saldos pendientes")
+            fig = px.bar(
+                top.sort_values("Saldo"),
+                x="Saldo",
+                y="Entidad",
+                orientation="h",
+                text_auto=".2s",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        resumen = (
+            x.groupby("_entidad", as_index=False)
+            .agg(
+                Comprobantes=("_documento", "count"),
+                Importe=("_importe", "sum"),
+                Pagado=("_pagado", "sum"),
+                Saldo=("_saldo", "sum"),
+                Saldo_USD=("_saldo_usd", "sum"),
+                Proximo_vencimiento=("_vencimiento", "min"),
+            )
+            .rename(columns={"_entidad": "Entidad"})
+            .sort_values("Saldo", ascending=False)
+        )
+
+        st.markdown("#### Resumen por entidad")
+        st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+    with tab2:
+        cantidad_vencidos = int(x["_situacion"].eq("Vencido").sum())
+        cantidad_7 = int(x["_situacion"].eq("Vence en 7 días").sum())
+        sin_fecha = int(
+            ((x["_saldo"] > 0.01) & x["_vencimiento"].isna()).sum()
+        )
+
+        a1, a2, a3 = st.columns(3)
+        a1.metric("Vencidos", cantidad_vencidos)
+        a2.metric("Vencen en 7 días", cantidad_7)
+        a3.metric("Sin vencimiento", sin_fecha)
+
+        if cantidad_vencidos:
+            st.error(
+                f"Hay {cantidad_vencidos} comprobantes vencidos por "
+                f"{moneda(vencido)}."
+            )
+
+        pendientes = x[x["_saldo"] > 0.01].copy()
+        pendientes["Días"] = (pendientes["_vencimiento"] - hoy).dt.days
+
+        pendientes = pendientes[
+            [
+                "_vencimiento",
+                "_entidad",
+                "_documento",
+                "_tipo",
+                "_situacion",
+                "Días",
+                "_saldo",
+                "_saldo_usd",
+            ]
+        ].rename(
+            columns={
+                "_vencimiento": "Vencimiento",
+                "_entidad": "Entidad",
+                "_documento": "Factura / concepto",
+                "_tipo": "Tipo",
+                "_situacion": "Situación",
+                "_saldo": "Saldo ARS",
+                "_saldo_usd": "Saldo USD",
+            }
+        ).sort_values(
+            ["Vencimiento", "Saldo ARS"],
+            ascending=[True, False],
+            na_position="last",
+        )
+
+        st.dataframe(pendientes, use_container_width=True, hide_index=True)
+
+    with tab3:
+        detalle = x[
+            [
+                "_fecha",
+                "_vencimiento",
+                "_entidad",
+                "_documento",
+                "_tipo",
+                "_estado_planilla",
+                "_situacion",
+                "_importe",
+                "_pagado",
+                "_saldo",
+                "_pagado_usd",
+                "_saldo_usd",
+                "_observaciones",
+            ]
+        ].rename(
+            columns={
+                "_fecha": "Fecha",
+                "_vencimiento": "Vencimiento",
+                "_entidad": "Entidad",
+                "_documento": "Factura / concepto",
+                "_tipo": "Tipo",
+                "_estado_planilla": "Estado planilla",
+                "_situacion": "Situación calculada",
+                "_importe": "Importe ARS",
+                "_pagado": "Pagado ARS",
+                "_saldo": "Saldo ARS",
+                "_pagado_usd": "Pagado USD",
+                "_saldo_usd": "Saldo USD",
+                "_observaciones": "Observaciones",
+            }
+        )
+
+        st.dataframe(detalle, use_container_width=True, hide_index=True)
+
+        st.download_button(
+            "⬇️ Descargar detalle filtrado",
+            data=detalle.to_csv(index=False).encode("utf-8-sig"),
+            file_name=f"cuenta_corriente_{empresa.lower()}.csv",
+            mime="text/csv",
+            key=f"{key}_descarga",
+        )
 def total_mod(nombre, dfs):
     df = dfs.get(nombre, pd.DataFrame())
     if df.empty:
