@@ -3941,7 +3941,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             
                 )
             if table in ["facturacion_vm", "facturacion_vmr"]:
-                render_tabla_limpia_panel(filtered)
+            render_tabla_limpia_panel(filtered)
             
                 render_analisis_anual_2026(df_base)
             
