@@ -3933,13 +3933,9 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             
                 render_dashboard_proveedores_vm(filtered)
             
-            if table == "cuenta_corriente_vmr":
-            
-                st.info(
-            
-                    "Dashboard VMR lo agregamos en el próximo bloque para no romper este."
-            
-                )
+            if table in ["cuenta_corriente_vm", "cuenta_corriente_vmr"]:
+
+                render_cuenta_corriente_pro(filtered, table)
             render_tabla_limpia_panel(filtered)
             if table in ["facturacion_vm", "facturacion_vmr"]:
             
