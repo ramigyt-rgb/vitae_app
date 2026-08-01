@@ -821,25 +821,88 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         hide_index=True,
     
         column_config={
+    
             "mes": st.column_config.Column(
-
+    
                 "Fecha",
     
-                width="medium",
+                width=105,
     
             ),
     
-            "afiliado": st.column_config.TextColumn(
+            "afiliado": st.column_config.Column(
     
                 "Afiliado",
     
-                width="medium",
+                width=230,
     
             ),
     
-        },
+            "obra_social": st.column_config.Column(
     
-    )
+                "Obra social",
+    
+                width=100,
+    
+            ),
+    
+            "procedimiento": st.column_config.Column(
+    
+                "Procedimiento",
+    
+                width=170,
+    
+            ),
+    
+            "medico_responsable": st.column_config.Column(
+    
+                "Médico",
+    
+                width=190,
+    
+            ),
+    
+            "fecha_factura": st.column_config.Column(
+    
+                "F. factura",
+    
+                width=105,
+    
+            ),
+    
+            "numero_factura": st.column_config.Column(
+    
+                "N.º factura",
+    
+                width=105,
+    
+            ),
+    
+            "vencimiento": st.column_config.Column(
+    
+                "Vencimiento",
+    
+                width=110,
+    
+            ),
+    
+            "fecha_pago": st.column_config.Column(
+    
+                "F. pago",
+    
+                width=105,
+    
+            ),
+    
+            "valor_pesos": st.column_config.Column(
+    
+                "Valor",
+    
+                width=120,
+    
+            ),
+    
+        }
     
 
     st.divider()
