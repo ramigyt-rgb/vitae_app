@@ -902,7 +902,9 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
     
             ),
     
-        }
+        },
+    )
+        
     
 
     st.divider()
