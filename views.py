@@ -821,6 +821,13 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         hide_index=True,
     
         column_config={
+            "mes": st.column_config.Column(
+
+                "Fecha",
+    
+                width="medium",
+    
+            ),
     
             "afiliado": st.column_config.TextColumn(
     
