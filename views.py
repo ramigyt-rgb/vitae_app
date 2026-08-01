@@ -5043,7 +5043,7 @@ def render_resumen_empresas_pro(
 
             ingresos_caja = (
 
-                df_mes_caja["ingreso"].apply(money).sum()
+                sum_money_col(df["ingreso"].fillna(0))
 
                 if "ingreso" in df_mes_caja.columns
 
@@ -5053,7 +5053,7 @@ def render_resumen_empresas_pro(
 
             egresos_caja = (
 
-                df_mes_caja["egreso"].apply(money).sum()
+                sum_money_col(df["egreso"].fillna(0))
 
                 if "egreso" in df_mes_caja.columns
 
