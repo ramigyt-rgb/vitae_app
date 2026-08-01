@@ -812,7 +812,27 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
         tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
         tabla["mes"] = tabla["mes"].fillna("")
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
-    st.dataframe(tabla, use_container_width=True, hide_index=True)
+    st.dataframe(
+
+        tabla,
+    
+        use_container_width=True,
+    
+        hide_index=True,
+    
+        column_config={
+    
+            "afiliado": st.column_config.TextColumn(
+    
+                "Afiliado",
+    
+                width="medium",
+    
+            ),
+    
+        },
+    
+    )
     
 
     st.divider()
