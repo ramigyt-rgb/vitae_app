@@ -4055,6 +4055,23 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             )
 
             return
+        if table == "agenda_quirofano":
+
+            render_agenda_quirofano_pro(
+
+                df_base.copy(),
+
+                guardar_callback=lambda df_nuevo: sync_df_to_sheet(
+
+                    "agenda_quirofano",
+
+                    df_nuevo,
+
+                ),
+
+            )
+
+            return
         if df_panel.empty:
             st.warning("No hay registros cargados.")
         else:
