@@ -13,6 +13,7 @@ from database import *
 from helpers import *
 from farmacia_pro import render_farmacia_pro
 from importers import render_importer
+from agenda_quirofano_ultra_pro import render_agenda_quirofano_ultra_pro
 from assistant import preguntar_ia
 from assistant import preguntar_dashboard
 from director_ia import (
