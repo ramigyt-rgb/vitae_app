@@ -3998,9 +3998,15 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
 
         render_agenda_quirofano_ultra_pro(
     
-            df_original=df_base,
+            df_original=df_base.copy(),
     
-            guardar_callback=lambda df_nuevo: save_table(table, df_nuevo),
+            guardar_callback=lambda df_nuevo: sync_df_to_sheet(
+    
+                "agenda_quirofano",
+    
+                df_nuevo,
+    
+            ),
     
         )
     
