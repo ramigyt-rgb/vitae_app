@@ -3994,6 +3994,17 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
     render_header()
     st.header(module_name)
     st.caption(cfg.get("descripcion", ""))
+    if table == "agenda_quirofano":
+
+        render_agenda_quirofano_ultra_pro(
+    
+            df_original=df_base,
+    
+            guardar_callback=lambda df_nuevo: save_table(table, df_nuevo),
+    
+        )
+    
+        return
     labels = get_fact_labels(module_name, cfg)
     tab_panel, tab_cargar, tab_importar, tab_editar, tab_columnas, tab_exportar = st.tabs([
         "📊 Panel PRO",
@@ -4056,23 +4067,7 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             )
 
             return
-        if table == "agenda_quirofano":
-
-            render_agenda_quirofano_pro(
-
-                df_base.copy(),
-
-                guardar_callback=lambda df_nuevo: sync_df_to_sheet(
-
-                    "agenda_quirofano",
-
-                    df_nuevo,
-
-                ),
-
-            )
-
-            return
+        
         if df_panel.empty:
             st.warning("No hay registros cargados.")
         else:
