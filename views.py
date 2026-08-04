@@ -4708,11 +4708,11 @@ def render_facturacion_industrial(
         if not matriz.empty:
             matriz["TOTAL"] = matriz.sum(axis=1)
             matriz = matriz.sort_values("TOTAL", ascending=False)
-            # Compatibilidad con pandas moderno (applymap fue reemplazado por map)
-            if hasattr(matriz, "map"):
-                matriz_mostrar = matriz.map(fmt_money)
-            else:
-                matriz_mostrar = matriz.applymap(fmt_money)
+            matriz_mostrar = matriz.apply(
+
+                lambda columna: columna.map(fmt_money)
+            
+            )
             st.dataframe(matriz_mostrar, use_container_width=True)
 
     with tab_calidad:
