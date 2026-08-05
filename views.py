@@ -4708,9 +4708,19 @@ def render_facturacion_industrial(
         if not matriz.empty:
             matriz["TOTAL"] = matriz.sum(axis=1)
             matriz = matriz.sort_values("TOTAL", ascending=False)
-            matriz_mostrar = matriz.apply(
-
-                lambda columna: columna.map(fmt_money)
+            matriz_mostrar = pd.DataFrame(
+            
+                [
+            
+                    [fmt_money(valor) for valor in fila]
+            
+                    for fila in matriz.values.tolist()
+            
+                ],
+            
+                index=matriz.index,
+            
+                columns=matriz.columns,
             
             )
             st.dataframe(matriz_mostrar, use_container_width=True)
