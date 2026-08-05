@@ -1,0 +1,1 @@
+registro_id	empresa	tipo_registro	obra_social	plan	codigo	descripcion	especialidad	categoria	modulo	modelo_valor	valor_ips	porcentaje_ips	valor_propio	vigencia_desde	vigencia_hasta	activo	requiere_autorizacion	modalidad_facturacion	fuente	correo	contacto	observaciones	actualizado_en
