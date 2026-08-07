@@ -2839,7 +2839,25 @@ def render_dashboard() -> None:
     _render_vitae_app_shell()
     render_vitae_copilot("Dashboard Global")
     _dg_render_css()
+    st.markdown("""
 
+    <style>
+    
+    div[data-testid="stButton"] > button,
+    
+    div[data-testid="stDownloadButton"] > button {
+    
+        width: 100% !important;
+    
+        min-height: 52px !important;
+    
+        height: 52px !important;
+    
+    }
+    
+    </style>
+    
+    """, unsafe_allow_html=True)
     try:
         today = pd.Timestamp.now(tz="America/Argentina/Salta").normalize().tz_localize(None)
     except Exception:
@@ -2883,7 +2901,7 @@ def render_dashboard() -> None:
             st.cache_data.clear()
             st.rerun()
 
-    filter_col, custom_col, export_col = st.columns([2.2, 2.3, 1.2])
+    filter_col, custom_col, export_col = st.columns([2.2, 3.0, 1.2])
     with filter_col:
         period_option = st.selectbox(
             "Período de análisis",
