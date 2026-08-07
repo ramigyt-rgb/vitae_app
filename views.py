@@ -2883,7 +2883,7 @@ def render_dashboard() -> None:
             st.cache_data.clear()
             st.rerun()
 
-    filter_col, custom_col, export_col = st.columns([2.2, 2.4, 1.1])
+    filter_col, custom_col, export_col = st.columns([2.2, 2.3, 1.2])
     with filter_col:
         period_option = st.selectbox(
             "Período de análisis",
