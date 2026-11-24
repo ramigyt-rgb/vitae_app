@@ -19,7 +19,7 @@ import streamlit as st
 
 from vitae.core.config import APP_TITLE, BASE_DIR, LOGO_PATH
 from vitae.core.movil import css_movil, es_movil
-from vitae.core.ui import encabezado_modulo, sin_icono, tarjetas_kpi
+from vitae.core.ui import encabezado_modulo, logo_data_uri, sin_icono, tarjetas_kpi
 from vitae.core.tablas import MODULES
 from vitae.core.database import *
 from vitae.core.helpers import *
@@ -608,14 +608,11 @@ def render_vitae_login() -> None:
         """,
         unsafe_allow_html=True,
     )
-    marca = '<div class="vitae-login-mark">V</div>'
-    try:
-        import base64
-        if LOGO_PATH.exists():
-            logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
-            marca = f'<img src="data:image/png;base64,{logo_b64}" alt="Vitae" style="height:64px;margin:0 auto 1.1rem auto;display:block">'
-    except Exception:
-        pass
+    logo = logo_data_uri()
+    marca = (
+        f'<img src="{logo}" alt="Vitae" style="height:64px;margin:0 auto 1.1rem auto;display:block">'
+        if logo else '<div class="vitae-login-mark">V</div>'
+    )
     st.markdown(
         f"""
         <div class="vitae-login-wrap">
@@ -3883,28 +3880,13 @@ def render_dashboard() -> None:
         if _dg_category(module_name, cfg) == "Convenios":
             dfs[module_name] = convention_data.copy()
 
-    top_left, top_right = st.columns([5.8, 1.2])
-    with top_left:
-        st.markdown(
-            """
-            <div class="dg-hero">
-                <div class="dg-kicker">Dirección general</div>
-                <div class="dg-title">Dashboard Global</div>
-                <div class="dg-subtitle">
-                    Visión consolidada de VMR, VM y áreas corporativas: desempeño financiero,
-                    actividad, cobranza, obligaciones, vencimientos, riesgos y calidad de gestión.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with top_right:
-        logo_path = LOGO_PATH
-        if logo_path.exists():
-            st.image(str(logo_path), use_container_width=True)
-        if st.button("Actualizar", key="dg_refresh", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
+    # Mismo encabezado que el resto de la app. El logo y «Actualizar» ya están
+    # en el menú lateral (antes se repetían acá y en el celular el logo no cargaba).
+    encabezado_modulo(
+        "Panel general",
+        descripcion="Visión consolidada de VMR, VM y áreas corporativas: resultados, cobranza, "
+        "obligaciones, vencimientos y riesgos.",
+    )
 
     filter_col, custom_col, export_col = st.columns([2.2, 2.4, 1.1])
     with filter_col:
