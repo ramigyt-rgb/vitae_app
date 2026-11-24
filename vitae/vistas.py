@@ -624,7 +624,7 @@ def render_vitae_login() -> None:
         <div class="vitae-login-wrap">
           {marca}
           <div class="vitae-login-title">Ingresá a tu cuenta</div>
-          <div class="vitae-login-sub">Gestión clínica, operativa y financiera</div>
+          <div class="vitae-login-sub">Gestión Vitae</div>
         </div>
         """,
         unsafe_allow_html=True,
