@@ -7743,7 +7743,7 @@ def _editor_filtrar_obra_social(df: pd.DataFrame, elegida: str) -> pd.DataFrame:
     return df.loc[_editor_os_normalizada(df) == objetivo]
 
 
-_EDITOR_ESTADOS = ["Todos", "Pendientes", "Vencidos", "Cobrados"]
+_EDITOR_ESTADOS = ["Todos", "Pendientes", "Vencidos", "Cobrados", "Sin importe"]
 
 
 def _editor_cobranza(df: pd.DataFrame) -> pd.DataFrame:
@@ -7774,6 +7774,9 @@ def _editor_filtrar_estado(df: pd.DataFrame, estado: str, cobranza: pd.DataFrame
         mascara = pendiente
     elif estado == "Vencidos":
         mascara = pendiente & c["_vencido"].fillna(False).astype(bool)
+    elif estado == "Sin importe":
+        # Sin valor cargado (vacío o 0), sin contar los anulados.
+        mascara = (c["_monto"].fillna(0) <= 0) & ~c["_cancelado"].fillna(False).astype(bool)
     else:  # Cobrados
         mascara = ~pendiente & (c["_monto"].fillna(0) > 0) & ~c["_cancelado"].fillna(False).astype(bool)
     return df.loc[mascara.astype(bool)]
@@ -21660,7 +21663,7 @@ def render_facturacion_pro(
                         key=filtro_estado_key,
                         on_change=_editor_guardar_pendientes,
                         args=(table, delete_col),
-                        help="Pendientes: con saldo a cobrar (incluye vencidos). Vencidos: pendientes con vencimiento pasado. Anulados no cuentan.",
+                        help="Pendientes: con saldo a cobrar (incluye vencidos). Vencidos: pendientes con vencimiento pasado. Sin importe: registros sin valor cargado, para completarlos. Anulados no cuentan.",
                     )
             vista = _editor_filtrar_obra_social(work_full, filtro_os)
             if es_facturacion:
