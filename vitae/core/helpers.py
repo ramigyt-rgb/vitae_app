@@ -30,6 +30,9 @@ def normalize_money_string(value: Any) -> str:
             text = text.replace(",", "")
     elif "," in text:
         text = text.replace(".", "").replace(",", ".")
+    elif re.fullmatch(r"-?[1-9]\d{0,2}(\.\d{3})+", text):
+        # Punto de miles sin decimales (150.000 · 1.500.000): antes se leía 150 o 0.
+        text = text.replace(".", "")
     return text
 def money(value: Any) -> float:
     try:

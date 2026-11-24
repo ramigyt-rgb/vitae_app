@@ -134,6 +134,7 @@ def css_movil() -> str:
     bloques = [
         '[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] [data-testid="stMetric"])',
         '[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .fx-card)',
+        '[data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"] .vitae-kpi)',
         '[data-testid="stHorizontalBlock"]:has(> [data-testid="column"] [data-testid="stMetric"])',
     ]
     fila_kpi = ", ".join(bloques)
@@ -159,7 +160,8 @@ def css_movil() -> str:
         div[data-testid="stMetric"] {{ padding: .6rem .7rem !important; }}
         div[data-testid="stMetricValue"] {{ font-size: 1.15rem !important; }}
         div[data-testid="stMetricLabel"] p {{ font-size: .78rem !important; }}
-        .fx-card {{ padding: 10px 12px !important; }}
+        .fx-card, .vitae-kpi {{ padding: 10px 12px !important; }}
+        .vitae-kpi-value {{ font-size: 1.15rem !important; }}
         .fx-card .fx-foot {{ font-size: .7rem !important; }}
 
         /* Pestañas: se deslizan de costado en lugar de amontonarse */
