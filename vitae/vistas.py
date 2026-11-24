@@ -23196,6 +23196,61 @@ def render_resumen_empresa(titulo, empresa, dfs):
         resumen = pd.DataFrame(rows)           
         st.divider()                                
 
+def _render_conocimiento_ia() -> None:
+    """Base de conocimiento de la empresa que la IA tiene siempre presente."""
+    from vitae.ia.motor import TABLA_CONOCIMIENTO, TEMAS_SUGERIDOS
+
+    st.markdown("### Conocimiento de la empresa para la IA")
+    st.caption(
+        "Lo que escribas acá, la IA lo tiene en cuenta en cada respuesta: quiénes son los médicos, qué servicios "
+        "hay, cómo funcionan los circuitos, convenios, proveedores y reglas internas. Los números (facturación, "
+        "deudas, cajas…) no hace falta cargarlos: la IA los consulta directamente en los módulos."
+    )
+    try:
+        actual = get_df(TABLA_CONOCIMIENTO)
+    except Exception as exc:
+        _vitae_render_error("No se pudo leer la base de conocimiento.", exc)
+        return
+    if actual is None or actual.empty or "contenido" not in [str(c).lower() for c in actual.columns]:
+        actual = pd.DataFrame([{"tema": t, "contenido": ""} for t, _ in TEMAS_SUGERIDOS])
+        st.info("Todavía no hay información cargada. Te dejo los temas sugeridos: completá los que quieras.")
+    actual = actual.rename(columns={c: str(c).lower() for c in actual.columns})[["tema", "contenido"]]
+    with st.expander("Ideas de qué escribir en cada tema", icon=":material/lightbulb:", expanded=False):
+        for tema, ayuda in TEMAS_SUGERIDOS:
+            st.markdown(f"**{tema}:** {ayuda}")
+    editado = st.data_editor(
+        actual.fillna(""),
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        key="ia_conocimiento_editor",
+        column_config={
+            "tema": st.column_config.TextColumn("Tema", width="small", required=True),
+            "contenido": st.column_config.TextColumn("Contenido", width="large",
+                                                     help="Escribilo como se lo explicarías a alguien nuevo."),
+        },
+    )
+    if st.button("Guardar conocimiento", type="primary", key="ia_conocimiento_guardar"):
+        limpio = editado.fillna("")
+        limpio = limpio[(limpio["tema"].astype(str).str.strip() != "") | (limpio["contenido"].astype(str).str.strip() != "")]
+        try:
+            sync_df_to_sheet(TABLA_CONOCIMIENTO, limpio)
+            _vitae_invalidate_data_cache()
+            st.success(f"Guardado: {len(limpio)} temas. La IA ya los usa en la próxima pregunta.")
+        except Exception as exc:
+            _vitae_render_error("No se pudo guardar el conocimiento.", exc)
+    st.divider()
+    st.markdown("#### Modelo de IA")
+    from vitae.core.config import GEMINI_MODEL, _secret
+    avanzado = _secret("GEMINI_MODEL_AVANZADO", "")
+    st.markdown(f"- Modelo en uso: `{avanzado or GEMINI_MODEL}`" + (f" (respaldo: `{GEMINI_MODEL}`)" if avanzado else ""))
+    st.caption(
+        "Para respuestas más profundas podés usar un modelo de Gemini más potente: en Streamlit Cloud → Settings → "
+        "Secrets agregá `GEMINI_MODEL_AVANZADO = \"nombre-del-modelo\"`. Si ese modelo no responde, la app usa "
+        "automáticamente el modelo actual."
+    )
+
+
 def render_configuracion() -> None:
     st.session_state["vitae_current_module"] = "Configuración"
     render_header()
@@ -23206,7 +23261,7 @@ def render_configuracion() -> None:
         return
 
     config_section = _vitae_lazy_selector(
-        "Área de configuración", ["Usuarios", "Permisos", "Empresas", "Sistema"],
+        "Área de configuración", ["Usuarios", "Permisos", "Empresas", "IA", "Sistema"],
         key="config_active_section",
     )
     if config_section == "Usuarios":
@@ -23215,6 +23270,8 @@ def render_configuracion() -> None:
         _auth_render_permissions_management()
     elif config_section == "Empresas":
         _auth_render_companies_management()
+    elif config_section == "IA":
+        _render_conocimiento_ia()
     else:
         _auth_render_security_status()
         st.divider()
