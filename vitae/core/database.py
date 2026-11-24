@@ -255,11 +255,15 @@ def _explicar_error_sheets(exc: Exception, table: str) -> Exception:
     if estado == 403:
         cuenta = _email_cuenta_servicio()
         quien = f"la cuenta {cuenta}" if cuenta else "la cuenta de servicio de la app"
+        try:
+            detectado = explicar_diagnostico(diagnosticar_permisos(table), table)
+        except Exception:
+            detectado = ""
         return ErrorGuardadoSheets(
-            f"Google Sheets no dio permiso para guardar en «{table}». La app puede leer la planilla "
-            f"pero no escribirla. Para solucionarlo: abrí la planilla en Google Sheets → Compartir → "
-            f"agregá {quien} como Editor. Si ya es Editor, revisá que la pestaña «{table}» no esté "
-            f"protegida (Datos → Proteger hojas y rangos). No se modificó nada de la planilla."
+            f"Google Sheets no dio permiso para guardar en «{table}». "
+            + (f"Diagnóstico: {detectado} " if detectado else "")
+            + f"Para solucionarlo: abrí la planilla → Compartir → agregá {quien} como Editor; si ya figura, "
+            f"revisá Datos → Proteger hojas y rangos. No se modificó nada de la planilla."
         )
     if estado == 429:
         return ErrorGuardadoSheets(
@@ -267,6 +271,85 @@ def _explicar_error_sheets(exc: Exception, table: str) -> Exception:
             "No se modificó nada de la planilla."
         )
     return exc
+
+
+def diagnosticar_permisos(table: str | None = None) -> Dict[str, Any]:
+    """Pregunta a Google qué puede hacer la app con la planilla (solo lectura).
+
+    Devuelve: cuenta de servicio, nombre del archivo, si Google la considera
+    editora (Drive «canEdit»), su rol en el archivo y qué pestañas tienen
+    rangos protegidos (y si la cuenta figura entre sus editores).
+    """
+    info: Dict[str, Any] = {
+        "cuenta": _email_cuenta_servicio(), "archivo": None, "puede_editar": None, "rol": None,
+        "pestanas_protegidas": {}, "notas": [],
+    }
+    try:
+        sh = get_spreadsheet()
+        info["archivo"] = getattr(sh, "title", None)
+    except Exception as exc:
+        info["notas"].append(f"No se pudo abrir la planilla: {exc}")
+        return info
+    # Protecciones por pestaña
+    try:
+        meta = sh.fetch_sheet_metadata({
+            "fields": "sheets(properties(title),protectedRanges(description,warningOnly,range,editors(users,groups,domainUsersCanEdit)))"
+        })
+        cuenta = (info["cuenta"] or "").lower()
+        for hoja in meta.get("sheets", []):
+            titulo = hoja.get("properties", {}).get("title", "")
+            bloqueos = [p for p in hoja.get("protectedRanges", []) if not p.get("warningOnly")]
+            if bloqueos:
+                editores = sorted({u.lower() for p in bloqueos for u in p.get("editors", {}).get("users", [])})
+                info["pestanas_protegidas"][titulo] = {
+                    "rangos": len(bloqueos),
+                    "cuenta_puede": bool(cuenta) and cuenta in editores,
+                    "editores": editores,
+                }
+    except Exception as exc:
+        info["notas"].append(f"No se pudieron leer las protecciones: {exc}")
+    # Capacidad de edición según Google Drive
+    try:
+        cliente = sh.client
+        http = getattr(cliente, "http_client", None) or cliente
+        url = f"https://www.googleapis.com/drive/v3/files/{SHEET_ID}"
+        respuesta = http.request("get", url, params={
+            "fields": "name,capabilities(canEdit),permissions(emailAddress,role,type)",
+            "supportsAllDrives": "true",
+        })
+        datos = respuesta.json()
+        info["puede_editar"] = datos.get("capabilities", {}).get("canEdit")
+        cuenta = (info["cuenta"] or "").lower()
+        for permiso in datos.get("permissions", []) or []:
+            if str(permiso.get("emailAddress", "")).lower() == cuenta:
+                info["rol"] = permiso.get("role")
+        if info["rol"] is None and datos.get("permissions") is not None:
+            info["notas"].append("La cuenta de la app no figura con su email entre los permisos del archivo "
+                                 "(puede estar leyendo por el enlace público o por un grupo).")
+    except Exception as exc:
+        info["notas"].append(f"No se pudo consultar el permiso en Google Drive: {exc}")
+    return info
+
+
+def explicar_diagnostico(info: Dict[str, Any], table: str | None = None) -> str:
+    """Resumen en castellano de diagnosticar_permisos()."""
+    partes = []
+    if info.get("puede_editar") is False:
+        rol = {"reader": "Lector", "commenter": "Comentarista"}.get(str(info.get("rol")), info.get("rol"))
+        partes.append(
+            f"Google confirma que la cuenta {info.get('cuenta') or 'de la app'} NO puede editar el archivo "
+            f"«{info.get('archivo') or ''}»" + (f" (su rol es {rol})" if rol else "") + ". Tiene que figurar como Editor."
+        )
+    protegidas = info.get("pestanas_protegidas", {})
+    if table and table in protegidas and not protegidas[table]["cuenta_puede"]:
+        partes.append(
+            f"La pestaña «{table}» tiene {protegidas[table]['rangos']} protección(es) y la cuenta de la app no está "
+            "entre quienes pueden editarla (Datos → Proteger hojas y rangos)."
+        )
+    if not partes and info.get("puede_editar") is True:
+        partes.append("Google indica que la cuenta sí puede editar el archivo; el rechazo puede ser temporal: "
+                      "volvé a intentar en unos minutos.")
+    return " ".join(partes)
 
 
 def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:

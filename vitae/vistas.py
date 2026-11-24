@@ -23218,6 +23218,45 @@ def render_configuracion() -> None:
     else:
         _auth_render_security_status()
         st.divider()
+        st.markdown("### Diagnóstico de Google Sheets")
+        st.caption("Pregunta a Google qué permisos tiene la app sobre la planilla. No modifica nada.")
+        if st.button("Revisar permisos", icon=":material/policy:", key="cfg_diag_sheets"):
+            with st.spinner("Consultando a Google…"):
+                try:
+                    from vitae.core.database import diagnosticar_permisos
+                    info = diagnosticar_permisos()
+                except Exception as exc:
+                    info = None
+                    _vitae_render_error("No se pudo hacer el diagnóstico.", exc)
+            if info:
+                puede = info.get("puede_editar")
+                rol = {"writer": "Editor", "owner": "Propietario", "reader": "Lector",
+                       "commenter": "Comentarista", "fileOrganizer": "Administrador de contenido",
+                       "organizer": "Administrador"}.get(str(info.get("rol")), info.get("rol") or "no figura por email")
+                d1, d2 = st.columns(2)
+                d1.metric("¿Puede guardar?", "Sí" if puede else ("No" if puede is False else "Sin dato"))
+                d2.metric("Rol en el archivo", rol)
+                st.markdown(f"**Cuenta que usa la app:** `{info.get('cuenta') or 'no encontrada en Secrets'}`")
+                st.markdown(f"**Planilla:** {info.get('archivo') or '—'}")
+                if puede is False:
+                    st.error("Google confirma que esta cuenta NO puede editar la planilla. En Google Sheets → "
+                             "Compartir, agregá exactamente ese email como Editor.")
+                elif puede:
+                    st.success("La cuenta puede editar la planilla.")
+                protegidas = info.get("pestanas_protegidas") or {}
+                if protegidas:
+                    st.markdown("**Pestañas con protección**")
+                    st.dataframe(pd.DataFrame([
+                        {"Pestaña": k, "Protecciones": v["rangos"],
+                         "¿La app puede editarla?": "Sí" if v["cuenta_puede"] else "No",
+                         "Editores permitidos": ", ".join(v["editores"]) or "solo el propietario"}
+                        for k, v in protegidas.items()
+                    ]), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("Ninguna pestaña tiene protecciones.")
+                for nota in info.get("notas") or []:
+                    st.caption(nota)
+        st.divider()
         st.markdown("### Sincronización Google Sheets")
         col1, col2 = st.columns(2)
         with col1:
