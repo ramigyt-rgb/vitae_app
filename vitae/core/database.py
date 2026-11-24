@@ -250,7 +250,18 @@ def _email_cuenta_servicio() -> str:
         return ""
 
 
-def _explicar_error_sheets(exc: Exception, table: str) -> Exception:
+def detalle_error_google(exc: Exception) -> str:
+    """Texto exacto que devuelve Google (código, estado, motivo)."""
+    try:
+        err = exc.response.json().get("error", {})
+        motivos = [d.get("reason") for d in err.get("details", []) if isinstance(d, dict) and d.get("reason")]
+        texto = f"{err.get('code', '')} {err.get('status', '')}: {err.get('message', '')}".strip()
+        return texto + (f" (motivo: {', '.join(motivos)})" if motivos else "")
+    except Exception:
+        return str(exc)
+
+
+def _explicar_error_sheets(exc: Exception, table: str, paso: str = "") -> Exception:
     estado = getattr(getattr(exc, "response", None), "status_code", None)
     if estado == 403:
         cuenta = _email_cuenta_servicio()
@@ -260,8 +271,10 @@ def _explicar_error_sheets(exc: Exception, table: str) -> Exception:
         except Exception:
             detectado = ""
         return ErrorGuardadoSheets(
-            f"Google Sheets no dio permiso para guardar en «{table}». "
+            f"Google Sheets no dio permiso para guardar en «{table}»"
+            + (f" (falló al {paso})" if paso else "") + ". "
             + (f"Diagnóstico: {detectado} " if detectado else "")
+            + f"Respuesta de Google: {detalle_error_google(exc)}. "
             + f"Para solucionarlo: abrí la planilla → Compartir → agregá {quien} como Editor; si ya figura, "
             f"revisá Datos → Proteger hojas y rangos. No se modificó nada de la planilla."
         )
@@ -282,6 +295,7 @@ def diagnosticar_permisos(table: str | None = None) -> Dict[str, Any]:
     """
     info: Dict[str, Any] = {
         "cuenta": _email_cuenta_servicio(), "archivo": None, "puede_editar": None, "rol": None,
+        "puede_modificar_contenido": None, "puede_desbloquear": None, "bloqueado": None, "tipo_archivo": None,
         "pestanas_protegidas": {}, "notas": [],
     }
     try:
@@ -314,11 +328,23 @@ def diagnosticar_permisos(table: str | None = None) -> Dict[str, Any]:
         http = getattr(cliente, "http_client", None) or cliente
         url = f"https://www.googleapis.com/drive/v3/files/{SHEET_ID}"
         respuesta = http.request("get", url, params={
-            "fields": "name,capabilities(canEdit),permissions(emailAddress,role,type)",
+            "fields": "name,mimeType,capabilities(canEdit,canModifyContent,canModifyContentRestriction),"
+                      "contentRestrictions(readOnly,reason,type,restrictionTime,restrictingUser(emailAddress,displayName)),"
+                      "permissions(emailAddress,role,type)",
             "supportsAllDrives": "true",
         })
         datos = respuesta.json()
-        info["puede_editar"] = datos.get("capabilities", {}).get("canEdit")
+        capacidades = datos.get("capabilities", {})
+        info["puede_editar"] = capacidades.get("canEdit")
+        info["puede_modificar_contenido"] = capacidades.get("canModifyContent")
+        info["puede_desbloquear"] = capacidades.get("canModifyContentRestriction")
+        info["tipo_archivo"] = datos.get("mimeType")
+        bloqueos = [r for r in datos.get("contentRestrictions", []) or [] if r.get("readOnly")]
+        if bloqueos:
+            r = bloqueos[0]
+            quien = (r.get("restrictingUser") or {}).get("displayName") or (r.get("restrictingUser") or {}).get("emailAddress") or ""
+            info["bloqueado"] = {"motivo": r.get("reason") or "", "por": quien,
+                                 "desde": str(r.get("restrictionTime") or "")[:10], "tipo": r.get("type") or ""}
         cuenta = (info["cuenta"] or "").lower()
         for permiso in datos.get("permissions", []) or []:
             if str(permiso.get("emailAddress", "")).lower() == cuenta:
@@ -331,9 +357,46 @@ def diagnosticar_permisos(table: str | None = None) -> Dict[str, Any]:
     return info
 
 
+def probar_escritura(table: str) -> tuple[bool, str]:
+    """Reescribe la celda A1 de la pestaña con su MISMO valor (o fórmula).
+
+    No cambia ningún dato; sirve para saber si Google acepta escrituras en esa
+    pestaña y, si no, con qué motivo exacto.
+    """
+    try:
+        sh = get_spreadsheet()
+        rango = _rango_hoja(table) + "!A1"
+        respuesta = sh.values_get(rango, params={"valueRenderOption": "FORMULA"})
+        valores = respuesta.get("values") or [[""]]
+        valor = valores[0][0] if valores and valores[0] else ""
+        sh.values_update(rango, params={"valueInputOption": "USER_ENTERED"}, body={"values": [[valor]]})
+        return True, "Google aceptó la escritura (A1 quedó con el mismo valor)."
+    except gspread.exceptions.APIError as exc:
+        return False, detalle_error_google(exc)
+    except Exception as exc:  # pestaña inexistente u otro problema
+        return False, str(exc)
+
+
 def explicar_diagnostico(info: Dict[str, Any], table: str | None = None) -> str:
     """Resumen en castellano de diagnosticar_permisos()."""
     partes = []
+    bloqueo = info.get("bloqueado")
+    if bloqueo:
+        detalle = " ".join(x for x in (f"por {bloqueo['por']}" if bloqueo.get("por") else "",
+                                       f"el {bloqueo['desde']}" if bloqueo.get("desde") else "",
+                                       f"(motivo: {bloqueo['motivo']})" if bloqueo.get("motivo") else "") if x)
+        partes.append(
+            f"EL ARCHIVO ESTÁ BLOQUEADO en Google Drive {detalle}. Mientras esté bloqueado nadie puede modificar su "
+            "contenido, aunque sea Editor. Para desbloquearlo: en Google Drive, clic derecho sobre la planilla → "
+            "Información del archivo → Desbloquear (si el bloqueo vino de una aprobación, hay que cancelarla)."
+        )
+    elif info.get("puede_modificar_contenido") is False:
+        partes.append("Google indica que la cuenta NO puede modificar el contenido del archivo aunque figure como "
+                      "Editor (puede haber un bloqueo o una regla de la organización de Google Workspace).")
+    tipo = str(info.get("tipo_archivo") or "")
+    if tipo and tipo != "application/vnd.google-apps.spreadsheet":
+        partes.append(f"El archivo no es una planilla de Google Sheets sino «{tipo}» (por ejemplo, un Excel "
+                      "subido a Drive). Hay que convertirlo: Archivo → Guardar como Hojas de cálculo de Google.")
     if info.get("puede_editar") is False:
         rol = {"reader": "Lector", "commenter": "Comentarista"}.get(str(info.get("rol")), info.get("rol"))
         partes.append(
@@ -347,8 +410,8 @@ def explicar_diagnostico(info: Dict[str, Any], table: str | None = None) -> str:
             "entre quienes pueden editarla (Datos → Proteger hojas y rangos)."
         )
     if not partes and info.get("puede_editar") is True:
-        partes.append("Google indica que la cuenta sí puede editar el archivo; el rechazo puede ser temporal: "
-                      "volvé a intentar en unos minutos.")
+        partes.append("Google indica que la cuenta puede editar el archivo y no detecta bloqueos ni protecciones. "
+                      "Usá Configuración → Sistema → «Probar escritura» para ver qué pestaña rechaza la escritura.")
     return " ".join(partes)
 
 
@@ -365,17 +428,22 @@ def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
     data = [df.columns.tolist()] + df.values.tolist() if not df.empty else [["Sin datos"]]
     filas = len(data)
     columnas = max(len(fila) for fila in data)
+    paso = "leer la pestaña"
     try:
         # Lectura fresca de la pestaña para conocer su tamaño real.
         try:
             ws = get_spreadsheet().worksheet(table)
         except gspread.WorksheetNotFound:
+            paso = "crear la pestaña"
             ws = get_or_create_worksheet(table)
         with _cache_lock:
             _cache_hojas[table] = ws
         if ws.row_count < filas or ws.col_count < columnas:
+            paso = f"agrandar la pestaña a {max(ws.row_count, filas)} filas × {max(ws.col_count, columnas)} columnas"
             ws.resize(rows=max(ws.row_count, filas), cols=max(ws.col_count, columnas))
+        paso = f"escribir {filas} filas × {columnas} columnas"
         ws.update(data)
+        paso = "limpiar las filas sobrantes"
         sobrantes = []
         if ws.row_count > filas:
             sobrantes.append(f"{rowcol_to_a1(filas + 1, 1)}:{rowcol_to_a1(ws.row_count, ws.col_count)}")
@@ -384,7 +452,7 @@ def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
         if sobrantes:
             ws.batch_clear(sobrantes)
     except gspread.exceptions.APIError as exc:
-        raise _explicar_error_sheets(exc, table) from exc
+        raise _explicar_error_sheets(exc, table, paso) from exc
     st.cache_data.clear()
     return 0 if df.empty else len(df)
 
