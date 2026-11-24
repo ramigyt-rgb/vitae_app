@@ -1,12 +1,16 @@
 # app.py
 # Ejecutar:
-# streamlit run app.py
+#   streamlit run app.py
+
+import re
+import unicodedata
 
 import streamlit as st
-from vitae.core.config import APP_TITLE
+
+from vitae.core.config import LOGO_PATH
 from vitae.core.tablas import MODULES
 
-# IMPORTANTE: el parche se aplica antes de importar views.py, para que
+# IMPORTANTE: el parche se aplica antes de importar las vistas, para que el
 # Copiloto Vitae y todos los módulos usen la recuperación inteligente completa.
 try:
     from vitae.ia.copiloto_acceso_total import aplicar_parche_acceso_total
@@ -18,85 +22,152 @@ except Exception:
 from vitae.vistas import (
     render_dashboard,
     render_header,
-    render_facturacion_pro as render_facturacion_actual,
+    render_facturacion_pro as render_modulo,
     render_configuracion,
     require_vitae_login,
+    _auth_can_access,
 )
 from vitae.modulos.facturacion import render_facturacion_ultra_pro
 
 st.set_page_config(
-    page_title=APP_TITLE,
-    page_icon="🏥",
+    page_title="Vitae",
+    page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🏥",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
-st.markdown(
-    """
-    <style>
-    .main-title {
-        font-size: 2.1rem;
-        font-weight: 800;
-        margin-bottom: 0.1rem;
-    }
-    .subtitle {
-        color: #6b7280;
-        margin-bottom: 1.2rem;
-    }
-    div[data-testid="stMetricValue"] {
-        font-size: 1.35rem !important;
-    }
-    .small-muted {
-        color: #6b7280;
-        font-size: 0.88rem;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+
+# ---------------------------------------------------------------------------
+# Menú lateral: módulos agrupados por tipo, con íconos.
+# Un módulo nuevo en MODULES que no figure acá aparece solo en "Otros".
+# ---------------------------------------------------------------------------
+GRUPOS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Facturación y cobros", [
+        ("Facturación VMR", ":material/receipt_long:"),
+        ("Facturación VM", ":material/receipt_long:"),
+        ("Cuenta Corriente VMR", ":material/account_balance_wallet:"),
+        ("Cuenta Corriente VM", ":material/account_balance_wallet:"),
+        ("Honorarios médicos", ":material/medical_information:"),
+        ("Convenios", ":material/handshake:"),
+    ]),
+    ("Cajas y bancos", [
+        ("Caja VMR", ":material/point_of_sale:"),
+        ("Banco Macro VMR", ":material/account_balance:"),
+        ("Caja VM", ":material/point_of_sale:"),
+        ("Banco Galicia VM", ":material/account_balance:"),
+    ]),
+    ("Deudas y pagos", [
+        ("Deuda total", ":material/monitoring:"),
+        ("Deudas Impositivas VMR", ":material/gavel:"),
+        ("Deudas Impositivas VM", ":material/gavel:"),
+        ("Planes de pagos y préstamos", ":material/credit_score:"),
+        ("Pagos pendientes Vitae", ":material/pending_actions:"),
+        ("Gastos comunes", ":material/shopping_cart:"),
+        ("Vencimientos", ":material/event_upcoming:"),
+    ]),
+    ("Operación clínica", [
+        ("Agenda Quirófano", ":material/calendar_month:"),
+        ("Farmacia", ":material/medication:"),
+        ("Gine Vitae", ":material/female:"),
+    ]),
+    ("Contratos y tareas", [
+        ("Contratos", ":material/contract:"),
+        ("Valores Alquileres", ":material/real_estate_agent:"),
+        ("Tareas Pendientes", ":material/task_alt:"),
+    ]),
+]
+
+
+def _slug(texto: str) -> str:
+    t = unicodedata.normalize("NFKD", texto.lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return re.sub(r"[^a-z0-9]+", "-", t).strip("-")
+
+
+def _es_facturacion(module_name: str, cfg: dict) -> bool:
+    identity = f"{module_name} {cfg.get('table', '')}".lower()
+    return "factur" in identity and ("vmr" in identity or " vm" in f" {identity}")
+
+
+def _pagina_modulo(module_name: str):
+    def pagina() -> None:
+        cfg = MODULES[module_name]
+        if _es_facturacion(module_name, cfg):
+            render_facturacion_ultra_pro(
+                module_name,
+                cfg,
+                legacy_renderer=render_modulo,
+                header_renderer=render_header,
+            )
+        else:
+            render_modulo(module_name, cfg)
+
+    pagina.__name__ = f"pagina_{_slug(module_name).replace('-', '_')}"
+    return pagina
+
+
+def _puede_ver_modulo(module_name: str) -> bool:
+    empresa = str(MODULES.get(module_name, {}).get("empresa", "") or "").strip().upper() or None
+    try:
+        return _auth_can_access(f"mod::{module_name}", empresa)
+    except Exception:
+        return True  # ante cualquier duda se muestra; el módulo valida el acceso al abrirse
+
+
+def _armar_menu() -> dict[str, list]:
+    menu: dict[str, list] = {}
+    inicio = []
+    if _auth_can_access("dashboard_global"):
+        inicio.append(st.Page(render_dashboard, title="Panel general", icon=":material/space_dashboard:",
+                              url_path="inicio", default=True))
+    if inicio:
+        menu["Inicio"] = inicio
+
+    falta_inicio = not inicio  # sin Panel general, la primera página visible será la de inicio
+    ubicados: set[str] = set()
+    for grupo, modulos in GRUPOS:
+        paginas = []
+        for nombre, icono in modulos:
+            if nombre not in MODULES:
+                continue
+            ubicados.add(nombre)
+            if _puede_ver_modulo(nombre):
+                paginas.append(st.Page(_pagina_modulo(nombre), title=nombre, icon=icono,
+                                       url_path=_slug(nombre), default=falta_inicio))
+                falta_inicio = False
+        if paginas:
+            menu[grupo] = paginas
+
+    otros = [n for n in MODULES if n not in ubicados and _puede_ver_modulo(n)]
+    if otros:
+        menu["Otros"] = []
+        for n in otros:
+            menu["Otros"].append(st.Page(_pagina_modulo(n), title=n, icon=":material/folder:",
+                                         url_path=_slug(n), default=falta_inicio))
+            falta_inicio = False
+
+    if _auth_can_access("configuracion"):
+        menu["Sistema"] = [st.Page(render_configuracion, title="Configuración", icon=":material/settings:",
+                                   url_path="configuracion", default=falta_inicio)]
+    return menu
+
 
 def main() -> None:
     # LOGIN GLOBAL: nada de la aplicación se construye antes de autenticar.
     require_vitae_login()
 
-    st.sidebar.title("VITAE")
-    st.sidebar.caption("Sistema interno de gestión")
-    page = st.sidebar.radio(
-        "Navegación",
-        ["Dashboard Global", "Módulos", "Administración", "Configuración"]
-    )
-    if page == "Dashboard Global":
-        render_dashboard()
-    elif page == "Módulos":
-        empresas = ["Todos", "VMR", "VM", "VITAE"]
-        empresa_filter = st.sidebar.selectbox("Empresa", empresas)
-        module_names = list(MODULES.keys())
-        if empresa_filter != "Todos":
-            module_names = [
-                m for m in module_names
-                if MODULES[m]["empresa"] == empresa_filter
-                or MODULES[m]["empresa"] == "VITAE"
-            ]
-        module_name = st.sidebar.selectbox("Módulo", module_names)
-        cfg = MODULES[module_name]
-        table = str(cfg.get("table", "") or "").lower()
-        identity = f"{module_name} {table}".lower()
-        if "factur" in identity and ("vmr" in identity or " vm" in f" {identity}"):
-            render_facturacion_ultra_pro(
-                module_name,
-                cfg,
-                legacy_renderer=render_facturacion_actual,
-                header_renderer=render_header,
-            )
-        else:
-            render_facturacion_actual(module_name, cfg)
-    elif page == "Administración":
-        st.title("Administración")
-        st.subheader("Panel Administrativo")
-    elif page == "Configuración":
-        render_configuracion()
-    st.sidebar.divider()
-    st.sidebar.markdown("**Módulos incluidos**")
-    st.sidebar.caption(f"{len(MODULES)} módulos activos")
+    if LOGO_PATH.exists():
+        st.logo(str(LOGO_PATH), size="large")
+
+    menu = _armar_menu()
+    if not menu:
+        render_header()
+        st.warning("Tu usuario todavía no tiene módulos asignados. Pedile acceso a un administrador.")
+        return
+
+    pagina = st.navigation(menu, position="sidebar")
+    pagina.run()
+
+
 if __name__ == "__main__":
     main()

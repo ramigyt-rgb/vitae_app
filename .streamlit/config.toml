@@ -1,0 +1,18 @@
+# Tema visual de Vitae: blanco, plano, con el bordó de la marca como único acento.
+
+[theme]
+base = "light"
+primaryColor = "#8C2853"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F6F4F5"
+textColor = "#1F1A1D"
+baseRadius = "medium"
+borderColor = "#E8E3E6"
+showWidgetBorder = true
+
+[theme.sidebar]
+backgroundColor = "#FAF8F9"
+secondaryBackgroundColor = "#F1ECEF"
+
+[client]
+toolbarMode = "minimal"
