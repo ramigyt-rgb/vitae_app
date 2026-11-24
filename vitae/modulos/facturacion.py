@@ -277,9 +277,7 @@ def _css() -> None:
         /* ===== PALETA VITAE: misma línea visual que el resto de la app ===== */
         html, body, [data-testid="stAppViewContainer"], .stApp {
             background:
-                radial-gradient(circle at 8% 3%, rgba(224,171,196,.24) 0, rgba(224,171,196,0) 29%),
-                radial-gradient(circle at 93% 10%, rgba(193,105,145,.14) 0, rgba(193,105,145,0) 26%),
-                linear-gradient(180deg,#EED5E1 0%,#F5E5ED 48%,#FAF2F6 100%) !important;
+                #FFFFFF !important;
             color:#3F2430;
         }
         [data-testid="stHeader"]{background:rgba(237,211,222,.96) !important;border-bottom:1px solid rgba(177,86,126,.09)}
@@ -287,7 +285,7 @@ def _css() -> None:
 
         /* Hero integrado: ya no es bordó oscuro; usa el mismo rosa suave de VITAE */
         .fx-hero{
-            background:linear-gradient(135deg,rgba(255,255,255,.70) 0%,rgba(248,230,239,.76) 56%,rgba(231,193,211,.62) 100%);
+            background:#FFFFFF;
             border:1px solid rgba(177,86,126,.17);
             padding:22px 26px;border-radius:24px;color:#4A1830;margin:.2rem 0 1rem 0;
             box-shadow:0 15px 42px rgba(92,38,63,.08);position:relative;overflow:hidden;backdrop-filter:blur(8px)
@@ -785,14 +783,14 @@ _EMPRESAS = {
     "VM": "Vitae Medical",
 }
 
-_SECCIONES_ANALISIS = ["📊 Resumen", "💸 Cobranza", "🩺 Producción", "🛡️ Calidad"]
-_SECCIONES_GESTION = ["📋 Registros", "➕ Cargar", "📥 Importar", "📤 Exportar"]
+_SECCIONES_ANALISIS = [":material/insights: Resumen", ":material/payments: Cobranza", ":material/stethoscope: Producción", ":material/verified: Calidad"]
+_SECCIONES_GESTION = [":material/table_view: Registros", ":material/add_circle: Cargar", ":material/upload_file: Importar", ":material/download: Exportar"]
 
 # Sección de la pantalla → área de trabajo del flujo de gestión existente.
 _WORKSPACE_GESTION = {
-    "📋 Registros": "Editar tabla",
-    "➕ Cargar": "Cargar",
-    "📥 Importar": "Importar",
+    ":material/table_view: Registros": "Editar tabla",
+    ":material/add_circle: Cargar": "Cargar",
+    ":material/upload_file: Importar": "Importar",
 }
 
 _PERIODOS = [
@@ -850,8 +848,9 @@ def _css_pantalla() -> None:
         .fx-head-kicker{font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800;color:#A54470}
         .fx-head-title{font-size:1.85rem;font-weight:850;letter-spacing:-.03em;color:#4A1830;line-height:1.15}
         .fx-head-sub{font-size:.9rem;color:#7A6370;margin-top:.15rem}
-        .fx-card{min-height:96px}
-        .fx-card .fx-value{font-size:1.5rem}
+        .fx-card{min-height:0;background:#FFFFFF !important;border:1px solid #E8E3E6 !important;border-radius:12px !important;box-shadow:none !important;padding:14px 16px !important}
+        .fx-card .fx-value{font-size:1.45rem;font-weight:650 !important;color:#2A0F1C !important}
+        .fx-card .fx-label{font-weight:500 !important}
         .fx-dot{display:inline-block;width:.62rem;height:.62rem;border-radius:50%;margin-right:.4rem;vertical-align:middle}
         .fx-subtitle{font-size:1.08rem;font-weight:800;color:#4A1830;margin:1.1rem 0 .35rem 0}
         .fx-note{font-size:.82rem;color:#8A707C;margin:-.15rem 0 .5rem 0}
@@ -876,7 +875,7 @@ def _encabezado(module_name: str, company: str, key: str) -> None:
             unsafe_allow_html=True,
         )
     with der:
-        if st.button("↻ Actualizar", key=f"{key}_refresh", use_container_width=True, help="Volver a leer la planilla"):
+        if st.button("Actualizar", icon=":material/refresh:", key=f"{key}_refresh", use_container_width=True, help="Volver a leer la planilla"):
             st.cache_data.clear()
             st.rerun()
 
@@ -1062,7 +1061,7 @@ def _seccion_resumen(f: pd.DataFrame, metrics: dict[str, float], module_name: st
             fig.update_traces(textinfo="percent", sort=False)
             _grafico(fig, 330)
 
-    with st.expander("🤖 Preguntarle a la IA sobre esta vista", expanded=False):
+    with st.expander("Preguntarle a la IA sobre esta vista", icon=":material/auto_awesome:", expanded=False):
         st.caption("La IA responde usando solo los registros que estás viendo con los filtros actuales.")
         pregunta = st.text_input("Pregunta", placeholder="Ej.: ¿Qué obra social conviene priorizar esta semana y por qué?", key=f"{key}_ia_q")
         if st.button("Preguntar", key=f"{key}_ia_btn"):
@@ -1129,7 +1128,7 @@ def _seccion_cobranza(f: pd.DataFrame, metrics: dict[str, float], key: str) -> N
         q["Vencimiento"] = pd.to_datetime(q["Vencimiento"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("Sin fecha")
         _tabla_montos(q, ["Pendiente"], height=min(42 + 35 * len(q), 460))
         if len(queue) > 50:
-            st.caption(f"Se muestran las 50 de mayor prioridad de {len(queue)}. La lista completa está en Exportar → Informe Excel.")
+            st.caption(f"Se muestran las 50 de mayor prioridad de {len(queue)}. La lista completa está en Exportar, en el informe Excel.")
 
     _subtitulo("Resumen por obra social")
     if not payer.empty:
@@ -1242,7 +1241,7 @@ def _seccion_calidad(f: pd.DataFrame, cols: dict[str, str | None], key: str) -> 
     if not con_problemas:
         st.success("No se encontraron problemas en los registros de esta vista.")
     else:
-        _subtitulo("Qué revisar", "Corregí estos datos en 📋 Registros. Los totales se muestran igual, pero algunos indicadores (vencido, días de cobro) dependen de estas fechas.")
+        _subtitulo("Qué revisar", "Corregí estos datos en Registros. Los totales se muestran igual, pero algunos indicadores (vencido, días de cobro) dependen de estas fechas.")
         resumen = pd.DataFrame({
             "Control": con_problemas,
             "Filas": [int(mascaras[c].sum()) for c in con_problemas],
@@ -1279,7 +1278,8 @@ def _seccion_exportar(
     detalle = _detalle_registros(f)
     e1, e2 = st.columns(2)
     e1.download_button(
-        "📄 Registros filtrados (CSV)",
+        "Registros filtrados (CSV)",
+        icon=":material/description:",
         data=detalle.to_csv(index=False).encode("utf-8-sig"),
         file_name=f"{table}_vista.csv",
         mime="text/csv",
@@ -1290,7 +1290,8 @@ def _seccion_exportar(
                           _group_table(f, "_medico", "Médico"), _aging(f), _priority_queue(f), _quality(f, {})[0], _monthly(f))
     if excel:
         e2.download_button(
-            "📊 Informe para dirección (Excel)",
+            "Informe para dirección (Excel)",
+            icon=":material/table_chart:",
             data=excel,
             file_name=f"{table}_informe.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1307,7 +1308,7 @@ def _seccion_exportar(
         st.divider()
         _subtitulo("Planilla completa", "Todos los registros tal como están en Google Sheets, sin filtros.")
         gestion_renderer(module_name, cfg, workspace="Exportar", embebido=True)
-        with st.expander("⚙️ Elegir y renombrar columnas de la planilla completa", expanded=False):
+        with st.expander("Elegir y renombrar columnas de la planilla completa", icon=":material/tune:", expanded=False):
             gestion_renderer(module_name, cfg, workspace="Columnas", embebido=True)
 
 
@@ -1342,7 +1343,7 @@ def render_facturacion_ultra_pro(
     _css_pantalla()
     _encabezado(module_name, company, key)
 
-    secciones = _SECCIONES_ANALISIS + (_SECCIONES_GESTION if legacy_renderer is not None else ["📤 Exportar"])
+    secciones = _SECCIONES_ANALISIS + (_SECCIONES_GESTION if legacy_renderer is not None else [":material/download: Exportar"])
     seleccion = st.segmented_control(
         "Sección", secciones, default=secciones[0], key=f"{key}_seccion", label_visibility="collapsed"
     )
@@ -1363,14 +1364,14 @@ def render_facturacion_ultra_pro(
         st.error(f"No se pudo leer la planilla «{table}» de Google Sheets: {exc}")
         return
     if df_raw is None or df_raw.empty:
-        st.info("Todavía no hay registros. Podés cargarlos desde ➕ Cargar o 📥 Importar.")
+        st.info("Todavía no hay registros. Podés cargarlos desde Cargar o Importar.")
         return
 
     data, cols = _prepare_facturacion(df_raw)
     data = _ajustar_estado_manual(data)
     filtrado, detalle = _panel_filtros(data, key)
 
-    if seccion == "📤 Exportar":
+    if seccion == ":material/download: Exportar":
         _seccion_exportar(filtrado, _metrics(filtrado), module_name, cfg, table, key, legacy_renderer)
         return
 
@@ -1382,11 +1383,11 @@ def render_facturacion_ultra_pro(
     _tarjetas(metrics)
     st.caption(detalle)
 
-    if seccion == "📊 Resumen":
+    if seccion == ":material/insights: Resumen":
         _seccion_resumen(filtrado, metrics, module_name, key)
-    elif seccion == "💸 Cobranza":
+    elif seccion == ":material/payments: Cobranza":
         _seccion_cobranza(filtrado, metrics, key)
-    elif seccion == "🩺 Producción":
+    elif seccion == ":material/stethoscope: Producción":
         _seccion_produccion(filtrado)
-    elif seccion == "🛡️ Calidad":
+    elif seccion == ":material/verified: Calidad":
         _seccion_calidad(filtrado, cols, key)

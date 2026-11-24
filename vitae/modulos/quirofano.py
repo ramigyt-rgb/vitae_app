@@ -736,7 +736,7 @@ def _inyectar_css() -> None:
         .agenda-hero {
             padding: 22px 24px;
             border-radius: 18px;
-            background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 55%, #0f766e 100%);
+            background: #0F172A;
             color: white;
             margin-bottom: 18px;
             box-shadow: 0 12px 28px rgba(15, 23, 42, .16);

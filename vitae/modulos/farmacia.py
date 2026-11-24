@@ -501,7 +501,7 @@ def render_farmacia_pro(
             border: 1px solid rgba(120,120,120,.18);
             border-radius: 18px;
             margin-bottom: 18px;
-            background: linear-gradient(135deg, rgba(20,130,110,.10), rgba(40,110,220,.06));
+            background: #FFFFFF;
         }
         .farmacia-titulo {
             font-size: 31px;

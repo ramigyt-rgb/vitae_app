@@ -1,4 +1,5 @@
 import hashlib
+import html
 # =========================================================
 # VISTAS
 # ========================================================
@@ -495,14 +496,12 @@ def _auth_login_css() -> None:
     st.markdown(
         """
         <style>
-        .vitae-login-wrap{max-width:1120px;margin:3vh auto 0 auto;}
-        .vitae-login-hero{background:linear-gradient(135deg,#3C1224 0%,#792348 58%,#B8527E 100%);border-radius:28px;padding:34px 38px;color:white;box-shadow:0 24px 70px rgba(60,18,36,.22);margin-bottom:18px;position:relative;overflow:hidden}
-        .vitae-login-hero:after{content:"";position:absolute;width:290px;height:290px;border-radius:50%;right:-80px;top:-150px;background:rgba(255,255,255,.11)}
-        .vitae-login-brand{font-size:14px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;opacity:.78}
-        .vitae-login-title{font-size:42px;font-weight:850;letter-spacing:-.04em;margin:7px 0 2px 0}
-        .vitae-login-sub{font-size:16px;opacity:.88;max-width:700px;line-height:1.55}
-        .vitae-security-note{border:1px solid rgba(121,35,72,.12);background:rgba(255,255,255,.82);border-radius:18px;padding:15px 18px;margin-top:12px;color:#4b2636}
-        .vitae-user-chip{display:inline-flex;gap:8px;align-items:center;background:rgba(121,35,72,.08);border:1px solid rgba(121,35,72,.13);padding:7px 11px;border-radius:999px;color:#5C1B37;font-size:13px;font-weight:700}
+        .vitae-login-wrap{max-width:440px;margin:7vh auto 1.2rem auto;text-align:center;}
+        .vitae-login-mark{width:48px;height:48px;border-radius:12px;background:#8C2853;color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:1.35rem;margin:0 auto 1rem auto;}
+        .vitae-login-title{font-size:1.6rem;font-weight:700;letter-spacing:-.02em;color:#2A0F1C;margin:0;}
+        .vitae-login-sub{font-size:.95rem;color:#6E666B;margin-top:.35rem;}
+        .vitae-security-note{border:1px solid #E8E3E6;background:#FAF8F9;border-radius:10px;padding:12px 14px;margin-top:12px;color:#4b3d44;font-size:.85rem}
+        div[data-testid="stForm"]{max-width:440px;margin:0 auto;border:1px solid #E8E3E6;border-radius:12px;padding:1.4rem 1.4rem .6rem 1.4rem;background:#fff;}
         </style>
         """,
         unsafe_allow_html=True,
@@ -538,14 +537,20 @@ def render_vitae_login() -> None:
         """,
         unsafe_allow_html=True,
     )
+    marca = '<div class="vitae-login-mark">V</div>'
+    try:
+        import base64
+        if LOGO_PATH.exists():
+            logo_b64 = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+            marca = f'<img src="data:image/png;base64,{logo_b64}" alt="Vitae" style="height:64px;margin:0 auto 1.1rem auto;display:block">'
+    except Exception:
+        pass
     st.markdown(
-        """
+        f"""
         <div class="vitae-login-wrap">
-          <div class="vitae-login-hero">
-            <div class="vitae-login-brand">Acceso seguro · Ecosistema Vitae</div>
-            <div class="vitae-login-title">VITAE</div>
-            <div class="vitae-login-sub">Gestión clínica, operativa y financiera con acceso individual, perfiles por función y permisos administrados desde un único centro de seguridad.</div>
-          </div>
+          {marca}
+          <div class="vitae-login-title">Ingresá a tu cuenta</div>
+          <div class="vitae-login-sub">Gestión clínica, operativa y financiera</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -595,7 +600,7 @@ def render_vitae_login() -> None:
                 _auth_set_session(row)
                 st.success("Administrador creado correctamente.")
                 st.rerun()
-        st.markdown('<div class="vitae-security-note">🔐 Las contraseñas se almacenan con hash PBKDF2-SHA256 y salt individual; nunca se guarda la contraseña en texto plano.</div>', unsafe_allow_html=True)
+        st.markdown('<div class="vitae-security-note">Las contraseñas se almacenan con hash PBKDF2-SHA256 y salt individual; nunca se guarda la contraseña en texto plano.</div>', unsafe_allow_html=True)
         return
 
     lock_until = float(st.session_state.get("vitae_auth_lock_until", 0) or 0)
@@ -606,8 +611,6 @@ def render_vitae_login() -> None:
 
     left, center, right = st.columns([1.15, 1.7, 1.15])
     with center:
-        st.markdown("## Iniciar sesión")
-        st.caption("Ingresá con tu usuario personal de Vitae.")
         with st.form("vitae_login_form"):
             username = st.text_input("Usuario", autocomplete="username")
             password = st.text_input("Contraseña", type="password", autocomplete="current-password")
@@ -671,24 +674,30 @@ def _auth_require_login_and_permission() -> None:
 
 
 def _auth_render_session_bar() -> None:
+    """Usuario conectado, Actualizar y Salir, al pie del menú lateral."""
     user = _auth_current_user() or {}
     name = str(user.get("nombre") or user.get("usuario") or "Usuario")
     role = str(user.get("rol") or "")
+    initials = "".join(part[0] for part in name.split()[:2]).upper() or "U"
     current_module = str(st.session_state.get("vitae_current_module", "home") or "home")
-    c1, c_refresh, c2 = st.columns([7.4, 1.25, 1.35])
-    with c1:
-        st.markdown(f'<span class="vitae-user-chip">● {name} · {role}</span>', unsafe_allow_html=True)
-    with c_refresh:
-        if st.button(
+    with st.sidebar:
+        st.divider()
+        st.markdown(
+            f'''<div class="vitae-user-chip"><div class="vitae-user-avatar">{html.escape(initials)}</div>
+            <div><div class="vitae-user-name">{html.escape(name)}</div><div class="vitae-user-role">{html.escape(role)}</div></div></div>''',
+            unsafe_allow_html=True,
+        )
+        c_refresh, c_out = st.columns(2)
+        if c_refresh.button(
             "Actualizar",
+            icon=":material/refresh:",
             key=f"vitae_refresh_{current_module}",
-            help="Descarta lecturas cacheadas y vuelve a consultar las fuentes de datos.",
+            help="Vuelve a leer los datos de Google Sheets.",
             use_container_width=True,
         ):
             _vitae_invalidate_data_cache()
             st.rerun()
-    with c2:
-        if st.button("Salir", key=f"vitae_logout_{current_module}", use_container_width=True):
+        if c_out.button("Salir", icon=":material/logout:", key=f"vitae_logout_{current_module}", use_container_width=True):
             _auth_logout()
             st.rerun()
 
@@ -1175,514 +1184,118 @@ def load_all_data():
             data[tabla] = pd.DataFrame()
     return data
 def _render_vitae_app_shell() -> None:
-    """Capa visual corporativa global. No modifica datos ni lógica funcional."""
+    """Capa visual global: diseño plano, blanco, con el bordó Vitae como acento.
+
+    No modifica datos ni lógica funcional. Los colores base vienen de
+    .streamlit/config.toml; esta capa ajusta tipografía, tarjetas, tablas,
+    menú lateral y botones para que todos los módulos se vean iguales.
+    """
     st.markdown(
         """
         <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
         :root {
-            --vitae-navy: #3C1224;
-            --vitae-blue: #792348;
-            --vitae-cyan: #A22F61;
+            --vitae-navy: #2A0F1C;
+            --vitae-blue: #8C2853;
+            --vitae-cyan: #8C2853;
             --vitae-mint: #B8527E;
-            --vitae-ice: #EDD4DF;
+            --vitae-ice: #F6F4F5;
             --vitae-paper: #FFFFFF;
-            --vitae-text: #331723;
-            --vitae-muted: #687386;
-            --vitae-line: rgba(60,18,36, .11);
-            --vitae-shadow: 0 14px 38px rgba(70,20,42, .08);
+            --vitae-text: #1F1A1D;
+            --vitae-muted: #6E666B;
+            --vitae-line: #E8E3E6;
+            --vitae-shadow: none;
+            --vitae-accent: #8C2853;
+            --vitae-accent-soft: #F7EDF1;
         }
+        html, body, .stApp, [class*="css"], button, input, textarea, select {
+            font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important;
+            font-feature-settings: "cv11", "ss01";
+        }
+        [data-testid="stIconMaterial"], .material-symbols-rounded { font-family: "Material Symbols Rounded" !important; }
+        .stApp { background: #FFFFFF !important; color: var(--vitae-text); }
+        .block-container { max-width: 1480px; padding-top: 1.6rem; padding-bottom: 3rem; }
+        header[data-testid="stHeader"] { background: rgba(255,255,255,.92) !important; border-bottom: 1px solid var(--vitae-line); backdrop-filter: none; }
 
-        html, body, [class*="css"] {
-            font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        /* ---------- Menú lateral ---------- */
+        section[data-testid="stSidebar"] { background: #FAF8F9 !important; border-right: 1px solid var(--vitae-line); }
+        section[data-testid="stSidebar"] * { color: var(--vitae-text); }
+        [data-testid="stSidebarNavSeparator"] { border-color: var(--vitae-line); }
+        [data-testid="stSidebarNav"] [data-testid="stNavSectionHeader"] {
+            font-size: .7rem !important; letter-spacing: .06em; text-transform: uppercase;
+            color: var(--vitae-muted) !important; font-weight: 600 !important; margin-top: .6rem;
         }
-        .stApp {
-            background:
-                radial-gradient(circle at 88% 4%, rgba(184,82,126, .10), transparent 24rem),
-                radial-gradient(circle at 7% 18%, rgba(162,47,97, .08), transparent 28rem),
-                linear-gradient(180deg, #EDD4DF 0%, #F9F3F6 100%);
-            color: var(--vitae-text);
-        }
-        .block-container {
-            max-width: 1600px;
-            padding-top: 1.25rem;
-            padding-bottom: 3.5rem;
-        }
-        header[data-testid="stHeader"] {
-            background: rgba(237,212,223, .82);
-            backdrop-filter: blur(18px);
-            border-bottom: 1px solid rgba(60,18,36, .06);
-        }
-        section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #3C1224 0%, #5C1B37 58%, #722144 100%);
-            border-right: 1px solid rgba(255,255,255,.08);
-        }
-        section[data-testid="stSidebar"] > div { padding-top: .75rem; }
-        section[data-testid="stSidebar"] * { color: rgba(255,255,255,.92); }
-        section[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
-        section[data-testid="stSidebar"] label { color: rgba(255,255,255,.78) !important; }
-        section[data-testid="stSidebar"] hr { border-color: rgba(255,255,255,.12); }
-        /* Selectores del sidebar: fondo claro + texto oscuro para máxima legibilidad. */
-        section[data-testid="stSidebar"] div[data-baseweb="select"] > div {
-            background: #FFFFFF !important;
-            border: 1px solid rgba(255,255,255,.72) !important;
-            box-shadow: 0 7px 18px rgba(30,9,18, .18) !important;
-            min-height: 3rem;
-        }
-        section[data-testid="stSidebar"] div[data-baseweb="select"] *,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] span,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] input,
-        section[data-testid="stSidebar"] div[data-baseweb="select"] [data-testid="stSelectboxVirtualDropdown"] {
-            color: #3C1224 !important;
-            -webkit-text-fill-color: #3C1224 !important;
-            opacity: 1 !important;
-        }
-        section[data-testid="stSidebar"] div[data-baseweb="select"] svg {
-            fill: #792348 !important;
-            color: #792348 !important;
-        }
-        section[data-testid="stSidebar"] .stTextInput input,
-        section[data-testid="stSidebar"] .stNumberInput input,
-        section[data-testid="stSidebar"] .stDateInput input {
-            background: #FFFFFF !important;
-            border-color: rgba(255,255,255,.72) !important;
-            color: #3C1224 !important;
-            -webkit-text-fill-color: #3C1224 !important;
-        }
-        /* El menú desplegable se renderiza fuera del sidebar. */
-        div[data-baseweb="popover"] [role="listbox"],
-        div[data-baseweb="menu"] {
-            background: #FFFFFF !important;
-            color: #3C1224 !important;
-        }
-        div[data-baseweb="popover"] [role="option"],
-        div[data-baseweb="popover"] [role="option"] *,
-        li[role="option"], li[role="option"] * {
-            color: #3C1224 !important;
-            -webkit-text-fill-color: #3C1224 !important;
-        }
-        section[data-testid="stSidebar"] button {
-            border-color: rgba(255,255,255,.18) !important;
-            background: rgba(255,255,255,.08) !important;
-            color: white !important;
-        }
-        section[data-testid="stSidebar"] button:hover {
-            background: rgba(255,255,255,.16) !important;
-            border-color: rgba(255,255,255,.32) !important;
-        }
+        [data-testid="stSidebarNavLink"] { border-radius: 8px; padding: .32rem .6rem; }
+        [data-testid="stSidebarNavLink"] span { font-size: .9rem; font-weight: 450; color: #3B3338 !important; }
+        [data-testid="stSidebarNavLink"]:hover { background: #F1ECEF; }
+        [data-testid="stSidebarNavLink"][aria-current="page"] { background: var(--vitae-accent-soft); }
+        [data-testid="stSidebarNavLink"][aria-current="page"] span { color: var(--vitae-accent) !important; font-weight: 600; }
+        section[data-testid="stSidebar"] button { background: #FFFFFF !important; border: 1px solid var(--vitae-line) !important; color: var(--vitae-text) !important; box-shadow: none !important; }
+        section[data-testid="stSidebar"] button:hover { border-color: #CFC5CB !important; background: #FFFFFF !important; }
+        .vitae-user-chip { display:flex; align-items:center; gap:.6rem; padding:.35rem 0 .5rem 0; }
+        .vitae-user-avatar { width:32px; height:32px; border-radius:50%; background:var(--vitae-accent-soft); color:var(--vitae-accent);
+            display:flex; align-items:center; justify-content:center; font-weight:600; font-size:.82rem; flex-shrink:0; }
+        .vitae-user-name { font-size:.86rem; font-weight:600; line-height:1.2; }
+        .vitae-user-role { font-size:.75rem; color:var(--vitae-muted); line-height:1.2; }
 
-        .vitae-app-header {
-            position: relative;
-            overflow: hidden;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 1.5rem;
-            padding: 1.35rem 1.55rem;
-            margin: 0 0 1.15rem 0;
-            border: 1px solid rgba(60,18,36, .10);
-            border-radius: 24px;
-            background: linear-gradient(125deg, rgba(255,255,255,.98), rgba(237,212,223, .96));
-            box-shadow: var(--vitae-shadow);
-        }
-        .vitae-app-header::after {
-            content: "";
-            position: absolute;
-            width: 250px;
-            height: 250px;
-            right: -95px;
-            top: -145px;
-            border-radius: 50%;
-            background: linear-gradient(135deg, rgba(162,47,97, .22), rgba(184,82,126, .08));
-        }
-        .vitae-eyebrow {
-            font-size: .69rem;
-            letter-spacing: .16em;
-            text-transform: uppercase;
-            font-weight: 850;
-            color: var(--vitae-cyan);
-            margin-bottom: .25rem;
-        }
-        .vitae-title {
-            font-size: clamp(1.65rem, 2.4vw, 2.35rem);
-            line-height: 1.05;
-            font-weight: 880;
-            letter-spacing: -.035em;
-            color: var(--vitae-navy);
-        }
-        .vitae-subtitle {
-            margin-top: .5rem;
-            font-size: .91rem;
-            color: var(--vitae-muted);
-            max-width: 820px;
-        }
-        .vitae-live {
-            position: relative;
-            z-index: 1;
-            display: inline-flex;
-            align-items: center;
-            gap: .45rem;
-            white-space: nowrap;
-            padding: .48rem .72rem;
-            border-radius: 999px;
-            background: rgba(255,255,255,.78);
-            border: 1px solid rgba(60,18,36, .10);
-            color: #682844;
-            font-size: .73rem;
-            font-weight: 800;
-        }
-        .vitae-live::before {
-            content: "";
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: #BA3D73;
-            box-shadow: 0 0 0 4px rgba(186,61,115, .13);
-        }
-
-        h1, h2, h3, h4 { color: var(--vitae-navy); letter-spacing: -.018em; }
-        h1 { font-weight: 860 !important; }
-        h2, h3 { font-weight: 820 !important; }
+        /* ---------- Tipografía ---------- */
+        h1, h2, h3, h4 { color: var(--vitae-navy) !important; letter-spacing: -.02em; }
+        h1 { font-weight: 700 !important; font-size: 1.75rem !important; }
+        h2 { font-weight: 650 !important; font-size: 1.45rem !important; }
+        h3 { font-weight: 600 !important; font-size: 1.15rem !important; }
+        h4 { font-weight: 600 !important; font-size: 1rem !important; }
         p, li { line-height: 1.55; }
         [data-testid="stCaptionContainer"] { color: var(--vitae-muted); }
 
+        /* ---------- Tarjetas e indicadores ---------- */
         div[data-testid="stMetric"] {
-            border: 1px solid var(--vitae-line);
-            border-radius: 19px;
-            padding: .9rem 1rem;
-            background: rgba(255,255,255,.92);
-            box-shadow: 0 8px 24px rgba(70,20,42, .055);
-            min-height: 118px;
-            transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+            border: 1px solid var(--vitae-line); border-radius: 12px; padding: .85rem 1rem;
+            background: #FFFFFF; box-shadow: none; min-height: 0;
         }
-        div[data-testid="stMetric"]:hover {
-            transform: translateY(-2px);
-            border-color: rgba(162,47,97, .26);
-            box-shadow: 0 14px 30px rgba(70,20,42, .09);
-        }
-        div[data-testid="stMetricLabel"] { color: var(--vitae-muted); font-weight: 720; }
-        div[data-testid="stMetricValue"] { color: var(--vitae-navy); font-weight: 860; font-variant-numeric: tabular-nums; }
+        div[data-testid="stMetricLabel"] { color: var(--vitae-muted); font-weight: 500; }
+        div[data-testid="stMetricValue"] { color: var(--vitae-navy); font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+        div[data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--vitae-line) !important; border-radius: 12px !important; background: #FFFFFF; box-shadow: none; }
+        div[data-testid="stExpander"] { border: 1px solid var(--vitae-line); border-radius: 12px; background: #FFFFFF; box-shadow: none; overflow: hidden; }
+        div[data-testid="stExpander"] summary { font-weight: 550; color: var(--vitae-navy); }
+        div[data-testid="stDataFrame"], div[data-testid="stTable"] { border: 1px solid var(--vitae-line); border-radius: 12px; overflow: hidden; background: #FFFFFF; box-shadow: none; }
+        div[data-testid="stPlotlyChart"] { border: 1px solid var(--vitae-line); border-radius: 12px; background: #FFFFFF; padding: .35rem; box-shadow: none; }
+        div[data-testid="stAlert"] { border-radius: 10px; }
 
-        div[data-testid="stVerticalBlockBorderWrapper"] {
-            border-color: var(--vitae-line) !important;
-            border-radius: 20px !important;
-            background: rgba(255,255,255,.82);
-            box-shadow: 0 8px 28px rgba(70,20,42, .045);
+        /* ---------- Botones ---------- */
+        .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button, [data-testid="stPopover"] button {
+            min-height: 2.4rem; border-radius: 8px; font-weight: 550; box-shadow: none !important;
+            background: #FFFFFF; color: var(--vitae-text); border: 1px solid #DED7DB; transition: border-color .15s, background .15s;
         }
-        div[data-testid="stExpander"] {
-            border: 1px solid var(--vitae-line);
-            border-radius: 16px;
-            background: rgba(255,255,255,.80);
-            overflow: hidden;
+        .stButton > button:hover, .stDownloadButton > button:hover, [data-testid="stPopover"] button:hover { border-color: #BFB3BA; background: #FBF9FA; color: var(--vitae-text); }
+        .stButton > button[kind="primary"], .stFormSubmitButton > button, .stButton > button[data-testid="stBaseButton-primary"] {
+            background: var(--vitae-accent) !important; border-color: var(--vitae-accent) !important; color: #FFFFFF !important;
         }
-        div[data-testid="stExpander"] summary { font-weight: 760; color: var(--vitae-navy); }
+        .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button:hover { background: #76203F !important; border-color: #76203F !important; }
 
-        .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
-            min-height: 2.65rem;
-            border-radius: 12px;
-            border: 1px solid rgba(121,35,72, .16);
-            background: linear-gradient(135deg, #792348, #8C2853);
-            color: white;
-            font-weight: 760;
-            box-shadow: 0 6px 16px rgba(121,35,72, .15);
-            transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
+        /* ---------- Campos ---------- */
+        div[data-baseweb="select"] > div, div[data-baseweb="base-input"], .stTextArea textarea, .stTextInput input, .stNumberInput input {
+            border-radius: 8px !important; background: #FFFFFF !important;
         }
-        .stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
-            transform: translateY(-1px);
-            filter: brightness(1.04);
-            box-shadow: 0 10px 22px rgba(121,35,72, .22);
-            color: white;
+        div[data-baseweb="select"] > div:focus-within, div[data-baseweb="base-input"]:focus-within, .stTextArea textarea:focus {
+            border-color: var(--vitae-accent) !important; box-shadow: 0 0 0 3px rgba(140,40,83,.10) !important;
         }
-        .stButton > button:active { transform: translateY(0); }
+        span[data-baseweb="tag"] { background: var(--vitae-accent-soft) !important; color: var(--vitae-accent) !important; border-radius: 6px !important; }
+        span[data-baseweb="tag"] * { color: var(--vitae-accent) !important; }
 
-        div[data-baseweb="select"] > div,
-        div[data-baseweb="base-input"],
-        .stDateInput > div > div,
-        .stTextArea textarea,
-        .stTextInput input,
-        .stNumberInput input {
-            border-radius: 12px !important;
-            border-color: rgba(60,18,36, .14) !important;
-            background: rgba(255,255,255,.94) !important;
-        }
-        div[data-baseweb="select"] > div:focus-within,
-        div[data-baseweb="base-input"]:focus-within,
-        .stTextArea textarea:focus,
-        .stTextInput input:focus {
-            border-color: rgba(162,47,97, .65) !important;
-            box-shadow: 0 0 0 3px rgba(162,47,97, .10) !important;
-        }
-        div[data-testid="stDataFrame"], div[data-testid="stTable"] {
-            border: 1px solid var(--vitae-line);
-            border-radius: 16px;
-            overflow: hidden;
-            background: white;
-            box-shadow: 0 7px 22px rgba(70,20,42, .045);
-        }
-        div[data-testid="stPlotlyChart"] {
-            border: 1px solid var(--vitae-line);
-            border-radius: 18px;
-            background: rgba(255,255,255,.88);
-            padding: .25rem;
-            box-shadow: 0 8px 24px rgba(70,20,42, .045);
-        }
-        div[data-testid="stTabs"] [data-baseweb="tab-list"] {
-            gap: .35rem;
-            background: rgba(242,229,235, .72);
-            padding: .3rem;
-            border-radius: 14px;
-        }
-        div[data-testid="stTabs"] button {
-            border-radius: 10px;
-            font-weight: 760;
-            padding-left: .85rem;
-            padding-right: .85rem;
-        }
-        div[data-testid="stTabs"] button[aria-selected="true"] {
-            background: white;
-            color: var(--vitae-blue);
-            box-shadow: 0 4px 12px rgba(70,20,42, .08);
-        }
-        div[data-testid="stAlert"] { border-radius: 15px; }
-        hr { border-color: rgba(60,18,36, .09); }
+        /* ---------- Pestañas y selectores de sección ---------- */
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] { gap: .25rem; background: transparent; border-bottom: 1px solid var(--vitae-line); padding: 0; border-radius: 0; }
+        div[data-testid="stTabs"] button { border-radius: 0; font-weight: 500; padding: .55rem .8rem; background: transparent !important; }
+        div[data-testid="stTabs"] button[aria-selected="true"] { color: var(--vitae-accent) !important; }
+        div[data-baseweb="tab-highlight"] { background: var(--vitae-accent) !important; }
+        div[data-testid="stButtonGroup"] button { font-weight: 500; }
 
-        @media (max-width: 800px) {
-            .block-container { padding-left: .8rem; padding-right: .8rem; padding-top: .7rem; }
-            .vitae-app-header { padding: 1.05rem; border-radius: 19px; align-items: flex-start; }
-            .vitae-title { font-size: 1.65rem; }
-            .vitae-live { display: none; }
-            div[data-testid="stMetric"] { min-height: 104px; }
-        }
-
-        /* PALETA CORPORATIVA VITAE · ROSA DE MARCA */
-        :root {
-            --vitae-rose: #B1567E;
-            --vitae-rose-deep: #71324F;
-            --vitae-rose-dark: #3A1E2D;
-            --vitae-rose-soft: #FFF6FA;
-        }
-        [data-testid="stTabs"] button[aria-selected="true"] {
-            color: #B1567E !important;
-            border-bottom-color: #B1567E !important;
-        }
-        [data-testid="stTabs"] [data-baseweb="tab-highlight"] {
-            background-color: #B1567E !important;
-        }
-        .stButton > button, .stDownloadButton > button, .stFormSubmitButton > button {
-            background: linear-gradient(135deg, #A94770 0%, #B1567E 55%, #C56D92 100%) !important;
-            border-color: rgba(177,86,126,.30) !important;
-            box-shadow: 0 8px 20px rgba(177,86,126,.20) !important;
-        }
-        .stButton > button:hover, .stDownloadButton > button:hover, .stFormSubmitButton > button:hover {
-            box-shadow: 0 11px 26px rgba(177,86,126,.28) !important;
-        }
-        section[data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #3A1E2D 0%, #71324F 58%, #A94770 100%) !important;
-        }
-
-        /* FIX DEFINITIVO: selectbox del sidebar compatible con Streamlit clásico y moderno. */
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"],
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] [role="combobox"],
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] button[role="combobox"] {
-            background-color: #FFFFFF !important;
-            border-color: rgba(255,255,255,.80) !important;
-            color: #3C1224 !important;
-            -webkit-text-fill-color: #3C1224 !important;
-            opacity: 1 !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] div[data-baseweb="select"] *,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] [role="combobox"] *,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] button[role="combobox"] *,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] span,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] p,
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] input {
-            color: #3C1224 !important;
-            -webkit-text-fill-color: #3C1224 !important;
-            text-shadow: none !important;
-            opacity: 1 !important;
-            visibility: visible !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stSelectbox"] svg {
-            color: #792348 !important;
-            fill: #792348 !important;
-            opacity: 1 !important;
-        }
-        /* Opciones abiertas del desplegable. */
-        body > div[data-baseweb="popover"] [role="option"],
-        body > div[data-baseweb="popover"] [role="option"] *,
-        [data-baseweb="popover"] [role="listbox"] [role="option"],
-        [data-baseweb="popover"] [role="listbox"] [role="option"] * {
-            color: #3C1224 !important;
-            -webkit-text-fill-color: #3C1224 !important;
-            background-color: #FFFFFF !important;
-            opacity: 1 !important;
-        }
-
-        /* =====================================================
-           VITAE PRODUCT UI · CAPA FINAL DE CONSISTENCIA
-           ===================================================== */
-        :root {
-            color-scheme: light;
-            --vitae-radius-xs: 9px;
-            --vitae-radius-sm: 12px;
-            --vitae-radius-md: 16px;
-            --vitae-radius-lg: 22px;
-            --vitae-focus: 0 0 0 3px rgba(177,86,126,.14);
-        }
-
-        .block-container > div {
-            animation: vitae-enter .18s ease-out both;
-        }
-        @keyframes vitae-enter {
-            from { opacity: .01; transform: translateY(2px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        [data-testid="stForm"] {
-            border: 1px solid rgba(60,18,36,.10);
-            border-radius: var(--vitae-radius-lg);
-            background: rgba(255,255,255,.86);
-            padding: 1rem 1rem .35rem 1rem;
-            box-shadow: 0 8px 26px rgba(70,20,42,.045);
-        }
-        [data-testid="stDataEditor"] {
-            border: 1px solid rgba(60,18,36,.10);
-            border-radius: var(--vitae-radius-md);
-            /* Mantener visibles los controles flotantes nativos del editor. */
-            overflow: visible !important;
-            background: #fff;
-            box-shadow: 0 7px 22px rgba(70,20,42,.04);
-        }
-        /* Streamlit oculta la barra de herramientas hasta hover en varias
-           versiones. En iPad/touch no existe un hover real, por lo que los
-           controles de tabla pueden quedar inaccesibles. Los dejamos siempre
-           visibles cuando el frontend los renderiza. */
-        [data-testid="stDataEditor"] [data-testid="stElementToolbar"],
-        [data-testid="stDataFrame"] [data-testid="stElementToolbar"] {
-            opacity: 1 !important;
-            visibility: visible !important;
-            pointer-events: auto !important;
-            transform: none !important;
-        }
-        [data-testid="stDataEditor"] [data-testid="stElementToolbarButton"],
-        [data-testid="stDataFrame"] [data-testid="stElementToolbarButton"] {
-            opacity: 1 !important;
-            visibility: visible !important;
-            pointer-events: auto !important;
-        }
-        [data-testid="stFileUploader"] section {
-            border-radius: var(--vitae-radius-md) !important;
-            border-color: rgba(177,86,126,.22) !important;
-            background: rgba(255,255,255,.72) !important;
-        }
-        [data-testid="stPopover"] > button {
-            border-radius: 999px !important;
-        }
-        [data-testid="stSegmentedControl"] {
-            margin: .15rem 0 .85rem 0;
-        }
-        [data-testid="stSegmentedControl"] > div {
-            border: 1px solid rgba(60,18,36,.09);
-            border-radius: 14px;
-            background: rgba(255,255,255,.72);
-            padding: .22rem;
-            box-shadow: 0 5px 16px rgba(70,20,42,.035);
-        }
-        [data-testid="stSegmentedControl"] button {
-            border-radius: 10px !important;
-            font-weight: 720 !important;
-        }
-        [data-testid="stToast"] {
-            border: 1px solid rgba(60,18,36,.10);
-            border-radius: var(--vitae-radius-md);
-            box-shadow: 0 16px 38px rgba(70,20,42,.12);
-        }
-        [data-testid="stProgress"] > div > div > div {
-            background: linear-gradient(90deg, #9F4A70, #C56D92) !important;
-        }
-        [data-testid="stMetricDelta"] {
-            font-weight: 760;
-            font-size: .82rem;
-        }
-        label, [data-testid="stWidgetLabel"] {
-            font-weight: 680 !important;
-            letter-spacing: -.005em;
-        }
-        code, kbd, pre {
-            font-variant-ligatures: none;
-        }
-        a {
-            color: #8F3F66;
-            text-decoration-thickness: 1px;
-            text-underline-offset: 2px;
-        }
-        a:hover { color: #71324F; }
-
-        button:focus-visible, input:focus-visible, textarea:focus-visible,
-        [role="combobox"]:focus-visible {
-            outline: none !important;
-            box-shadow: var(--vitae-focus) !important;
-        }
-        button:disabled {
-            opacity: .50 !important;
-            filter: saturate(.55);
-            cursor: not-allowed !important;
-            transform: none !important;
-            box-shadow: none !important;
-        }
-
-        .vitae-system-note {
-            display: flex;
-            gap: .65rem;
-            align-items: flex-start;
-            border: 1px solid rgba(60,18,36,.09);
-            border-radius: 14px;
-            background: rgba(255,255,255,.78);
-            padding: .72rem .85rem;
-            color: var(--vitae-muted);
-            font-size: .82rem;
-        }
-        .vitae-status-dot {
-            width: 8px; height: 8px; border-radius: 50%;
-            margin-top: .33rem; flex: 0 0 auto;
-            background: #B1567E;
-            box-shadow: 0 0 0 4px rgba(177,86,126,.10);
-        }
-
-        @media (max-width: 640px) {
-            .block-container {
-                padding-left: .62rem !important;
-                padding-right: .62rem !important;
-                padding-bottom: 2.25rem !important;
-            }
-            .vitae-app-header {
-                margin-bottom: .8rem;
-                box-shadow: 0 7px 22px rgba(70,20,42,.06);
-            }
-            div[data-testid="stMetric"] {
-                padding: .78rem .82rem;
-                min-height: 96px;
-            }
-            div[data-testid="stMetricValue"] {
-                font-size: clamp(1.22rem, 8vw, 1.75rem) !important;
-            }
-            [data-testid="stDataFrame"], [data-testid="stDataEditor"] {
-                font-size: .82rem;
-            }
-        }
-        @media (prefers-reduced-motion: reduce) {
-            *, *::before, *::after {
-                animation-duration: .001ms !important;
-                animation-iteration-count: 1 !important;
-                transition-duration: .001ms !important;
-                scroll-behavior: auto !important;
-            }
-        }
+        /* ---------- Encabezado de la app (versión compacta) ---------- */
+        .vitae-app-header { display:none; }
+        .vitae-page-kicker { font-size:.75rem; color:var(--vitae-muted); font-weight:500; margin-bottom:.1rem; }
         </style>
         """,
         unsafe_allow_html=True,
     )
-
 
 
 def _copilot_runtime_context(modulo_actual: str) -> dict[str, Any]:
@@ -1739,8 +1352,8 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     # Así el Dashboard y los módulos conservan todo su ancho.
     _, copilot_col = st.columns([8.6, 1.4])
     with copilot_col:
-        with st.popover("✦ Copiloto Vitae", use_container_width=True):
-            st.markdown("### ✦ Copiloto Vitae")
+        with st.popover("Copiloto", icon=":material/auto_awesome:", use_container_width=True):
+            st.markdown("### Copiloto Vitae")
             st.caption(f"Contexto activo · {actual}")
             st.markdown(
                 "Preguntame sobre esta pantalla o sobre cualquier área de Vitae. "
@@ -1826,26 +1439,12 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
 
 
 def render_header() -> None:
+    """Encabezado común: control de acceso, estilo global, sesión (en el menú
+    lateral) y Copiloto. Ya no dibuja el cartel grande de VITAE en cada página."""
     _auth_require_login_and_permission()
     _render_vitae_app_shell()
     _auth_render_session_bar()
     render_vitae_copilot()
-    st.markdown(
-        """
-        <div class="vitae-app-header">
-            <div>
-                <div class="vitae-eyebrow">Ecosistema de gestión clínica</div>
-                <div class="vitae-title">VITAE</div>
-                <div class="vitae-subtitle">
-                    Gestión integral de Vitae Medicina Reproductiva y Vitae Medical ·
-                    información operativa, financiera y ejecutiva en un solo lugar.
-                </div>
-            </div>
-            <div class="vitae-live">Sistema operativo</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 DEFAULT_FACT_LABELS = {
     "mes": "Mes",
@@ -2943,7 +2542,7 @@ def _dg_render_css() -> None:
             border-radius: 22px;
             padding: 1.25rem 1.4rem;
             margin: .15rem 0 1rem 0;
-            background: linear-gradient(135deg, rgba(241,208,222, .98), rgba(236,213,223, .96));
+            background: #FFFFFF;
             box-shadow: 0 12px 34px rgba(48,24,34, .08);
         }
         .dg-kicker {font-size:.72rem; letter-spacing:.14em; text-transform:uppercase; color:#697386; font-weight:800;}
@@ -5781,15 +5380,7 @@ def render_agenda_quirofano_pro(
 
             background:
 
-                linear-gradient(
-
-                    135deg,
-
-                    rgba(255, 75, 75, 0.07),
-
-                    rgba(213,112,156, 0.04)
-
-                );
+                #FFFFFF;
 
         }}
 
@@ -7284,7 +6875,7 @@ def render_agenda_quirofano_ultra_pro(
         """
         <style>
         .qx-hero{padding:20px 22px;border:1px solid rgba(177,86,126,.22);border-radius:20px;
-          background:linear-gradient(135deg,rgba(177,86,126,.12),rgba(255,255,255,.60));margin:4px 0 14px}
+          background:#FFFFFF;margin:4px 0 14px}
         .qx-kicker{font-size:12px;font-weight:800;letter-spacing:.11em;text-transform:uppercase;color:#8F3F66;margin-bottom:5px}
         .qx-title{font-size:30px;font-weight:900;letter-spacing:-.03em;line-height:1.05;color:#2F2530}
         .qx-sub{font-size:14px;color:#6F6470;margin-top:7px;line-height:1.45}
@@ -8702,8 +8293,7 @@ def render_banco_pro_panel(
             border: 1px solid rgba(120, 130, 150, .24);
             border-radius: 19px;
             background:
-                radial-gradient(circle at 92% 10%, rgba(210,100,148, .22), transparent 31%),
-                linear-gradient(135deg, rgba(48,14,29, .98), rgba(79,24,48, .94));
+                #FFFFFF;
             box-shadow: 0 14px 34px rgba(0, 0, 0, .14);
             margin: .15rem 0 1rem 0;
         }
@@ -9484,7 +9074,7 @@ def render_caja_pro_panel(
             padding: 1.15rem 1.3rem;
             border: 1px solid rgba(120, 130, 150, .22);
             border-radius: 18px;
-            background: linear-gradient(135deg, rgba(52,19,33, .96), rgba(78,28,50, .90));
+            background: #341321;
             box-shadow: 0 12px 30px rgba(0,0,0,.12);
             margin: .15rem 0 1rem 0;
         }
@@ -13319,7 +12909,7 @@ def render_convenios_pro() -> None:
             padding: 1.35rem 1.55rem;
             border: 1px solid rgba(103,30,62, .20);
             border-radius: 22px;
-            background: linear-gradient(135deg, rgba(103,30,62, .14), rgba(191,56,114, .07));
+            background: #FFFFFF;
             box-shadow: 0 16px 38px rgba(42,15,27, .08);
             margin-bottom: 1rem;
         }
@@ -14769,7 +14359,7 @@ def _dt_css() -> None:
         """
         <style>
         .dt-hero {
-            background: linear-gradient(135deg, #2c1728 0%, #6f3156 55%, #b3658e 100%);
+            background: #2C1728;
             color: white; border-radius: 20px; padding: 25px 28px; margin: 4px 0 18px 0;
             box-shadow: 0 14px 34px rgba(54, 24, 48, .18);
         }
@@ -17128,8 +16718,7 @@ def render_deudas_impositivas_pro(
             border: 1px solid rgba(160,80,115, .22);
             border-radius: 20px;
             background:
-                radial-gradient(circle at 92% 10%, rgba(216,122,163, .23), transparent 30%),
-                linear-gradient(135deg, rgba(62,18,37, .99), rgba(95,28,57, .94));
+                #FFFFFF;
             color: white;
             margin: .25rem 0 1rem 0;
             box-shadow: 0 16px 42px rgba(50,14,30, .18);
@@ -18535,7 +18124,7 @@ def _pp_css() -> None:
         """
         <style>
         .pp-hero {
-            background: linear-gradient(135deg, #351221 0%, #631E3C 52%, #872F55 100%);
+            background: #351221;
             color: white; border-radius: 22px; padding: 26px 28px; margin: 4px 0 18px 0;
             box-shadow: 0 16px 36px rgba(60,17,36, .22);
         }
@@ -20299,7 +19888,7 @@ def _gv_css() -> None:
         """
         <style>
         .gv-hero {
-            background: linear-gradient(135deg, #46172B 0%, #691E3F 48%, #952F5B 100%);
+            background: #46172B;
             color: white; border-radius: 24px; padding: 27px 30px; margin: 4px 0 18px 0;
             box-shadow: 0 18px 42px rgba(74,22,44, .24);
         }
@@ -21376,7 +20965,7 @@ def render_caja_pro_panel(df: pd.DataFrame, module_name: str, df_total: pd.DataF
 
     st.markdown("""
     <style>
-    .vmr2{border:1px solid rgba(120,130,150,.22);border-radius:18px;padding:1.15rem 1.25rem;margin:.1rem 0 1rem;background:linear-gradient(135deg,rgba(27,31,42,.98),rgba(42,49,65,.95))}
+    .vmr2{border:1px solid rgba(120,130,150,.22);border-radius:18px;padding:1.15rem 1.25rem;margin:.1rem 0 1rem;background:#1B1F2A}
     .vmr2 h2{color:white;margin:0;font-size:1.55rem}.vmr2 p{color:rgba(255,255,255,.70);margin:.35rem 0 0}.vmr2 b{color:#fff}
     </style><div class="vmr2"><h2>CAJA VMR PRO · ARS + USD</h2><p>Dos cajas reales, dos monedas separadas. <b>Nunca se suman USD como pesos.</b></p></div>
     """,unsafe_allow_html=True)
@@ -22902,7 +22491,7 @@ def render_cuenta_corriente_vmr_pro(df, table="cuenta_corriente_vmr"):
             width: 100%;
             padding: 1.15rem 1.35rem;
             border-radius: 18px;
-            background: linear-gradient(120deg, #2A0F1B 0%, #3A1726 55%, #4A2434 100%);
+            background: #2A0F1B;
             border: 1px solid rgba(191,141,163, .24);
             box-shadow: 0 12px 30px rgba(42,15,27, .16);
             margin: .2rem 0 1rem 0;
@@ -24866,15 +24455,7 @@ def render_resumen_empresas_pro(
 
             .empresa-card {
 
-                background: linear-gradient(
-
-                    145deg,
-
-                    #ffffff 0%,
-
-                    #EDD4DF 100%
-
-                );
+                background: #FFFFFF;
 
                 border: 1px solid rgba(79,44,59, 0.12);
 
