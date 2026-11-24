@@ -24,6 +24,7 @@ from vitae.core.tablas import MODULES
 from vitae.core.database import *
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
+from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
 from vitae.core.importadores import render_importer
 import vitae.modulos.quirofano as _agenda_quirofano_modulo
 
@@ -449,6 +450,7 @@ _SECCION_ICONOS = [
     ("ficha", "description"), ("reglas", "rule"), ("conciliación", "compare_arrows"),
     ("director ia", "auto_awesome"), (r"\bia\b", "auto_awesome"), ("columnas", "tune"), ("registros", "table_view"),
     ("exportar", "download"), ("importar", "upload_file"), ("migrar", "upload_file"),
+    ("nuevo mes", "calendar_add_on"), ("qué caja paga", "account_balance_wallet"),
     ("cargar", "add_circle"), ("nueva", "add_circle"), ("registrar", "add_circle"),
     ("editar", "edit_note"), ("gestionar", "edit_note"), ("gestión", "edit_note"),
     ("a pagar", "payments"), ("liquidación", "receipt_long"), ("control de datos", "verified"),
@@ -21110,6 +21112,22 @@ def render_facturacion_pro(
         return
 
 
+    # PAGOS PENDIENTES VITAE: planilla mensual por categoría, con la caja que
+    # paga cada concepto (VMR, VM o Gine Vitae) y lo disponible de cada una.
+    if str(table).lower() == "pagos_pendientes_vitae":
+        def _leer_cajas_pp():
+            return get_df("pagos_pendientes_cajas")
+
+        render_pagos_pendientes(
+            df_base.copy(),
+            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+            leer_cajas=_leer_cajas_pp,
+            guardar_cajas=lambda df_nuevo: sync_df_to_sheet("pagos_pendientes_cajas", df_nuevo),
+            selector=_vitae_lazy_selector,
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"pagos_pendientes:{table}"),
+        )
+        return
+
     # GINE VITAE: lector especializado del cuadro doble (planes/pacientes + caja),
     # importación por hoja y conservación permanente de la matriz original.
     identity_gine = _gv_norm(f"{table} {module_name}")
@@ -23128,6 +23146,13 @@ def total_mod(nombre, dfs):
     if str(nombre).strip().lower() == "caja vmr":
         try:
             return float(_caja_vmr_saldos(df)["ARS"]["saldo"])
+        except Exception:
+            pass
+    # Pagos pendientes: cada planilla mensual repite lo impago del mes anterior;
+    # la deuda es el saldo de la planilla más reciente, no la suma de todas.
+    if str(nombre).strip().lower() == "pagos pendientes vitae":
+        try:
+            return float(_pp_saldo_mes_vigente(df))
         except Exception:
             pass
     for col in ["saldo", "saldo_movimiento", "importe", "valor_pesos", "monto", "ingreso"]:
