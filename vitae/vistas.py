@@ -6951,515 +6951,447 @@ def render_agenda_quirofano_ultra_pro(
     # ---------------------------
     # Diseño visual
     # ---------------------------
+    COLOR_ESTADO = {
+        "Consulta": ("#E7F0FB", "#1E5AA8"),
+        "Pendiente de autorización": ("#FFF1D6", "#8A5300"),
+        "Autorizado": ("#FDF3E1", "#8A5300"),
+        "Programado": ("#EFE9FB", "#5B3BA6"),
+        "Confirmado": ("#E4F5EA", "#17703A"),
+        "En quirófano": ("#FDE6E6", "#A12121"),
+        "Realizado": ("#E2F1E8", "#155C33"),
+        "Reprogramado": ("#FFF1D6", "#8A5300"),
+        "Suspendido": ("#EEEEF0", "#4B5563"),
+        "Cancelado": ("#EEEEF0", "#4B5563"),
+    }
+    CHECKLIST = [("ayuno", "Ayuno"), ("consentimiento", "Consentimiento"),
+                 ("prequirurgico", "Prequirúrgico"), ("material", "Material")]
+    DURACIONES = [30, 45, 60, 90, 120, 150, 180, 240]
+    DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    movil = es_movil()
+
     st.markdown(
         """
         <style>
-        .qx-hero{padding:20px 22px;border:1px solid rgba(177,86,126,.22);border-radius:20px;
-          background:#FFFFFF;margin:4px 0 14px}
-        .qx-kicker{font-size:12px;font-weight:800;letter-spacing:.11em;text-transform:uppercase;color:#8F3F66;margin-bottom:5px}
-        .qx-title{font-size:30px;font-weight:900;letter-spacing:-.03em;line-height:1.05;color:#2F2530}
-        .qx-sub{font-size:14px;color:#6F6470;margin-top:7px;line-height:1.45}
-        .qx-stage{padding:9px 10px;border-radius:12px;color:white;text-align:center;font-weight:850;font-size:14px;margin:4px 0 10px}
-        .qx-card{border:1px solid rgba(90,70,85,.15);border-radius:15px;padding:12px 13px;margin:0 0 10px;background:rgba(255,255,255,.78);
-          box-shadow:0 4px 14px rgba(68,45,58,.05)}
-        .qx-card.critical{border-color:rgba(220,38,38,.45);box-shadow:0 0 0 2px rgba(220,38,38,.06)}
-        .qx-patient{font-size:15px;font-weight:900;color:#272129;line-height:1.25;margin-bottom:5px}
-        .qx-meta{font-size:12.5px;color:#665E67;line-height:1.5}
-        .qx-pill{display:inline-block;padding:3px 8px;border-radius:999px;font-size:11px;font-weight:800;margin:4px 4px 0 0;background:#F4E8EE;color:#7A3152}
-        .qx-pill.warn{background:#FFF1D6;color:#9A5B00}.qx-pill.danger{background:#FEE5E5;color:#A31919}.qx-pill.ok{background:#E4F7E9;color:#147A35}
-        .qx-empty{border:1px dashed rgba(90,70,85,.20);border-radius:13px;padding:18px;text-align:center;color:#847985;font-size:13px;background:rgba(255,255,255,.35)}
-        .qx-dayhead{font-weight:850;font-size:12px;text-align:center;color:#756B76;padding:4px}
-        .qx-day{min-height:88px;border:1px solid rgba(90,70,85,.14);border-radius:12px;padding:8px;background:rgba(255,255,255,.62);margin-bottom:5px}
-        .qx-day.today{border-color:#B1567E;box-shadow:0 0 0 2px rgba(177,86,126,.08)}
-        .qx-daynum{font-size:13px;font-weight:900;color:#403741}.qx-count{font-size:20px;font-weight:900;color:#8F3F66;margin-top:8px}
-        .qx-mini{font-size:11px;color:#7B717C}.qx-alert{border-left:4px solid #D97706;padding:10px 12px;background:rgba(255,255,255,.66);border-radius:10px;margin-bottom:8px}
-        div[data-testid="stMetric"]{background:rgba(255,255,255,.58);border:1px solid rgba(90,70,85,.10);padding:10px 12px;border-radius:14px}
+        .qx-room{font-size:.78rem;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#8C2853;
+          margin:1rem 0 .4rem 0}
+        .qx-card{border:1px solid #E8E3E6;border-radius:12px;padding:11px 13px;margin:0 0 8px;background:#FFFFFF}
+        .qx-card.critical{border-color:#E7A1A1;background:#FFFBFB}
+        .qx-top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:3px}
+        .qx-time{font-size:.95rem;font-weight:700;color:#2A0F1C;font-variant-numeric:tabular-nums}
+        .qx-chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:.74rem;font-weight:600;white-space:nowrap}
+        .qx-patient{font-size:1.05rem;font-weight:650;color:#1F1A1D;line-height:1.25}
+        .qx-proc{font-size:.9rem;color:#3B3338;margin-top:1px}
+        .qx-meta{font-size:.82rem;color:#6E666B;margin-top:3px;line-height:1.45}
+        .qx-checks{font-size:.78rem;margin-top:5px;color:#6E666B}
+        .qx-checks b{font-weight:600}
+        .qx-ok{color:#17703A}.qx-no{color:#B14E5E}
+        .qx-warn{font-size:.78rem;color:#A12121;margin-top:4px;font-weight:600}
+        .qx-day{font-size:.95rem;font-weight:650;color:#2A0F1C;margin:1.1rem 0 .4rem 0;
+          border-bottom:1px solid #E8E3E6;padding-bottom:.25rem}
         </style>
         """,
         unsafe_allow_html=True,
     )
-
-    st.markdown(
-        """
-        <div class="qx-hero">
-          <div class="qx-kicker">VITAE · Centro operativo quirúrgico</div>
-          <div class="qx-title">Agenda de Quirófano X1000</div>
-          <div class="qx-sub">Un solo tablero para programar, autorizar, confirmar, detectar conflictos, operar y cerrar cada paciente sin perder el control del circuito.</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # ---------------------------
-    # Filtros globales
-    # ---------------------------
-    f1, f2, f3, f4, f5 = st.columns([2.2, 1.35, 1.4, 1.4, .75])
-    with f1:
-        search = st.text_input(
-            "Buscar",
-            placeholder="Paciente, médico, práctica, cobertura…",
-            key="qx_search",
-        ).strip().lower()
-    with f2:
-        scope = st.selectbox(
-            "Alcance",
-            ["Todo", "Activos", "Hoy", "Próximos 7 días", "Este mes"],
-            key="qx_scope",
-        )
-    salas = sorted(v for v in work["sala"].dropna().astype(str).unique() if v.strip())
-    medicos = sorted(v for v in work["medico"].dropna().astype(str).unique() if v.strip())
-    with f3:
-        selected_rooms = st.multiselect("Quirófano", salas, key="qx_rooms")
-    with f4:
-        selected_docs = st.multiselect("Médico", medicos, key="qx_docs")
-    with f5:
-        st.write("")
-        if st.button("↻", key="qx_refresh", help="Actualizar datos", use_container_width=True):
-            _vitae_invalidate_data_cache()
-            st.rerun()
-
-    filtered = work.copy()
-    if search:
-        haystack = (
-            filtered[["paciente", "procedimiento", "medico", "obra_social", "sala", "observaciones"]]
-            .fillna("").astype(str).agg(" ".join, axis=1).str.lower()
-        )
-        filtered = filtered[haystack.str.contains(re.escape(search), na=False)]
-    if selected_rooms:
-        filtered = filtered[filtered["sala"].isin(selected_rooms)]
-    if selected_docs:
-        filtered = filtered[filtered["medico"].isin(selected_docs)]
-    if scope == "Activos":
-        filtered = filtered[~filtered["estado"].isin(ESTADOS_CERRADOS)]
-    elif scope == "Hoy":
-        filtered = filtered[filtered["_fecha"].dt.normalize().eq(today)]
-    elif scope == "Próximos 7 días":
-        filtered = filtered[
-            filtered["_fecha"].notna()
-            & filtered["_fecha"].dt.normalize().between(today, today + pd.Timedelta(days=7))
-        ]
-    elif scope == "Este mes":
-        filtered = filtered[
-            filtered["_fecha"].notna()
-            & filtered["_fecha"].between(month_start, month_end)
-        ]
-
-    # ---------------------------
-    # KPIs de control
-    # ---------------------------
-    today_cases = work[
-        work["_fecha"].dt.normalize().eq(today)
-        & ~work["estado"].isin({"Suspendido", "Cancelado"})
-    ]
-    next7 = work[
-        work["_fecha"].notna()
-        & work["_fecha"].dt.normalize().between(today, today + pd.Timedelta(days=7))
-        & ~work["estado"].isin({"Suspendido", "Cancelado"})
-    ]
-    pending_auth = work["estado"].eq("Pendiente de autorización").sum()
-    unconfirmed = work[
-        work["estado"].isin({"Autorizado", "Programado", "Reprogramado"})
-        & work["_fecha"].notna()
-        & work["_fecha"].dt.normalize().between(today, tomorrow)
-    ]
-    done_month = work[
-        work["estado"].eq("Realizado")
-        & work["_fecha"].notna()
-        & work["_fecha"].between(month_start, month_end)
-    ]
-    k1, k2, k3, k4, k5, k6 = st.columns(6)
-    k1.metric("Hoy", int(len(today_cases)), help="Procedimientos del día no suspendidos/cancelados")
-    k2.metric("Próx. 7 días", int(len(next7)))
-    k3.metric("Autorización pendiente", int(pending_auth))
-    k4.metric("Sin confirmar 48 h", int(len(unconfirmed)))
-    k5.metric("Conflictos", int(len(conflict_rows)))
-    k6.metric("Realizados mes", int(len(done_month)))
-
-    if conflict_rows:
-        st.error(f"Hay {len(conflict_rows)} pacientes involucrados en superposiciones de quirófano. Revisalos antes de confirmar la agenda.")
-    elif not alerts_df.empty and (alerts_df["Nivel"] == "Alta").any():
-        st.warning(f"Hay {(alerts_df['Nivel'] == 'Alta').sum()} alertas de prioridad alta pendientes de revisión.")
-
-    sections = [
-        "🏥 Operación",
-        "🧭 Flujo de pacientes",
-        "📅 Calendario",
-        "🚨 Alertas",
-        "➕ Cargar",
-        "✏️ Editar",
-        "📋 Listado",
-    ]
-    section = _vitae_lazy_selector("Agenda", sections, key="qx_section")
 
     def _row_alert_tags(pos: int) -> list[str]:
         if alerts_df.empty:
             return []
         return alerts_df.loc[alerts_df["_row_pos"].eq(pos), "Tipo"].drop_duplicates().tolist()
 
-    def _render_patient_card(row, key_prefix: str, detailed: bool = True):
+    def _chip(state: str) -> str:
+        fondo, texto = COLOR_ESTADO.get(state, ("#F1ECEF", "#4B3D44"))
+        return f'<span class="qx-chip" style="background:{fondo};color:{texto}">{_html.escape(state)}</span>'
+
+    def _render_patient_card(row, key_prefix: str, detailed: bool = True, show_date: bool = False):
         pos = int(row["_row_pos"])
         state = row["estado"]
         critical = pos in conflict_set
-        patient = _html_text(row["paciente"] or "Paciente sin nombre")
-        procedure = _html_text(_short(row["procedimiento"] or "Procedimiento sin definir", 58))
-        doctor = _html_text(_short(row["medico"] or "Médico sin definir", 38))
-        room = _html_text(row["sala"] or "Sin quirófano")
-        date_txt = _fmt_date(row["_fecha"])
-        time_txt = row["_hora_inicio"] or "--:--"
-        end_txt = row["_hora_fin"] or ""
-        alerts_here = _row_alert_tags(pos)
-        if state in {"Realizado", "Confirmado"}:
-            state_class = "ok"
-        elif state in {"En quirófano", "Suspendido", "Cancelado"}:
-            state_class = "danger"
-        elif state in {"Pendiente de autorización", "Reprogramado"}:
-            state_class = "warn"
-        else:
-            state_class = ""
-        tags = f'<span class="qx-pill {state_class}">{_html.escape(state)}</span>'
-        if row["prioridad"] in {"Alta", "Urgente"}:
-            tags += f'<span class="qx-pill danger">{_html.escape(row["prioridad"])}</span>'
-        if alerts_here:
-            tags += f'<span class="qx-pill danger">{len(alerts_here)} alerta(s)</span>'
+        horario = row["_hora_inicio"] or "--:--"
+        if row["_hora_fin"]:
+            horario += f"–{row['_hora_fin']}"
+        if show_date:
+            horario = f"{_fmt_date(row['_fecha'])} · {horario}"
+        if row["sala"] and key_prefix not in ("parte",):
+            horario += f" · {_html_text(row['sala'])}"
+        meta = []
+        if row["medico"]:
+            meta.append(_html_text(row["medico"]))
+        if row["anestesista"]:
+            meta.append("Anest. " + _html_text(row["anestesista"]))
         if row["obra_social"]:
-            tags += f'<span class="qx-pill">{_html.escape(_short(row["obra_social"], 22))}</span>'
+            meta.append(_html_text(row["obra_social"]))
+        if row["telefono"]:
+            meta.append("Tel. " + _html_text(row["telefono"]))
+        checks = " · ".join(
+            f'<b class="{"qx-ok" if _yes(row[campo]) else "qx-no"}">{"✓" if _yes(row[campo]) else "✗"}</b> {nombre}'
+            for campo, nombre in CHECKLIST
+        )
+        avisos = _row_alert_tags(pos)
+        prioridad = f' · <b class="qx-no">{_html.escape(row["prioridad"])}</b>' if row["prioridad"] in {"Alta", "Urgente"} else ""
         st.markdown(
             f"""
             <div class="qx-card {'critical' if critical else ''}">
-              <div class="qx-patient">{patient}</div>
-              <div class="qx-meta"><b>{_html.escape(date_txt)}</b> · {time_txt}{('–' + end_txt) if end_txt else ''}<br>{procedure}<br>👨‍⚕️ {doctor} · 🏥 {room}</div>
-              <div>{tags}</div>
+              <div class="qx-top"><span class="qx-time">{horario}</span>{_chip(state)}</div>
+              <div class="qx-patient">{_html_text(row["paciente"] or "Paciente sin nombre")}</div>
+              <div class="qx-proc">{_html_text(row["procedimiento"] or "Procedimiento sin definir")}{prioridad}</div>
+              <div class="qx-meta">{" · ".join(meta)}</div>
+              {f'<div class="qx-checks">{checks}</div>' if state not in ESTADOS_CERRADOS else ''}
+              {f'<div class="qx-warn">{_html.escape(" · ".join(avisos))}</div>' if avisos else ''}
             </div>
             """,
             unsafe_allow_html=True,
         )
-        if detailed:
-            exp_label = "⚙️ Gestionar" + (" · CONFLICTO" if critical else "")
-            with st.expander(exp_label, expanded=False):
-                if alerts_here:
-                    for tag in alerts_here:
-                        st.caption("⚠️ " + tag)
-                c1, c2 = st.columns([1.5, 1])
-                with c1:
-                    new_state = st.selectbox(
-                        "Estado",
-                        ESTADOS,
-                        index=ESTADOS.index(state) if state in ESTADOS else 0,
-                        key=f"{key_prefix}_state_{pos}",
-                    )
-                with c2:
-                    st.write("")
-                    st.write("")
-                    if st.button("Guardar estado", key=f"{key_prefix}_save_state_{pos}", use_container_width=True):
-                        _save_updates(pos, {"estado": new_state}, "Estado actualizado.")
-                a, b = st.columns(2)
-                if state not in {"En quirófano", "Realizado", "Suspendido", "Cancelado"}:
-                    if a.button("Ingresó a quirófano", key=f"{key_prefix}_or_{pos}", use_container_width=True):
-                        _save_updates(pos, {"estado": "En quirófano"}, "Paciente marcado en quirófano.")
-                if state == "En quirófano":
-                    if b.button("Finalizar", key=f"{key_prefix}_done_{pos}", use_container_width=True):
-                        _save_updates(pos, {"estado": "Realizado"}, "Procedimiento finalizado.")
-                if row["telefono"]:
-                    st.caption(f"📞 {row['telefono']}")
-                if row["observaciones"]:
-                    st.caption("📝 " + row["observaciones"])
+        if not detailed:
+            return
+        with st.expander("Gestionar", icon=":material/tune:", expanded=False):
+            acciones = []
+            if state in {"Autorizado", "Programado", "Reprogramado"}:
+                acciones.append(("Confirmar", "Confirmado", "Turno confirmado."))
+            if state not in {"En quirófano", "Realizado", "Suspendido", "Cancelado"}:
+                acciones.append(("Ingresó", "En quirófano", "Paciente en quirófano."))
+            if state == "En quirófano":
+                acciones.append(("Finalizar", "Realizado", "Procedimiento finalizado."))
+            if state not in ESTADOS_CERRADOS:
+                acciones.append(("Suspender", "Suspendido", "Turno suspendido."))
+            if acciones:
+                cols = st.columns(len(acciones))
+                for col, (texto, nuevo, mensaje) in zip(cols, acciones):
+                    if col.button(texto, key=f"{key_prefix}_{nuevo}_{pos}", use_container_width=True,
+                                  type="primary" if texto in ("Confirmar", "Ingresó", "Finalizar") else "secondary"):
+                        cambios = {"estado": nuevo}
+                        if nuevo == "Confirmado":
+                            cambios["confirmado"] = "Sí"
+                        _save_updates(pos, cambios, mensaje)
+            c1, c2 = st.columns([1.6, 1], vertical_alignment="bottom")
+            new_state = c1.selectbox("Estado", ESTADOS, index=ESTADOS.index(state) if state in ESTADOS else 0,
+                                     key=f"{key_prefix}_state_{pos}")
+            if c2.button("Guardar estado", key=f"{key_prefix}_save_state_{pos}", use_container_width=True):
+                _save_updates(pos, {"estado": new_state}, "Estado actualizado.")
+            if state not in ESTADOS_CERRADOS:
+                st.caption("Checklist prequirúrgico")
+                ck = st.columns(4)
+                marcados = {campo: ck[i].checkbox(nombre, value=_yes(row[campo]), key=f"{key_prefix}_ck_{campo}_{pos}")
+                            for i, (campo, nombre) in enumerate(CHECKLIST)}
+                if any(marcados[c] != _yes(row[c]) for c, _ in CHECKLIST):
+                    if st.button("Guardar checklist", key=f"{key_prefix}_save_ck_{pos}", use_container_width=True):
+                        _save_updates(pos, {c: ("Sí" if v else "No") for c, v in marcados.items()}, "Checklist actualizado.")
+            if row["observaciones"]:
+                st.caption("Observaciones: " + row["observaciones"])
+            if row["autorizacion"] or row["numero_afiliado"]:
+                st.caption(" · ".join(x for x in (
+                    f"Autorización: {row['autorizacion']}" if row["autorizacion"] else "",
+                    f"Afiliado: {row['numero_afiliado']}" if row["numero_afiliado"] else "",
+                ) if x))
+
+    def _texto_parte(dia: pd.Timestamp, pacientes: pd.DataFrame) -> str:
+        lineas = [f"PARTE QUIRÚRGICO · {DIAS[dia.weekday()]} {dia.strftime('%d/%m/%Y')}"]
+        for sala, grupo in pacientes.groupby(pacientes["sala"].replace("", "Sin quirófano"), sort=True):
+            lineas.append("")
+            lineas.append(str(sala).upper())
+            for _, r in grupo.iterrows():
+                horario = (r["_hora_inicio"] or "--:--") + (f"-{r['_hora_fin']}" if r["_hora_fin"] else "")
+                partes = [horario, r["paciente"] or "Sin nombre", r["procedimiento"] or "Sin procedimiento"]
+                if r["medico"]:
+                    partes.append(r["medico"])
+                if r["anestesista"]:
+                    partes.append("Anest. " + r["anestesista"])
+                if r["obra_social"]:
+                    partes.append(r["obra_social"])
+                partes.append(r["estado"])
+                lineas.append("• " + " · ".join(partes))
+        return "\n".join(lineas)
+
+    # ---------------------------
+    # Indicadores
+    # ---------------------------
+    activos_dia = ~work["estado"].isin({"Suspendido", "Cancelado"})
+    today_cases = work[work["_fecha"].dt.normalize().eq(today) & activos_dia]
+    next7 = work[work["_fecha"].notna() & work["_fecha"].dt.normalize().between(today, today + pd.Timedelta(days=7)) & activos_dia]
+    done_month = work[work["estado"].eq("Realizado") & work["_fecha"].notna() & work["_fecha"].between(month_start, month_end)]
+    urgentes = alerts_df[alerts_df["Nivel"].isin(["Crítica", "Alta"])]["_row_pos"].nunique() if not alerts_df.empty else 0
+    confirmados_hoy = int(today_cases["estado"].isin({"Confirmado", "En quirófano", "Realizado"}).sum())
+    tarjetas_kpi([
+        ("Hoy", str(len(today_cases)), f"{confirmados_hoy} confirmados o en curso", "#8C2853"),
+        ("Próximos 7 días", str(len(next7)), "turnos activos", "#5B3BA6"),
+        ("Pendientes", str(urgentes), f"{len(conflict_rows)} superposiciones" if conflict_rows else "pacientes a revisar", "#C58A32"),
+        ("Realizados del mes", str(len(done_month)), f"{['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][today.month-1]}", "#17703A"),
+    ])
+    if conflict_rows:
+        st.error(f"Hay {len(conflict_rows)} pacientes en horarios superpuestos del mismo quirófano. Revisalos en Pendientes.")
+
+    sections = ["Parte del día", "Nuevo turno", "Próximos días", "Pendientes", "Editar", "Listado"]
+    section = _vitae_lazy_selector(
+        "Agenda", sections, key="qx_section_v2",
+        nombres={},
+    )
 
     # =====================================================
-    # OPERACIÓN DEL DÍA
+    # PARTE DEL DÍA
     # =====================================================
-    if section == "🏥 Operación":
-        st.markdown("### Centro de mando del día")
-        d1, d2, d3 = st.columns([1.2, 1.4, 1.4])
-        with d1:
-            op_date = st.date_input("Día operativo", value=today.date(), key="qx_operation_date")
-        day_ts = pd.Timestamp(op_date)
-        day_df = work[
-            work["_fecha"].dt.normalize().eq(day_ts)
-            & ~work["estado"].isin({"Cancelado"})
-        ].copy()
-        day_rooms = sorted(v for v in day_df["sala"].dropna().astype(str).unique() if v.strip())
-        with d2:
-            op_rooms = st.multiselect("Salas del día", day_rooms, default=day_rooms, key="qx_operation_rooms")
-        if op_rooms:
-            day_df = day_df[day_df["sala"].isin(op_rooms)]
-        with d3:
-            op_states = st.multiselect("Estados visibles", ESTADOS, default=[], key="qx_operation_states", placeholder="Todos")
-        if op_states:
-            day_df = day_df[day_df["estado"].isin(op_states)]
+    if section == "Parte del día":
+        clave_dia = "qx_parte_fecha"
+        if clave_dia not in st.session_state:
+            st.session_state[clave_dia] = today.date()
 
-        planned_minutes = int(day_df.loc[~day_df["estado"].isin({"Suspendido", "Cancelado"}), "_duracion"].sum()) if len(day_df) else 0
-        rooms_count = max(len({r for r in day_df["sala"] if r}), 1)
-        theoretical = rooms_count * 12 * 60  # ventana operativa de referencia 08–20, sólo indicador
-        occupancy = min(planned_minutes / theoretical, 1.0) if theoretical else 0
-        op_conflicts = len(set(day_df["_row_pos"]) & conflict_set)
-        op1, op2, op3, op4 = st.columns(4)
-        op1.metric("Pacientes", len(day_df))
-        op2.metric("Minutos programados", planned_minutes)
-        op3.metric("Carga estimada", f"{occupancy:.0%}", help="Referencia: 12 h por sala; no reemplaza la disponibilidad real configurada.")
-        op4.metric("En conflicto", op_conflicts)
+        def _mover(dias: int | None) -> None:
+            base_dia = pd.Timestamp(st.session_state.get(clave_dia, today.date()))
+            st.session_state[clave_dia] = (today if dias is None else base_dia + pd.Timedelta(days=dias)).date()
+
+        n1, n2, n3, n4 = st.columns([1, 1, 1, 1.6], vertical_alignment="bottom")
+        n1.button("◀ Anterior", key="qx_dia_ant", on_click=_mover, args=(-1,), use_container_width=True)
+        n2.button("Hoy", key="qx_dia_hoy", on_click=_mover, args=(None,), use_container_width=True)
+        n3.button("Siguiente ▶", key="qx_dia_sig", on_click=_mover, args=(1,), use_container_width=True)
+        n4.date_input("Fecha", key=clave_dia, format="DD/MM/YYYY", label_visibility="collapsed")
+        dia = pd.Timestamp(st.session_state[clave_dia])
+
+        day_df = work[work["_fecha"].dt.normalize().eq(dia) & ~work["estado"].eq("Cancelado")].copy()
+        day_df = day_df.sort_values(["sala", "_start_min", "paciente"], na_position="last")
+        etiqueta_dia = "Hoy" if dia == today else ("Mañana" if dia == tomorrow else ("Ayer" if dia == today - pd.Timedelta(days=1) else ""))
+        st.markdown(f"#### {(etiqueta_dia + ' · ') if etiqueta_dia else ''}{DIAS[dia.weekday()]} {dia.strftime('%d/%m/%Y')}")
 
         if day_df.empty:
-            st.info("No hay procedimientos cargados para ese día con los filtros actuales.")
+            st.info("No hay pacientes programados para este día. Podés cargar uno en «Nuevo turno».")
         else:
-            day_df = day_df.sort_values(["sala", "_start_min", "paciente"], na_position="last")
-            grouped_rooms = list(day_df.groupby(day_df["sala"].replace("", "Sin quirófano"), dropna=False))
-            for room_name, room_df in grouped_rooms:
-                st.markdown(f"#### 🏥 {room_name} · {len(room_df)} paciente(s)")
+            activos = day_df[~day_df["estado"].isin({"Suspendido"})]
+            confirmados = int(activos["estado"].isin({"Confirmado", "En quirófano", "Realizado"}).sum())
+            minutos = int(activos["_duracion"].sum())
+            salas_dia = sorted({s for s in day_df["sala"] if s})
+            st.caption(
+                f"{len(activos)} pacientes · {len(salas_dia) or 1} quirófano(s) · {confirmados} confirmados o en curso · "
+                f"{minutos // 60} h {minutos % 60:02d} min programados"
+            )
+            if len(salas_dia) > 1:
+                ver_salas = st.pills("Quirófano", salas_dia, selection_mode="multi", key="qx_parte_salas",
+                                     label_visibility="collapsed") if hasattr(st, "pills") else []
+                if ver_salas:
+                    day_df = day_df[day_df["sala"].isin(ver_salas)]
+            for room_name, room_df in day_df.groupby(day_df["sala"].replace("", "Sin quirófano"), sort=True):
+                st.markdown(f'<div class="qx-room">{_html.escape(str(room_name))} · {len(room_df)} paciente(s)</div>',
+                            unsafe_allow_html=True)
                 for _, row in room_df.iterrows():
-                    _render_patient_card(row, "op", detailed=True)
+                    _render_patient_card(row, "parte", detailed=True)
 
-        with st.expander("Resumen compacto para reunión / pase", expanded=False):
-            if day_df.empty:
-                st.caption("Sin datos para mostrar.")
-            else:
-                compact = pd.DataFrame({
-                    "Hora": day_df["_hora_inicio"],
-                    "Paciente": day_df["paciente"],
-                    "Procedimiento": day_df["procedimiento"],
-                    "Médico": day_df["medico"],
-                    "Quirófano": day_df["sala"],
-                    "Estado": day_df["estado"],
-                    "Alerta": day_df["_row_pos"].map(lambda p: " · ".join(_row_alert_tags(int(p)))),
+            st.divider()
+            with st.expander("Compartir el parte (WhatsApp, mail)", icon=":material/share:", expanded=False):
+                texto = _texto_parte(dia, day_df)
+                st.caption("Tocá el ícono de copiar arriba a la derecha del recuadro y pegalo en WhatsApp.")
+                st.code(texto, language=None)
+                tabla_parte = pd.DataFrame({
+                    "Quirófano": day_df["sala"], "Hora": day_df["_hora_inicio"], "Fin": day_df["_hora_fin"],
+                    "Paciente": day_df["paciente"], "Procedimiento": day_df["procedimiento"],
+                    "Médico": day_df["medico"], "Anestesista": day_df["anestesista"],
+                    "Cobertura": day_df["obra_social"], "Estado": day_df["estado"],
                 })
-                st.dataframe(compact, use_container_width=True, hide_index=True)
-
-    # =====================================================
-    # FLUJO VISUAL 3 + 3 (no seis columnas angostas)
-    # =====================================================
-    elif section == "🧭 Flujo de pacientes":
-        st.markdown("### Gestión visual del circuito quirúrgico")
-        st.caption("Seis etapas, distribuidas 3 + 3 para que cada paciente sea legible y gestionable también en iPad. Los filtros superiores controlan todo el tablero.")
-        sort_mode = st.selectbox(
-            "Orden de tarjetas",
-            ["Fecha más próxima", "Prioridad", "Paciente"],
-            key="qx_flow_sort",
-            label_visibility="collapsed",
-        )
-
-        flow_df = filtered.copy()
-        priority_rank = {"Urgente": 0, "Alta": 1, "Normal": 2}
-        flow_df["_priority_rank"] = flow_df["prioridad"].map(priority_rank).fillna(3)
-        if sort_mode == "Fecha más próxima":
-            flow_df = flow_df.sort_values(["_fecha", "_start_min", "paciente"], na_position="last")
-        elif sort_mode == "Prioridad":
-            flow_df = flow_df.sort_values(["_priority_rank", "_fecha", "_start_min"], na_position="last")
-        else:
-            flow_df = flow_df.sort_values("paciente")
-
-        for start_idx in (0, 3):
-            cols = st.columns(3)
-            for offset, (label, states, color) in enumerate(ETAPAS[start_idx:start_idx + 3]):
-                with cols[offset]:
-                    lane = flow_df[flow_df["estado"].isin(states)].copy()
-                    st.markdown(f'<div class="qx-stage" style="background:{color}">{_html.escape(label)} · {len(lane)}</div>', unsafe_allow_html=True)
-                    if lane.empty:
-                        st.markdown('<div class="qx-empty">Sin pacientes</div>', unsafe_allow_html=True)
-                    else:
-                        limit = 30
-                        for _, row in lane.head(limit).iterrows():
-                            _render_patient_card(row, f"flow_{start_idx}_{offset}", detailed=True)
-                        if len(lane) > limit:
-                            st.caption(f"Mostrando {limit} de {len(lane)}. Usá los filtros para acotar el tablero.")
-
-    # =====================================================
-    # CALENDARIO MENSUAL + DETALLE DEL DÍA
-    # =====================================================
-    elif section == "📅 Calendario":
-        st.markdown("### Calendario quirúrgico")
-        cm1, cm2 = st.columns([1, 2.3])
-        with cm1:
-            anchor = st.date_input("Mes", value=today.date(), key="qx_calendar_anchor")
-        anchor_ts = pd.Timestamp(anchor)
-        year, month = anchor_ts.year, anchor_ts.month
-        month_name = ["", "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"][month]
-        with cm2:
-            st.markdown(f"#### {month_name} {year}")
-            st.caption("El número grande es la cantidad de procedimientos no cancelados. Debajo se indica cuántos están confirmados.")
-
-        month_df = work[
-            work["_fecha"].notna()
-            & work["_fecha"].dt.year.eq(year)
-            & work["_fecha"].dt.month.eq(month)
-            & ~work["estado"].eq("Cancelado")
-        ].copy()
-        counts = month_df.groupby(month_df["_fecha"].dt.day).size().to_dict()
-        confirmed_month = month_df[month_df["estado"].eq("Confirmado")].copy()
-        conflict_month = month_df[month_df["_row_pos"].isin(conflict_set)].copy()
-        conf_counts = confirmed_month.groupby(confirmed_month["_fecha"].dt.day).size().to_dict() if not confirmed_month.empty else {}
-        conflict_counts = conflict_month.groupby(conflict_month["_fecha"].dt.day).size().to_dict() if not conflict_month.empty else {}
-        headers = st.columns(7)
-        for col, name in zip(headers, ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]):
-            with col:
-                st.markdown(f'<div class="qx-dayhead">{name}</div>', unsafe_allow_html=True)
-        for week in _calendar.Calendar(firstweekday=0).monthdayscalendar(year, month):
-            week_cols = st.columns(7)
-            for col, day_num in zip(week_cols, week):
-                with col:
-                    if not day_num:
-                        st.markdown('<div class="qx-day" style="opacity:.25"></div>', unsafe_allow_html=True)
-                        continue
-                    is_today = year == today.year and month == today.month and day_num == today.day
-                    n = int(counts.get(day_num, 0))
-                    nc = int(conf_counts.get(day_num, 0))
-                    nx = int(conflict_counts.get(day_num, 0))
-                    extra = f" · ⚠ {nx}" if nx else ""
-                    st.markdown(
-                        f'<div class="qx-day {"today" if is_today else ""}"><div class="qx-daynum">{day_num}</div><div class="qx-count">{n if n else "–"}</div><div class="qx-mini">{nc} confirmados{extra}</div></div>',
-                        unsafe_allow_html=True,
+                try:
+                    st.download_button(
+                        "Descargar parte (Excel)", icon=":material/table_chart:",
+                        data=_vitae_excel_bytes(tabla_parte, "Parte"),
+                        file_name=f"parte_quirurgico_{dia.strftime('%Y%m%d')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True, key="qx_parte_xlsx",
                     )
-
-        st.markdown("#### Ver detalle de un día")
-        inspect_day = st.date_input("Fecha a revisar", value=anchor, key="qx_calendar_day")
-        inspect_ts = pd.Timestamp(inspect_day)
-        inspect_df = work[work["_fecha"].dt.normalize().eq(inspect_ts)].sort_values(["_start_min", "sala"], na_position="last")
-        if inspect_df.empty:
-            st.info("No hay pacientes en esa fecha.")
-        else:
-            for _, row in inspect_df.iterrows():
-                _render_patient_card(row, "cal", detailed=True)
+                except Exception:
+                    pass
 
     # =====================================================
-    # ALERTAS
+    # NUEVO TURNO (rápido, pensado para el celular)
     # =====================================================
-    elif section == "🚨 Alertas":
-        st.markdown("### Centro de alertas y riesgos")
-        if alerts_df.empty:
-            st.success("No se detectan conflictos, vencimientos ni datos críticos incompletos con la información actual.")
-        else:
-            a1, a2, a3, a4 = st.columns(4)
-            a1.metric("Críticas", int((alerts_df["Nivel"] == "Crítica").sum()))
-            a2.metric("Altas", int((alerts_df["Nivel"] == "Alta").sum()))
-            a3.metric("Medias", int((alerts_df["Nivel"] == "Media").sum()))
-            a4.metric("Pacientes afectados", int(alerts_df["_row_pos"].nunique()))
-            severity = st.multiselect("Prioridad", ["Crítica", "Alta", "Media"], default=["Crítica", "Alta", "Media"], key="qx_alert_severity")
-            show_alerts = alerts_df[alerts_df["Nivel"].isin(severity)].copy()
-            order = {"Crítica": 0, "Alta": 1, "Media": 2}
-            show_alerts["_order"] = show_alerts["Nivel"].map(order)
-            show_alerts = show_alerts.sort_values(["_order", "Fecha", "Paciente"])
-            st.dataframe(show_alerts[["Nivel", "Tipo", "Paciente", "Fecha", "Detalle"]], use_container_width=True, hide_index=True)
+    elif section == "Nuevo turno":
+        def _valores(campo: str) -> list[str]:
+            valores = work[campo].dropna().astype(str).str.strip()
+            frecuencia = valores[valores != ""].value_counts()
+            return frecuencia.index.tolist()
 
-            st.markdown("#### Gestionar paciente con alerta")
-            affected = work[work["_row_pos"].isin(show_alerts["_row_pos"].unique())].copy()
-            if not affected.empty:
-                affected["_label"] = affected.apply(
-                    lambda r: f"{r['paciente'] or 'Sin nombre'} · {_fmt_date(r['_fecha'])} · {r['estado']}", axis=1
-                )
-                selected_label = st.selectbox("Paciente", affected["_label"].tolist(), key="qx_alert_patient")
-                selected = affected[affected["_label"].eq(selected_label)].iloc[0]
-                _render_patient_card(selected, "alert", detailed=True)
+        def _elegir(etiqueta: str, campo: str, key: str, obligatorio: bool = False) -> str:
+            opciones = _valores(campo)
+            texto = etiqueta + (" *" if obligatorio else "")
+            try:
+                valor = st.selectbox(texto, opciones, index=None, key=key, accept_new_options=True,
+                                     placeholder="Elegí o escribí uno nuevo")
+            except TypeError:  # Streamlit sin «accept_new_options»
+                valor = st.text_input(texto, key=key)
+            return str(valor or "").strip()
 
-    # =====================================================
-    # CARGAR NUEVO PACIENTE
-    # =====================================================
-    elif section == "➕ Cargar":
-        st.markdown("### Nuevo ingreso a agenda")
-        st.caption("Carga guiada y no destructiva. Si la planilla todavía no tiene un campo opcional, se agrega sólo al guardar este registro.")
-        with st.form("qx_new_case", clear_on_submit=False):
-            r1c1, r1c2, r1c3, r1c4 = st.columns([1.1, 1, 1, 1.25])
-            with r1c1:
-                new_date = st.date_input("Fecha *", value=today.date())
-            with r1c2:
-                new_start = st.time_input("Inicio *", value=_time(8, 0))
-            with r1c3:
-                new_end = st.time_input("Fin *", value=_time(9, 0))
-            with r1c4:
-                new_room = st.text_input("Quirófano *", placeholder="Quirófano 1")
-
-            r2c1, r2c2 = st.columns(2)
-            with r2c1:
-                new_patient = st.text_input("Paciente *", placeholder="APELLIDO, Nombre")
-                new_procedure = st.text_input("Procedimiento *", placeholder="Histeroscopia, LEEP, aspiración…")
-                new_doctor = st.text_input("Médico *")
-                new_anesth = st.text_input("Anestesista")
-            with r2c2:
-                new_insurance = st.text_input("Obra social / cobertura")
-                new_member = st.text_input("N.º afiliado")
-                new_phone = st.text_input("Teléfono / WhatsApp")
-                new_auth = st.text_input("Autorización", placeholder="Número / estado / referencia")
-
-            r3c1, r3c2, r3c3 = st.columns(3)
-            with r3c1:
-                new_state = st.selectbox("Estado", ESTADOS, index=ESTADOS.index("Programado"))
-            with r3c2:
-                new_priority = st.selectbox("Prioridad", PRIORIDADES, index=0)
-            with r3c3:
-                new_confirmed = st.selectbox("Confirmación paciente", ["No", "Sí"], index=0)
-
-            st.markdown("**Checklist prequirúrgico**")
-            q1, q2, q3, q4 = st.columns(4)
-            new_fasting = q1.checkbox("Ayuno confirmado")
-            new_consent = q2.checkbox("Consentimiento")
-            new_preop = q3.checkbox("Prequirúrgico OK")
-            new_material = q4.checkbox("Material OK")
-            new_notes = st.text_area("Observaciones", height=90)
-            submitted = st.form_submit_button("Guardar en agenda", use_container_width=True, type="primary")
+        st.caption("Los campos con * son obligatorios. Quirófano, médico, procedimiento y cobertura se eligen "
+                   "de los ya cargados o se escriben nuevos.")
+        with st.form("qx_nuevo_turno", clear_on_submit=False):
+            a1, a2, a3 = st.columns([1.2, 1, 1])
+            new_date = a1.date_input("Fecha *", value=today.date(), format="DD/MM/YYYY", key="qx_n_fecha")
+            new_start = a2.time_input("Hora *", value=_time(8, 0), step=900,
+                                      key="qx_n_hora")
+            new_dur = a3.selectbox("Duración *", DURACIONES, index=DURACIONES.index(60), key="qx_n_dur",
+                                   format_func=lambda m: f"{m // 60} h {m % 60:02d}" if m >= 60 else f"{m} min")
+            b1, b2 = st.columns(2)
+            with b1:
+                new_room = _elegir("Quirófano", "sala", "qx_n_sala", obligatorio=True)
+            with b2:
+                new_state = st.selectbox("Estado", ESTADOS, index=ESTADOS.index("Programado"), key="qx_n_estado")
+            new_patient = st.text_input("Paciente *", placeholder="APELLIDO, Nombre", key="qx_n_paciente")
+            c1, c2 = st.columns(2)
+            with c1:
+                new_procedure = _elegir("Procedimiento", "procedimiento", "qx_n_proc", obligatorio=True)
+                new_anesth = _elegir("Anestesista", "anestesista", "qx_n_anest")
+            with c2:
+                new_doctor = _elegir("Médico", "medico", "qx_n_medico", obligatorio=True)
+                new_insurance = _elegir("Obra social / cobertura", "obra_social", "qx_n_os")
+            new_phone = st.text_input("Teléfono / WhatsApp", key="qx_n_tel")
+            with st.expander("Más datos (afiliado, autorización, checklist, notas)", expanded=False):
+                d1, d2 = st.columns(2)
+                new_member = d1.text_input("N° de afiliado", key="qx_n_afil")
+                new_auth = d2.text_input("Autorización", placeholder="Número o referencia", key="qx_n_aut")
+                d3, d4 = st.columns(2)
+                new_priority = d3.selectbox("Prioridad", PRIORIDADES, index=0, key="qx_n_prio")
+                new_confirmed = d4.selectbox("¿Confirmó el paciente?", ["No", "Sí"], index=0, key="qx_n_conf")
+                q = st.columns(4)
+                new_checks = {campo: q[i].checkbox(nombre, key=f"qx_n_{campo}") for i, (campo, nombre) in enumerate(CHECKLIST)}
+                new_notes = st.text_area("Observaciones", height=80, key="qx_n_obs")
+            forzar = st.checkbox("Guardar aunque el quirófano esté ocupado en ese horario", key="qx_n_forzar")
+            submitted = st.form_submit_button("Guardar turno", use_container_width=True, type="primary")
 
         if submitted:
-            errors = []
-            if not new_patient.strip(): errors.append("paciente")
-            if not new_procedure.strip(): errors.append("procedimiento")
-            if not new_doctor.strip(): errors.append("médico")
-            if not new_room.strip(): errors.append("quirófano")
             start_m = new_start.hour * 60 + new_start.minute
-            end_m = new_end.hour * 60 + new_end.minute
-            if end_m <= start_m:
-                errors.append("hora de fin posterior al inicio")
-            if errors:
-                st.error("Falta completar/corregir: " + ", ".join(errors) + ".")
+            end_m = start_m + int(new_dur)
+            errores = [n for n, v in (("paciente", new_patient.strip()), ("procedimiento", new_procedure),
+                                      ("médico", new_doctor), ("quirófano", new_room)) if not v]
+            if end_m > 24 * 60:
+                errores.append("la cirugía termina después de medianoche")
+            # ¿Quirófano ocupado?
+            mismo = work[
+                work["_fecha"].dt.normalize().eq(pd.Timestamp(new_date))
+                & work["sala"].str.lower().eq(new_room.lower())
+                & work["estado"].isin(ESTADOS_PROGRAMACION)
+                & work["_start_min"].notna() & work["_end_min"].notna()
+            ] if new_room else work.iloc[0:0]
+            choques = mismo[(mismo["_start_min"].astype(float) < end_m) & (mismo["_end_min"].astype(float) > start_m)]
+            if errores:
+                st.error("Falta completar o corregir: " + ", ".join(errores) + ".")
+            elif not choques.empty and not forzar:
+                ocupado = "; ".join(f"{r['_hora_inicio']}–{r['_hora_fin'] or '?'} {r['paciente']}" for _, r in choques.iterrows())
+                st.error(f"{new_room} ya está ocupado en ese horario: {ocupado}. Cambiá la hora o marcá "
+                         "«Guardar aunque el quirófano esté ocupado».")
             else:
+                fin = f"{end_m // 60:02d}:{end_m % 60:02d}"
                 values = {
                     "fecha": new_date.strftime("%d/%m/%Y"),
                     "hora_inicio": new_start.strftime("%H:%M"),
-                    "hora_fin": new_end.strftime("%H:%M"),
-                    "duracion_min": end_m - start_m,
-                    "sala": new_room.strip(),
+                    "hora_fin": fin,
+                    "duracion_min": int(new_dur),
+                    "sala": new_room,
                     "paciente": new_patient.strip(),
-                    "procedimiento": new_procedure.strip(),
-                    "medico": new_doctor.strip(),
+                    "procedimiento": new_procedure,
+                    "medico": new_doctor,
                     "estado": new_state,
-                    "anestesista": new_anesth.strip(),
-                    "obra_social": new_insurance.strip(),
+                    "anestesista": new_anesth,
+                    "obra_social": new_insurance,
                     "numero_afiliado": new_member.strip(),
                     "autorizacion": new_auth.strip(),
                     "telefono": new_phone.strip(),
                     "observaciones": new_notes.strip(),
                     "prioridad": new_priority,
                     "confirmado": new_confirmed,
-                    "ayuno": "Sí" if new_fasting else "No",
-                    "consentimiento": "Sí" if new_consent else "No",
-                    "prequirurgico": "Sí" if new_preop else "No",
-                    "material": "Sí" if new_material else "No",
+                    **{campo: ("Sí" if v else "No") for campo, v in new_checks.items()},
                 }
-                # Crear las columnas requeridas antes de formar la nueva fila.
                 for field in values:
                     _ensure_field(field)
+                ahora = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
                 if field_pos.get("created_at") is not None:
-                    values["created_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                    values["created_at"] = ahora
                 if field_pos.get("updated_at") is not None:
-                    values["updated_at"] = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+                    values["updated_at"] = ahora
                 new_row = [""] * len(original.columns)
                 for field, value in values.items():
-                    pos = _ensure_field(field)
-                    # _ensure_field puede agrandar la tabla después de crear new_row.
-                    if len(new_row) < len(original.columns):
-                        new_row.extend([""] * (len(original.columns) - len(new_row)))
-                    new_row[pos] = value
+                    new_row[_ensure_field(field)] = value
                 original.loc[len(original)] = new_row
-                if _save("Paciente agregado a la Agenda de Quirófano."):
+                if _save(f"Turno guardado: {new_patient.strip()} · {new_date.strftime('%d/%m/%Y')} {new_start.strftime('%H:%M')}–{fin} · {new_room}."):
+                    # Deja el formulario listo para el próximo turno (misma fecha y quirófano).
+                    for k in ("qx_n_paciente", "qx_n_tel", "qx_n_afil", "qx_n_aut", "qx_n_obs"):
+                        try:
+                            del st.session_state[k]
+                        except Exception:
+                            pass
                     st.rerun()
 
     # =====================================================
-    # EDITOR OPERATIVO
+    # PRÓXIMOS DÍAS
     # =====================================================
-    elif section == "✏️ Editar":
-        st.markdown("### Editor operativo")
-        st.caption("Editá varias filas de una sola vez. El guardado vuelve a la misma fila real de Google Sheets y conserva todas las columnas no mostradas.")
-        edit_src = filtered.sort_values(["_fecha", "_start_min", "paciente"], na_position="last").copy()
+    elif section == "Próximos días":
+        alcance = st.segmented_control("Ver", [7, 14, 30], default=7, key="qx_prox_dias",
+                                       format_func=lambda d: f"{d} días") or 7
+        prox = work[
+            work["_fecha"].notna()
+            & work["_fecha"].dt.normalize().between(today, today + pd.Timedelta(days=int(alcance)))
+            & ~work["estado"].eq("Cancelado")
+        ].sort_values(["_fecha", "_start_min", "sala"], na_position="last")
+        if prox.empty:
+            st.info(f"No hay turnos en los próximos {alcance} días.")
+        else:
+            st.caption(f"{len(prox)} turnos · del más próximo al más lejano.")
+            for dia_ts, grupo in prox.groupby(prox["_fecha"].dt.normalize(), sort=True):
+                etiqueta = "Hoy" if dia_ts == today else ("Mañana" if dia_ts == tomorrow else "")
+                st.markdown(
+                    f'<div class="qx-day">{(etiqueta + " · ") if etiqueta else ""}{DIAS[dia_ts.weekday()]} '
+                    f'{dia_ts.strftime("%d/%m")} · {len(grupo)} paciente(s)</div>', unsafe_allow_html=True,
+                )
+                for _, row in grupo.iterrows():
+                    _render_patient_card(row, f"prox_{dia_ts.strftime('%Y%m%d')}", detailed=True)
+
+    # =====================================================
+    # PENDIENTES
+    # =====================================================
+    elif section == "Pendientes":
+        conteo_etapas = " · ".join(
+            f"{nombre}: {int(work['estado'].isin(estados).sum())}" for nombre, estados, _ in ETAPAS
+        )
+        st.caption("Circuito actual — " + conteo_etapas)
+        if alerts_df.empty:
+            st.success("No hay superposiciones, autorizaciones atrasadas, confirmaciones faltantes ni datos incompletos.")
+        else:
+            grupos = [
+                ("Conflicto de quirófano", "Superposiciones de horario"),
+                ("Autorización", "Autorización pendiente con cirugía próxima"),
+                ("Confirmación", "Falta confirmar (próximas 48 h)"),
+                ("Seguimiento vencido", "Fecha pasada con el circuito abierto"),
+                ("Horario inválido", "Horario inválido"),
+                ("Datos incompletos", "Datos incompletos"),
+            ]
+            disponibles = [(t, n) for t, n in grupos if (alerts_df["Tipo"] == t).any()]
+            nombres_grupo = [f"{n} ({alerts_df.loc[alerts_df['Tipo'] == t, '_row_pos'].nunique()})" for t, n in disponibles]
+            elegido = st.selectbox("Mostrar", nombres_grupo, key="qx_pend_grupo")
+            tipo = disponibles[nombres_grupo.index(elegido)][0]
+            filas = alerts_df[alerts_df["Tipo"] == tipo]
+            st.caption(filas["Detalle"].iloc[0] if not filas.empty else "")
+            afectados = work[work["_row_pos"].isin(filas["_row_pos"].unique())].sort_values(
+                ["_fecha", "_start_min"], na_position="last")
+            for _, row in afectados.head(40).iterrows():
+                _render_patient_card(row, f"pend_{_norm(tipo)}", detailed=True, show_date=True)
+            if len(afectados) > 40:
+                st.caption(f"Se muestran 40 de {len(afectados)}. El resto está en Listado.")
+
+    # =====================================================
+    # EDITOR (varios turnos a la vez)
+    # =====================================================
+    elif section == "Editar":
+        st.caption("Editá varios turnos a la vez. Se guarda en la misma fila de la planilla y se conservan "
+                   "las columnas que no se muestran.")
+        e1, e2 = st.columns([1.6, 1])
+        buscar_ed = e1.text_input("Buscar", placeholder="Paciente, médico, procedimiento…", key="qx_ed_buscar").strip().lower()
+        alcance_ed = e2.selectbox("Turnos", ["Activos", "Próximos 30 días", "Este mes", "Todos"], key="qx_ed_alcance")
+        edit_src = work.copy()
+        if alcance_ed == "Activos":
+            edit_src = edit_src[~edit_src["estado"].isin(ESTADOS_CERRADOS)]
+        elif alcance_ed == "Próximos 30 días":
+            edit_src = edit_src[edit_src["_fecha"].notna() & edit_src["_fecha"].dt.normalize().between(today, today + pd.Timedelta(days=30))]
+        elif alcance_ed == "Este mes":
+            edit_src = edit_src[edit_src["_fecha"].notna() & edit_src["_fecha"].between(month_start, month_end)]
+        if buscar_ed:
+            pajar = edit_src[["paciente", "procedimiento", "medico", "obra_social", "sala"]].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+            edit_src = edit_src[pajar.str.contains(re.escape(buscar_ed), na=False)]
+        edit_src = edit_src.sort_values(["_fecha", "_start_min", "paciente"], na_position="last")
         if edit_src.empty:
-            st.info("No hay filas con los filtros actuales.")
+            st.info("No hay turnos con esos filtros.")
         else:
             if len(edit_src) > 500:
-                st.warning("Se muestran las primeras 500 filas para mantener el editor rápido. Acotá con los filtros superiores.")
+                st.warning("Se muestran los primeros 500 turnos. Acotá con el buscador.")
                 edit_src = edit_src.head(500)
             editor = pd.DataFrame({
                 "_row_pos": edit_src["_row_pos"].astype(int),
@@ -7479,17 +7411,15 @@ def render_agenda_quirofano_ultra_pro(
                 "Observaciones": edit_src["observaciones"],
             })
             edited = st.data_editor(
-                editor,
-                use_container_width=True,
-                hide_index=True,
-                num_rows="fixed",
-                disabled=["_row_pos"],
-                column_config={"_row_pos": None},
-                key="qx_bulk_editor",
-                height=min(650, 95 + 35 * max(len(editor), 5)),
+                editor, use_container_width=True, hide_index=True, num_rows="fixed", disabled=["_row_pos"],
+                column_config={
+                    "_row_pos": None,
+                    "Estado": st.column_config.SelectboxColumn("Estado", options=ESTADOS),
+                    "Prioridad": st.column_config.SelectboxColumn("Prioridad", options=PRIORIDADES),
+                },
+                key="qx_bulk_editor", height=min(650, 95 + 35 * max(len(editor), 5)),
             )
-            ec1, ec2 = st.columns([1, 3])
-            if ec1.button("Guardar cambios", key="qx_save_editor", use_container_width=True, type="primary"):
+            if st.button("Guardar cambios", key="qx_save_editor", type="primary"):
                 map_display = {
                     "Paciente": "paciente", "Fecha": "fecha", "Inicio": "hora_inicio", "Fin": "hora_fin",
                     "Quirófano": "sala", "Procedimiento": "procedimiento", "Médico": "medico",
@@ -7497,26 +7427,54 @@ def render_agenda_quirofano_ultra_pro(
                     "Cobertura": "obra_social", "Autorización": "autorizacion", "Confirmado": "confirmado",
                     "Observaciones": "observaciones",
                 }
-                for _, edrow in edited.iterrows():
-                    row_pos = int(edrow["_row_pos"])
+                cambiadas = 0
+                for (_, nueva), (_, vieja) in zip(edited.iterrows(), editor.iterrows()):
+                    if all(str(nueva[c]) == str(vieja[c]) for c in map_display):
+                        continue  # solo se escriben las filas que cambiaron
+                    row_pos = int(nueva["_row_pos"])
                     for display_col, field in map_display.items():
-                        value = edrow[display_col]
+                        value = nueva[display_col]
                         if field == "estado":
                             value = _state(value)
                         _set_cell(row_pos, field, "" if pd.isna(value) else value)
                     _touch(row_pos)
-                if _save("Cambios masivos guardados correctamente."):
+                    cambiadas += 1
+                if not cambiadas:
+                    st.info("No hay cambios para guardar.")
+                elif _save(f"{cambiadas} turno(s) actualizados."):
                     st.rerun()
-            ec2.caption("Tip: para mover rápidamente un paciente entre etapas, el tablero Flujo es más cómodo. Usá este editor para fechas, horarios y datos administrativos.")
 
     # =====================================================
     # LISTADO + EXPORTACIÓN
     # =====================================================
-    elif section == "📋 Listado":
-        st.markdown("### Listado maestro")
-        list_df = filtered.sort_values(["_fecha", "_start_min", "paciente"], na_position="last").copy()
+    elif section == "Listado":
+        with st.container(border=True):
+            f1, f2, f3, f4 = st.columns([2.0, 1.3, 1.3, 1.3])
+            search = f1.text_input("Buscar", placeholder="Paciente, médico, práctica, cobertura…", key="qx_search").strip().lower()
+            scope = f2.selectbox("Turnos", ["Todos", "Activos", "Hoy", "Próximos 7 días", "Este mes"], key="qx_scope")
+            salas = sorted(v for v in work["sala"].dropna().astype(str).unique() if v.strip())
+            medicos = sorted(v for v in work["medico"].dropna().astype(str).unique() if v.strip())
+            selected_rooms = f3.multiselect("Quirófano", salas, key="qx_rooms", placeholder="Todos")
+            selected_docs = f4.multiselect("Médico", medicos, key="qx_docs", placeholder="Todos")
+        filtered = work.copy()
+        if search:
+            haystack = filtered[["paciente", "procedimiento", "medico", "obra_social", "sala", "observaciones"]].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+            filtered = filtered[haystack.str.contains(re.escape(search), na=False)]
+        if selected_rooms:
+            filtered = filtered[filtered["sala"].isin(selected_rooms)]
+        if selected_docs:
+            filtered = filtered[filtered["medico"].isin(selected_docs)]
+        if scope == "Activos":
+            filtered = filtered[~filtered["estado"].isin(ESTADOS_CERRADOS)]
+        elif scope == "Hoy":
+            filtered = filtered[filtered["_fecha"].dt.normalize().eq(today)]
+        elif scope == "Próximos 7 días":
+            filtered = filtered[filtered["_fecha"].notna() & filtered["_fecha"].dt.normalize().between(today, today + pd.Timedelta(days=7))]
+        elif scope == "Este mes":
+            filtered = filtered[filtered["_fecha"].notna() & filtered["_fecha"].between(month_start, month_end)]
+        list_df = filtered.sort_values(["_fecha", "_start_min", "paciente"], na_position="last")
         if list_df.empty:
-            st.info("No hay registros con los filtros actuales.")
+            st.info("No hay turnos con los filtros actuales.")
         else:
             display = pd.DataFrame({
                 "Fecha": list_df["_fecha"].map(lambda x: x.strftime("%d/%m/%Y") if pd.notna(x) else ""),
@@ -7536,27 +7494,26 @@ def render_agenda_quirofano_ultra_pro(
                 "Alertas": list_df["_row_pos"].map(lambda p: " · ".join(_row_alert_tags(int(p)))),
                 "Observaciones": list_df["observaciones"],
             })
-            st.dataframe(display, use_container_width=True, hide_index=True, height=min(700, 105 + 35 * max(len(display), 6)))
-            x1, x2, x3 = st.columns([1, 1, 2])
+            vista = display[["Fecha", "Hora", "Paciente", "Procedimiento", "Estado"]] if movil else display
+            st.caption(f"{len(display)} turno(s) visibles · {len(work)} en total")
+            st.dataframe(vista, use_container_width=True, hide_index=True, height=min(700, 105 + 35 * max(len(vista), 6)))
+            x1, x2 = st.columns(2)
             x1.download_button(
-                "⬇️ CSV",
+                "Descargar CSV", icon=":material/description:",
                 data=display.to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"agenda_quirofano_{pd.Timestamp.today().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True,
+                mime="text/csv", use_container_width=True, key="qx_list_csv",
             )
             try:
-                excel_bytes = _vitae_excel_bytes(display, "Agenda")
                 x2.download_button(
-                    "⬇️ Excel",
-                    data=excel_bytes,
+                    "Descargar Excel", icon=":material/table_chart:",
+                    data=_vitae_excel_bytes(display, "Agenda"),
                     file_name=f"agenda_quirofano_{pd.Timestamp.today().strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
+                    use_container_width=True, key="qx_list_xlsx",
                 )
             except Exception:
                 x2.caption("Excel no disponible")
-            x3.caption(f"{len(display)} registro(s) visibles · {len(work)} registro(s) totales en la fuente")
 
     return original
 
