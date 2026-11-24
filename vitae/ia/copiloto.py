@@ -943,3 +943,78 @@ PREGUNTA:
     _guardar_historial_copiloto(question, answer)
     return answer
 
+
+
+# =========================================================
+# MOTOR CON HERRAMIENTAS (vitae/ia/motor.py)
+# La IA consulta por su cuenta el 100% de los registros de todos los módulos.
+# Si el motor nuevo falla (modelo, cuota, SDK), se usa el motor anterior.
+# =========================================================
+_preguntar_copiloto_base = preguntar_copiloto
+_preguntar_ia_base = preguntar_ia
+_preguntar_dashboard_base = preguntar_dashboard
+
+
+def _motor_disponible() -> bool:
+    try:
+        from google.genai import types as _t  # noqa: F401
+        return bool(GEMINI_API_KEY)
+    except Exception:
+        return False
+
+
+def preguntar_copiloto(
+    pregunta: str,
+    modulo_actual: str | None = None,
+    ruta_actual: str | None = None,
+) -> str:
+    question = str(pregunta or "").strip()
+    if not question:
+        return "Escribí una pregunta para poder analizar Vitae."
+    if _motor_disponible():
+        try:
+            from vitae.ia.motor import responder
+
+            answer = responder(question, modulo_actual or ruta_actual, historial=obtener_historial_copiloto())
+            _guardar_historial_copiloto(question, answer)
+            return answer
+        except Exception:
+            pass
+    return _preguntar_copiloto_base(pregunta, modulo_actual, ruta_actual)
+
+
+def preguntar_ia(modulo: str, df: pd.DataFrame, pregunta: str) -> str:
+    question = str(pregunta or "").strip()
+    if not question:
+        return "Escribí una pregunta para poder analizar la información."
+    if _motor_disponible():
+        try:
+            from vitae.ia.motor import responder
+
+            visibles = {"Vista actual (con los filtros de pantalla)": df} if isinstance(df, pd.DataFrame) else None
+            answer = responder(
+                question + "\n\n(Si la pregunta es sobre lo que estoy viendo, usá el módulo "
+                "«Vista actual (con los filtros de pantalla)».)",
+                modulo, historial=_get_history(f"modulo::{modulo}"), datos_visibles=visibles,
+            )
+            _append_history(f"modulo::{modulo}", question, answer)
+            return answer
+        except Exception:
+            pass
+    return _preguntar_ia_base(modulo, df, pregunta)
+
+
+def preguntar_dashboard(data: dict, pregunta: str) -> str:
+    question = str(pregunta or "").strip()
+    if not question:
+        return "Escribí una pregunta ejecutiva para poder analizar el Dashboard."
+    if _motor_disponible():
+        try:
+            from vitae.ia.motor import responder
+
+            answer = responder(question, "Panel general", historial=_get_history("dashboard_global"))
+            _append_history("dashboard_global", question, answer)
+            return answer
+        except Exception:
+            pass
+    return _preguntar_dashboard_base(data, pregunta)
