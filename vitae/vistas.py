@@ -17,6 +17,7 @@ import plotly.express as px
 import streamlit as st
 
 from vitae.core.config import APP_TITLE, BASE_DIR, LOGO_PATH
+from vitae.core.movil import css_movil, es_movil
 from vitae.core.tablas import MODULES
 from vitae.core.database import *
 from vitae.core.helpers import *
@@ -1214,7 +1215,7 @@ def _render_vitae_app_shell() -> None:
         }
         [data-testid="stIconMaterial"], .material-symbols-rounded { font-family: "Material Symbols Rounded" !important; }
         .stApp { background: #FFFFFF !important; color: var(--vitae-text); }
-        .block-container { max-width: 1480px; padding-top: 1.6rem; padding-bottom: 3rem; }
+        .block-container { max-width: 1480px; padding-top: 3rem; padding-bottom: 3rem; }
         header[data-testid="stHeader"] { background: rgba(255,255,255,.92) !important; border-bottom: 1px solid var(--vitae-line); backdrop-filter: none; }
 
         /* ---------- Menú lateral ---------- */
@@ -1296,6 +1297,7 @@ def _render_vitae_app_shell() -> None:
         """,
         unsafe_allow_html=True,
     )
+    st.markdown(f"<style>{css_movil()}</style>", unsafe_allow_html=True)
 
 
 def _copilot_runtime_context(modulo_actual: str) -> dict[str, Any]:
@@ -1350,7 +1352,11 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
 
     # Barra mínima: el contenido completo vive dentro de un popover.
     # Así el Dashboard y los módulos conservan todo su ancho.
-    _, copilot_col = st.columns([8.6, 1.4])
+    if es_movil():
+        # En el celular va al menú lateral para no ocupar el ancho de la pantalla.
+        copilot_col = st.sidebar
+    else:
+        _, copilot_col = st.columns([8.6, 1.4])
     with copilot_col:
         with st.popover("Copiloto", icon=":material/auto_awesome:", use_container_width=True):
             st.markdown("### Copiloto Vitae")

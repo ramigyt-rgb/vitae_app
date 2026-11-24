@@ -12,6 +12,12 @@ import plotly.graph_objects as go
 import streamlit as st
 
 try:
+    from vitae.core.movil import es_movil
+except Exception:  # pragma: no cover
+    def es_movil() -> bool:
+        return False
+
+try:
     from vitae.core.database import get_df
 except Exception:  # pragma: no cover - solo para que el módulo pueda importarse aislado
     get_df = None
@@ -911,7 +917,13 @@ def _limpiar_filtros(key: str) -> None:
 def _panel_filtros(data: pd.DataFrame, key: str) -> tuple[pd.DataFrame, str]:
     """Filtros compartidos por todas las secciones de análisis."""
     hoy = pd.Timestamp.today().normalize()
-    with st.container(border=True):
+    movil = es_movil()
+    activos_previos = sum(
+        bool(st.session_state.get(f"{key}_f_{k}")) for k in ("os", "estado", "med", "proc", "buscar")
+    )
+    titulo = "Filtros" + (f" · {activos_previos} activos" if activos_previos else "")
+    caja = st.expander(titulo, icon=":material/filter_list:", expanded=False) if movil else st.container(border=True)
+    with caja:
         c1, c2, c3, c4 = st.columns([1.0, 1.4, 1.0, 1.4])
         periodo = c1.selectbox("Período", _PERIODOS, index=_PERIODOS.index("Año actual"), key=f"{key}_f_periodo")
         obras = c2.multiselect("Obra social", _opciones(data["_obra_social"]), placeholder="Todas", key=f"{key}_f_os")
@@ -1126,14 +1138,20 @@ def _seccion_cobranza(f: pd.DataFrame, metrics: dict[str, float], key: str) -> N
     else:
         q = queue.drop(columns=["Impacto", "Score"]).head(50).copy()
         q["Vencimiento"] = pd.to_datetime(q["Vencimiento"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("Sin fecha")
+        if es_movil():
+            q = q[["Prioridad", "Obra social", "Paciente", "Pendiente", "Días vencido"]]
         _tabla_montos(q, ["Pendiente"], height=min(42 + 35 * len(q), 460))
         if len(queue) > 50:
             st.caption(f"Se muestran las 50 de mayor prioridad de {len(queue)}. La lista completa está en Exportar, en el informe Excel.")
 
     _subtitulo("Resumen por obra social")
     if not payer.empty:
-        tabla = payer[["Obra social", "Facturado", "Cobrado", "Pendiente", "Vencido", "Cobranza %", "Días cobro", "Registros"]].copy()
-        tabla["Días cobro"] = tabla["Días cobro"].map(lambda x: f"{x:.0f}" if x else "—")
+        columnas = ["Obra social", "Facturado", "Cobrado", "Pendiente", "Vencido", "Cobranza %", "Días cobro", "Registros"]
+        if es_movil():
+            columnas = ["Obra social", "Pendiente", "Vencido", "Cobranza %"]
+        tabla = payer[columnas].copy()
+        if "Días cobro" in tabla.columns:
+            tabla["Días cobro"] = tabla["Días cobro"].map(lambda x: f"{x:.0f}" if x else "—")
         _tabla_montos(tabla, ["Facturado", "Cobrado", "Pendiente", "Vencido"], ["Cobranza %"], height=min(42 + 35 * len(tabla), 420))
 
 
@@ -1157,7 +1175,10 @@ def _seccion_produccion(f: pd.DataFrame) -> None:
             fig.update_layout(xaxis_title=None, yaxis_title=None)
             fig.update_xaxes(tickformat=",.0f")
             _grafico(fig, 360)
-            _tabla_montos(tabla[[etiqueta, "Registros", "Facturado", "Cobrado", "Pendiente", "Participación %"]],
+            cols_tabla = [etiqueta, "Registros", "Facturado", "Cobrado", "Pendiente", "Participación %"]
+            if es_movil():
+                cols_tabla = [etiqueta, "Facturado", "Participación %"]
+            _tabla_montos(tabla[cols_tabla],
                           ["Facturado", "Cobrado", "Pendiente"], ["Participación %"], height=min(42 + 35 * len(tabla), 380))
 
     if not proc.empty and proc["Facturado"].sum() > 0:
@@ -1252,7 +1273,10 @@ def _seccion_calidad(f: pd.DataFrame, cols: dict[str, str | None], key: str) -> 
         elegido = st.selectbox("Ver las filas de:", resumen["Control"].tolist(), key=f"{key}_cal_ver")
         activos = f[~f["_cancelado"]]
         filas = activos[mascaras[elegido]]
-        _tabla_montos(_detalle_registros(filas), ["Facturado", "Cobrado", "Pendiente"], height=min(42 + 35 * len(filas), 420))
+        detalle_filas = _detalle_registros(filas)
+        if es_movil():
+            detalle_filas = detalle_filas[["Mes", "Paciente / afiliado", "Obra social", "N° factura", "Facturado"]]
+        _tabla_montos(detalle_filas, ["Facturado", "Cobrado", "Pendiente"], height=min(42 + 35 * len(filas), 420))
 
     with st.expander("Columnas de la planilla que se están leyendo", expanded=False):
         mapa = pd.DataFrame({
@@ -1344,10 +1368,17 @@ def render_facturacion_ultra_pro(
     _encabezado(module_name, company, key)
 
     secciones = _SECCIONES_ANALISIS + (_SECCIONES_GESTION if legacy_renderer is not None else [":material/download: Exportar"])
-    seleccion = st.segmented_control(
-        "Sección", secciones, default=secciones[0], key=f"{key}_seccion", label_visibility="collapsed"
-    )
-    seccion = seleccion or secciones[0]
+    if es_movil():
+        # En el celular 8 botones no entran en una fila: desplegable compacto.
+        seccion = st.selectbox(
+            "Sección", secciones, key=f"{key}_seccion_movil", label_visibility="collapsed",
+            format_func=lambda x: re.sub(r":material/[a-z_]+:\s*", "", x),
+        )
+    else:
+        seleccion = st.segmented_control(
+            "Sección", secciones, default=secciones[0], key=f"{key}_seccion", label_visibility="collapsed"
+        )
+        seccion = seleccion or secciones[0]
 
     # ---- Gestión: flujo existente, siempre sobre la planilla completa ----
     if seccion in _WORKSPACE_GESTION and legacy_renderer is not None:
