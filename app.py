@@ -3,25 +3,26 @@
 # streamlit run app.py
 
 import streamlit as st
-from config import APP_TITLE
-from modules import MODULES
+from vitae.core.config import APP_TITLE
+from vitae.core.tablas import MODULES
 
 # IMPORTANTE: el parche se aplica antes de importar views.py, para que
 # Copiloto Vitae y todos los módulos usen la recuperación inteligente completa.
 try:
-    from assistant_full_access_patch import aplicar_parche_acceso_total
+    from vitae.ia.copiloto_acceso_total import aplicar_parche_acceso_total
     aplicar_parche_acceso_total()
 except Exception:
     # Nunca bloquea la aplicación si el asistente cambia en una futura versión.
     pass
 
-from views import (
+from vitae.vistas import (
     render_dashboard,
+    render_header,
     render_facturacion_pro as render_facturacion_actual,
     render_configuracion,
     require_vitae_login,
 )
-from facturacion_ultra_pro import render_facturacion_ultra_pro
+from vitae.modulos.facturacion import render_facturacion_ultra_pro
 
 st.set_page_config(
     page_title=APP_TITLE,
@@ -85,6 +86,7 @@ def main() -> None:
                 module_name,
                 cfg,
                 legacy_renderer=render_facturacion_actual,
+                header_renderer=render_header,
             )
         else:
             render_facturacion_actual(module_name, cfg)

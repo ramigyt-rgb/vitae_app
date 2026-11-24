@@ -10,7 +10,7 @@ import streamlit as st
 
 from google import genai
 
-from config import GEMINI_API_KEY, GEMINI_MODEL
+from vitae.core.config import GEMINI_API_KEY, GEMINI_MODEL
 
 # =========================================================
 

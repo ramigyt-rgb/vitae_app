@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 try:
-    from database import get_df
+    from vitae.core.database import get_df
 except Exception:  # pragma: no cover - solo para que el módulo pueda importarse aislado
     get_df = None
 
@@ -144,16 +144,16 @@ def _fmt_money(value: float | int | None) -> str:
         val = float(value or 0)
     except Exception:
         val = 0.0
-    formatted = f"{val:,.2f}"
-    formatted = formatted.replace(",", "X").replace(".", ",").replace("X", ".")
+    formatted = f"{val:,.0f}"
+    formatted = formatted.replace(",", ".")
     return f"$ {formatted}"
 
 
 def _fmt_pct(value: float | int | None) -> str:
     try:
-        return f"{float(value):.1f}%"
+        return f"{float(value):.1f}%".replace(".", ",")
     except Exception:
-        return "0.0%"
+        return "0,0%"
 
 
 def _weighted_average(values: pd.Series, weights: pd.Series) -> float:
@@ -768,19 +768,563 @@ def _excel_export(metrics: dict[str, float], payer: pd.DataFrame, proc: pd.DataF
 
 
 # -----------------------------------------------------------------------------
-# Render principal
+# PANTALLA ÚNICA DE FACTURACIÓN VM / VMR
 # -----------------------------------------------------------------------------
+# Una sola navegación para todo el módulo:
+#
+#   Análisis  → Resumen · Cobranza · Producción · Calidad
+#   Gestión   → Registros · Cargar · Importar · Exportar
+#
+# Las secciones de análisis comparten un único panel de filtros y los mismos
+# 4 indicadores. Las secciones de gestión usan el flujo de carga/edición ya
+# existente (``gestion_renderer``), que siempre trabaja sobre la planilla
+# completa, nunca sobre la vista filtrada.
+
+_EMPRESAS = {
+    "VMR": "Vitae Medicina Reproductiva",
+    "VM": "Vitae Medical",
+}
+
+_SECCIONES_ANALISIS = ["📊 Resumen", "💸 Cobranza", "🩺 Producción", "🛡️ Calidad"]
+_SECCIONES_GESTION = ["📋 Registros", "➕ Cargar", "📥 Importar", "📤 Exportar"]
+
+# Sección de la pantalla → área de trabajo del flujo de gestión existente.
+_WORKSPACE_GESTION = {
+    "📋 Registros": "Editar tabla",
+    "➕ Cargar": "Cargar",
+    "📥 Importar": "Importar",
+}
+
+_PERIODOS = [
+    "Mes actual",
+    "Mes anterior",
+    "Últimos 3 meses",
+    "Últimos 12 meses",
+    "Año actual",
+    "Año anterior",
+    "Todo el historial",
+    "Personalizado",
+]
+
+_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe"]
+
+_COLOR_ESTADO = {
+    "Cobrado": VITAE_GREEN,
+    "Pendiente": VITAE_AMBER,
+    "Vencido": VITAE_RED,
+    "Facturado": VITAE_PINK,
+}
+
+_MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+
+
+def _fmt_money0(value: float | int | None) -> str:
+    """Importe sin decimales, formato argentino: $ 1.234.567."""
+    try:
+        val = float(value or 0)
+    except Exception:
+        val = 0.0
+    return "$ " + f"{val:,.0f}".replace(",", ".")
+
+
+def _etiqueta_mes(fecha: pd.Timestamp) -> str:
+    return f"{_MESES_CORTOS[fecha.month - 1]} {fecha.year}"
+
+
+def _ajustar_estado_manual(data: pd.DataFrame) -> pd.DataFrame:
+    """Si la planilla marca la fila como 'Vencido', se considera vencida aunque
+    no tenga fecha de vencimiento cargada (antes quedaba como 'Pendiente')."""
+    marcado = data["_estado_norm"].astype(str).str.contains("vencid", na=False)
+    aplicar = marcado & (data["_pendiente"] > 0) & ~data["_cancelado"]
+    if aplicar.any():
+        data.loc[aplicar, "_vencido"] = True
+        data.loc[aplicar, "_estado_ejecutivo"] = "Vencido"
+    return data
+
+
+def _css_pantalla() -> None:
+    st.markdown(
+        """
+        <style>
+        .fx-head{display:flex;justify-content:space-between;align-items:flex-end;gap:1rem;margin:.1rem 0 .6rem 0}
+        .fx-head-kicker{font-size:.74rem;letter-spacing:.14em;text-transform:uppercase;font-weight:800;color:#A54470}
+        .fx-head-title{font-size:1.85rem;font-weight:850;letter-spacing:-.03em;color:#4A1830;line-height:1.15}
+        .fx-head-sub{font-size:.9rem;color:#7A6370;margin-top:.15rem}
+        .fx-card{min-height:96px}
+        .fx-card .fx-value{font-size:1.5rem}
+        .fx-dot{display:inline-block;width:.62rem;height:.62rem;border-radius:50%;margin-right:.4rem;vertical-align:middle}
+        .fx-subtitle{font-size:1.08rem;font-weight:800;color:#4A1830;margin:1.1rem 0 .35rem 0}
+        .fx-note{font-size:.82rem;color:#8A707C;margin:-.15rem 0 .5rem 0}
+        .fx-brief li{margin-bottom:.28rem;color:#4A3440}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _encabezado(module_name: str, company: str, key: str) -> None:
+    izq, der = st.columns([5, 1], vertical_alignment="bottom")
+    with izq:
+        st.markdown(
+            f"""
+            <div class="fx-head"><div>
+              <div class="fx-head-kicker">Facturación · {company}</div>
+              <div class="fx-head-title">{module_name}</div>
+              <div class="fx-head-sub">{_EMPRESAS.get(company, company)} · datos de Google Sheets</div>
+            </div></div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with der:
+        if st.button("↻ Actualizar", key=f"{key}_refresh", use_container_width=True, help="Volver a leer la planilla"):
+            st.cache_data.clear()
+            st.rerun()
+
+
+def _rango_periodo(periodo: str, hoy: pd.Timestamp) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    inicio_mes = hoy.replace(day=1)
+    if periodo == "Mes actual":
+        return inicio_mes, inicio_mes + pd.offsets.MonthEnd(0)
+    if periodo == "Mes anterior":
+        fin = inicio_mes - pd.Timedelta(days=1)
+        return fin.replace(day=1), fin
+    if periodo == "Últimos 3 meses":
+        return (inicio_mes - pd.DateOffset(months=2)), inicio_mes + pd.offsets.MonthEnd(0)
+    if periodo == "Últimos 12 meses":
+        return (inicio_mes - pd.DateOffset(months=11)), inicio_mes + pd.offsets.MonthEnd(0)
+    if periodo == "Año actual":
+        return pd.Timestamp(year=hoy.year, month=1, day=1), pd.Timestamp(year=hoy.year, month=12, day=31)
+    if periodo == "Año anterior":
+        return pd.Timestamp(year=hoy.year - 1, month=1, day=1), pd.Timestamp(year=hoy.year - 1, month=12, day=31)
+    return None, None
+
+
+def _opciones(serie: pd.Series) -> list[str]:
+    valores = serie.dropna().astype(str).str.strip()
+    return sorted(set(valores[valores != ""]), key=str.casefold)
+
+
+def _limpiar_filtros(key: str) -> None:
+    for sufijo in ("periodo", "os", "estado", "med", "proc", "buscar", "desde", "hasta"):
+        st.session_state.pop(f"{key}_f_{sufijo}", None)
+
+
+def _panel_filtros(data: pd.DataFrame, key: str) -> tuple[pd.DataFrame, str]:
+    """Filtros compartidos por todas las secciones de análisis."""
+    hoy = pd.Timestamp.today().normalize()
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([1.0, 1.4, 1.0, 1.4])
+        periodo = c1.selectbox("Período", _PERIODOS, index=_PERIODOS.index("Año actual"), key=f"{key}_f_periodo")
+        obras = c2.multiselect("Obra social", _opciones(data["_obra_social"]), placeholder="Todas", key=f"{key}_f_os")
+        estados = c3.multiselect("Estado", _ESTADOS, placeholder="Todos", key=f"{key}_f_estado")
+        medicos = c4.multiselect("Médico", _opciones(data["_medico"]), placeholder="Todos", key=f"{key}_f_med")
+
+        desde, hasta = _rango_periodo(periodo, hoy)
+        if periodo == "Personalizado":
+            fechas = data["_fecha_base"].dropna()
+            minimo = fechas.min().date() if not fechas.empty else hoy.date()
+            r1, r2, _ = st.columns([1, 1, 2])
+            d = r1.date_input("Desde", value=minimo, format="DD/MM/YYYY", key=f"{key}_f_desde")
+            h = r2.date_input("Hasta", value=hoy.date(), format="DD/MM/YYYY", key=f"{key}_f_hasta")
+            desde, hasta = pd.Timestamp(d), pd.Timestamp(h)
+            if desde > hasta:
+                st.error("La fecha «Desde» es posterior a «Hasta».")
+                desde, hasta = hasta, desde
+
+        s1, s2, s3 = st.columns([2.4, 1.4, 0.8], vertical_alignment="bottom")
+        buscar = s1.text_input("Buscar", placeholder="Paciente, N° de factura, obra social, práctica…", key=f"{key}_f_buscar")
+        procs = s2.multiselect("Procedimiento", _opciones(data["_procedimiento"]), placeholder="Todos", key=f"{key}_f_proc")
+        s3.button("Limpiar", key=f"{key}_f_limpiar", on_click=_limpiar_filtros, args=(key,), use_container_width=True)
+
+    out = data
+    if desde is not None and hasta is not None:
+        out = out[out["_fecha_base"].between(desde, hasta + pd.Timedelta(hours=23, minutes=59, seconds=59))]
+    if obras:
+        out = out[out["_obra_social"].isin(obras)]
+    if estados:
+        out = out[out["_estado_ejecutivo"].isin(estados)]
+    if medicos:
+        out = out[out["_medico"].isin(medicos)]
+    if procs:
+        out = out[out["_procedimiento"].isin(procs)]
+    if buscar.strip():
+        aguja = re.escape(_norm(buscar))
+        pajar = (
+            out["_paciente"].astype(str) + " " + out["_numero_factura"].astype(str) + " "
+            + out["_obra_social"].astype(str) + " " + out["_procedimiento"].astype(str) + " "
+            + out["_medico"].astype(str) + " " + out["_estado_original"].astype(str)
+        ).map(_norm)
+        out = out[pajar.str.contains(aguja, na=False)]
+
+    if desde is not None and hasta is not None:
+        texto_periodo = f"{desde.strftime('%d/%m/%Y')} al {hasta.strftime('%d/%m/%Y')}"
+    else:
+        texto_periodo = "todo el historial"
+    activos = [x for x in (obras + estados + medicos + procs) if x]
+    if buscar.strip():
+        activos.append(f"«{buscar.strip()}»")
+    detalle = f"{len(out):,} registros · {texto_periodo}".replace(",", ".")
+    if activos:
+        detalle += " · " + ", ".join(activos[:4]) + (f" y {len(activos) - 4} más" if len(activos) > 4 else "")
+    return out, detalle
+
+
+def _tarjetas(metrics: dict[str, float]) -> None:
+    k1, k2, k3, k4 = st.columns(4)
+    with k1:
+        _kpi(f'<span class="fx-dot" style="background:{VITAE_PINK}"></span>Facturado', _fmt_money0(metrics["facturado"]),
+             f"{metrics['registros']:,} registros".replace(",", "."))
+    with k2:
+        _kpi(f'<span class="fx-dot" style="background:{VITAE_GREEN}"></span>Cobrado', _fmt_money0(metrics["cobrado"]),
+             f"{_fmt_pct(metrics['tasa'])} de lo facturado")
+    with k3:
+        _kpi(f'<span class="fx-dot" style="background:{VITAE_AMBER}"></span>Pendiente', _fmt_money0(metrics["pendiente"]),
+             f"{_fmt_pct(100 - metrics['tasa'] if metrics['facturado'] else 0)} de lo facturado")
+    with k4:
+        _kpi(f'<span class="fx-dot" style="background:{VITAE_RED}"></span>Vencido', _fmt_money0(metrics["vencido"]),
+             f"{_fmt_pct(metrics['mora'])} de lo pendiente")
+
+
+def _subtitulo(texto: str, nota: str = "") -> None:
+    st.markdown(f'<div class="fx-subtitle">{texto}</div>', unsafe_allow_html=True)
+    if nota:
+        st.markdown(f'<div class="fx-note">{nota}</div>', unsafe_allow_html=True)
+
+
+def _tabla_montos(df: pd.DataFrame, columnas_dinero: Iterable[str], columnas_pct: Iterable[str] = (), **kwargs: Any) -> None:
+    vista = df.copy()
+    for c in columnas_dinero:
+        if c in vista.columns:
+            vista[c] = vista[c].map(_fmt_money0)
+    for c in columnas_pct:
+        if c in vista.columns:
+            vista[c] = vista[c].map(_fmt_pct)
+    st.dataframe(vista, use_container_width=True, hide_index=True, **kwargs)
+
+
+def _grafico(fig: go.Figure, height: int = 360) -> None:
+    fig = _clean_plot(fig, height)
+    fig.update_layout(title=None, margin=dict(l=10, r=10, t=10, b=10),
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0))
+    fig.update_layout(separators=",.")  # 1.234.567,89 (formato argentino)
+    fig.update_yaxes(tickformat=",.0f")
+    st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False, "displayModeBar": False})
+
+
+def _seccion_resumen(f: pd.DataFrame, metrics: dict[str, float], module_name: str, key: str) -> None:
+    activos = f[~f["_cancelado"]]
+    payer = _payer_table(f)
+    proc = _group_table(f, "_procedimiento", "Procedimiento")
+
+    brief = _executive_brief(metrics, _monthly(f), payer, proc, 100.0)
+    with st.container(border=True):
+        st.markdown("**En pocas palabras**")
+        st.markdown('<ul class="fx-brief">' + "".join(f"<li>{m}</li>" for m in brief) + "</ul>", unsafe_allow_html=True)
+
+    _subtitulo("Evolución mensual", "Cada barra es lo facturado en el mes, dividido en lo que ya se cobró, lo pendiente y lo vencido.")
+    mensual = activos[activos["_fecha_base"].notna()].copy()
+    if mensual.empty:
+        st.info("No hay registros con mes cargado en esta vista.")
+    else:
+        mensual["mes"] = mensual["_fecha_base"].dt.to_period("M").dt.to_timestamp()
+        mensual["Vencido"] = mensual["_pendiente"].where(mensual["_vencido"], 0.0)
+        mensual["Pendiente"] = mensual["_pendiente"] - mensual["Vencido"]
+        g = mensual.groupby("mes", as_index=False).agg(Cobrado=("_cobrado", "sum"), Pendiente=("Pendiente", "sum"), Vencido=("Vencido", "sum"))
+        g["Mes"] = g["mes"].map(_etiqueta_mes)
+        largo = g.melt(id_vars=["mes", "Mes"], value_vars=["Cobrado", "Pendiente", "Vencido"], var_name="Estado", value_name="Importe")
+        fig = px.bar(largo, x="Mes", y="Importe", color="Estado", color_discrete_map=_COLOR_ESTADO,
+                     category_orders={"Mes": list(g["Mes"]), "Estado": ["Cobrado", "Pendiente", "Vencido"]})
+        fig.update_layout(barmode="stack", xaxis_title=None, yaxis_title=None)
+        _grafico(fig, 360)
+
+    c1, c2 = st.columns([1.35, 1])
+    with c1:
+        _subtitulo("Principales obras sociales", "Facturado en la vista, las 8 de mayor peso.")
+        if payer.empty:
+            st.info("Sin datos de obra social.")
+        else:
+            top = payer.head(8).sort_values("Facturado")
+            fig = px.bar(top, x="Facturado", y="Obra social", orientation="h", color_discrete_sequence=[VITAE_PINK],
+                         hover_data={"Facturado": ":,.0f"})
+            fig.update_layout(xaxis_title=None, yaxis_title=None)
+            fig.update_xaxes(tickformat=",.0f")
+            _grafico(fig, 330)
+    with c2:
+        _subtitulo("Estado de la cartera", "Cómo se reparte lo facturado.")
+        comp = pd.DataFrame({
+            "Estado": ["Cobrado", "Pendiente", "Vencido"],
+            "Importe": [metrics["cobrado"], max(0.0, metrics["pendiente"] - metrics["vencido"]), metrics["vencido"]],
+        })
+        if comp["Importe"].sum() <= 0:
+            st.info("Sin importes en la vista.")
+        else:
+            fig = px.pie(comp, names="Estado", values="Importe", hole=.62, color="Estado", color_discrete_map=_COLOR_ESTADO)
+            fig.update_traces(textinfo="percent", sort=False)
+            _grafico(fig, 330)
+
+    with st.expander("🤖 Preguntarle a la IA sobre esta vista", expanded=False):
+        st.caption("La IA responde usando solo los registros que estás viendo con los filtros actuales.")
+        pregunta = st.text_input("Pregunta", placeholder="Ej.: ¿Qué obra social conviene priorizar esta semana y por qué?", key=f"{key}_ia_q")
+        if st.button("Preguntar", key=f"{key}_ia_btn"):
+            if not pregunta.strip():
+                st.warning("Escribí una pregunta.")
+            else:
+                try:
+                    from vitae.ia.copiloto import preguntar_ia
+                    ia_df = f[["_fecha_base", "_paciente", "_obra_social", "_procedimiento", "_medico", "_numero_factura",
+                               "_vencimiento", "_fecha_pago", "_monto", "_cobrado", "_pendiente", "_estado_ejecutivo"]].copy()
+                    ia_df.columns = ["fecha", "paciente", "obra_social", "procedimiento", "medico", "factura",
+                                     "vencimiento", "fecha_pago", "facturado", "cobrado", "pendiente", "estado"]
+                    with st.spinner("Analizando…"):
+                        st.markdown(preguntar_ia(module_name, ia_df, pregunta))
+                except Exception as exc:
+                    st.error(f"La IA no pudo responder: {exc}")
+
+
+def _seccion_cobranza(f: pd.DataFrame, metrics: dict[str, float], key: str) -> None:
+    pendientes = f[(~f["_cancelado"]) & (f["_pendiente"] > 0)]
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Tasa de cobro", _fmt_pct(metrics["tasa"]), help="Cobrado ÷ facturado")
+    m2.metric("Mora", _fmt_pct(metrics["mora"]), help="Vencido ÷ pendiente")
+    m3.metric("Días promedio de cobro", f"{metrics['dso']:.0f}" if metrics["dso"] else "Sin dato",
+              help="Desde la fecha de factura hasta la fecha de pago, ponderado por importe")
+    m4.metric("Facturas por cobrar", f"{len(pendientes):,}".replace(",", "."))
+
+    c1, c2 = st.columns([1, 1.25])
+    with c1:
+        _subtitulo("Antigüedad de lo pendiente", "Cuánto hace que venció cada saldo.")
+        aging = _aging(f)
+        if aging.empty:
+            st.success("No hay saldos pendientes en esta vista.")
+        else:
+            colores = {"A vencer": VITAE_GREEN, "1-30 días": VITAE_AMBER, "31-60 días": "#C9703F",
+                       "61-90 días": VITAE_RED, "+90 días": "#7E2F3F", "Sin vencimiento": "#B9A9B1"}
+            aging = aging.assign(Tramo=aging["Tramo"].astype(str))
+            fig = px.bar(aging, x="Tramo", y="Pendiente", color="Tramo", color_discrete_map=colores,
+                         hover_data={"Registros": True, "Pendiente": ":,.0f"})
+            fig.update_layout(showlegend=False, xaxis_title=None, yaxis_title=None)
+            _grafico(fig, 320)
+    with c2:
+        _subtitulo("Pendiente por obra social", "Lo que falta cobrar a cada financiador, separado en vencido y no vencido.")
+        payer = _payer_table(f)
+        if payer.empty or payer["Pendiente"].sum() <= 0:
+            st.success("Sin saldos pendientes.")
+        else:
+            p = payer[payer["Pendiente"] > 0].sort_values("Pendiente", ascending=False).head(10).copy()
+            p["No vencido"] = p["Pendiente"] - p["Vencido"]
+            largo = p.melt(id_vars=["Obra social"], value_vars=["No vencido", "Vencido"], var_name="Estado", value_name="Importe")
+            fig = px.bar(largo, x="Importe", y="Obra social", color="Estado", orientation="h",
+                         color_discrete_map={"No vencido": VITAE_AMBER, "Vencido": VITAE_RED},
+                         category_orders={"Obra social": list(p["Obra social"])})
+            fig.update_layout(barmode="stack", xaxis_title=None, yaxis_title=None)
+            fig.update_xaxes(tickformat=",.0f")
+            _grafico(fig, 320)
+
+    _subtitulo("A quién cobrar primero", "Ordenado por importe y días de atraso. Prioridad crítica: más de 60 días vencido o saldo muy alto.")
+    queue = _priority_queue(f)
+    if queue.empty:
+        st.success("No hay saldos pendientes en esta vista.")
+    else:
+        q = queue.drop(columns=["Impacto", "Score"]).head(50).copy()
+        q["Vencimiento"] = pd.to_datetime(q["Vencimiento"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("Sin fecha")
+        _tabla_montos(q, ["Pendiente"], height=min(42 + 35 * len(q), 460))
+        if len(queue) > 50:
+            st.caption(f"Se muestran las 50 de mayor prioridad de {len(queue)}. La lista completa está en Exportar → Informe Excel.")
+
+    _subtitulo("Resumen por obra social")
+    if not payer.empty:
+        tabla = payer[["Obra social", "Facturado", "Cobrado", "Pendiente", "Vencido", "Cobranza %", "Días cobro", "Registros"]].copy()
+        tabla["Días cobro"] = tabla["Días cobro"].map(lambda x: f"{x:.0f}" if x else "—")
+        _tabla_montos(tabla, ["Facturado", "Cobrado", "Pendiente", "Vencido"], ["Cobranza %"], height=min(42 + 35 * len(tabla), 420))
+
+
+def _seccion_produccion(f: pd.DataFrame) -> None:
+    med = _group_table(f, "_medico", "Médico")
+    proc = _group_table(f, "_procedimiento", "Procedimiento")
+    if med.empty and proc.empty:
+        st.info("No hay producción en esta vista.")
+        return
+
+    c1, c2 = st.columns(2)
+    for col, tabla, etiqueta in ((c1, med, "Médico"), (c2, proc, "Procedimiento")):
+        with col:
+            _subtitulo(f"Por {etiqueta.lower()}", "Facturado en la vista, los 10 de mayor peso.")
+            if tabla.empty:
+                st.info("Sin datos.")
+                continue
+            top = tabla.head(10).sort_values("Facturado")
+            fig = px.bar(top, x="Facturado", y=etiqueta, orientation="h", color_discrete_sequence=[VITAE_PINK],
+                         hover_data={"Registros": True, "Facturado": ":,.0f"})
+            fig.update_layout(xaxis_title=None, yaxis_title=None)
+            fig.update_xaxes(tickformat=",.0f")
+            _grafico(fig, 360)
+            _tabla_montos(tabla[[etiqueta, "Registros", "Facturado", "Cobrado", "Pendiente", "Participación %"]],
+                          ["Facturado", "Cobrado", "Pendiente"], ["Participación %"], height=min(42 + 35 * len(tabla), 380))
+
+    if not proc.empty and proc["Facturado"].sum() > 0:
+        acumulado = proc["Facturado"].cumsum() / proc["Facturado"].sum() * 100
+        n80 = int((acumulado < 80).sum() + 1)
+        st.info(f"**{n80}** de {len(proc)} prácticas explican el 80% de lo facturado en esta vista.")
+
+    activos = f[~f["_cancelado"]]
+    if not activos.empty:
+        with st.expander("Cruce médico × procedimiento (cantidad de registros)", expanded=False):
+            top_proc = proc.head(12)["Procedimiento"].tolist() if not proc.empty else []
+            base = activos[activos["_procedimiento"].isin(top_proc)]
+            if base.empty:
+                st.info("Sin datos para cruzar.")
+            else:
+                matriz = pd.crosstab(base["_medico"], base["_procedimiento"])
+                matriz = matriz.loc[matriz.sum(axis=1).sort_values(ascending=False).index, [p for p in top_proc if p in matriz.columns]]
+                matriz.index.name = "Médico"
+                st.dataframe(matriz, use_container_width=True)
+                st.caption("Se muestran las 12 prácticas de mayor facturación.")
+
+
+_DESCRIPCION_CONTROLES = {
+    "Sin importe": "Filas con importe vacío, cero o que no se pudo leer.",
+    "Sin fecha base": "Filas sin «mes»: no entran en ningún período ni gráfico mensual.",
+    "Sin número de factura": "Filas con importe pero sin N° de factura.",
+    "Factura repetida": "El mismo N° de factura aparece en más de una fila.",
+    "Pendiente sin vencimiento": "Saldos pendientes sin fecha de vencimiento: no se puede saber si están vencidos.",
+    "Cobrado sin fecha de pago": "Marcados como cobrados pero sin fecha de pago.",
+    "Sin obra social": "Filas sin obra social.",
+    "Sin procedimiento": "Filas sin procedimiento.",
+}
+
+
+def _mascaras_calidad(f: pd.DataFrame) -> dict[str, pd.Series]:
+    a = f[~f["_cancelado"]]
+    con_factura = a["_numero_factura"].astype(str).str.strip() != ""
+    return {
+        "Sin importe": a["_monto"] <= 0,
+        "Sin fecha base": a["_fecha_base"].isna(),
+        "Sin número de factura": ~con_factura & (a["_monto"] > 0),
+        "Factura repetida": con_factura & a["_numero_factura"].duplicated(keep=False),
+        "Pendiente sin vencimiento": (a["_pendiente"] > 0) & a["_vencimiento"].isna(),
+        "Cobrado sin fecha de pago": (a["_cobrado"] > 0) & a["_fecha_pago"].isna(),
+        "Sin obra social": a["_obra_social"] == "SIN OBRA SOCIAL",
+        "Sin procedimiento": a["_procedimiento"] == "SIN PROCEDIMIENTO",
+    }
+
+
+def _detalle_registros(df: pd.DataFrame) -> pd.DataFrame:
+    def fecha(s: pd.Series) -> pd.Series:
+        return pd.to_datetime(s, errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
+    d = df.sort_values("_fecha_base", ascending=False)
+    return pd.DataFrame({
+        "Mes": fecha(d["_fecha_base"]),
+        "Paciente / afiliado": d["_paciente"],
+        "Obra social": d["_obra_social"],
+        "Procedimiento": d["_procedimiento"],
+        "Médico": d["_medico"],
+        "N° factura": d["_numero_factura"],
+        "Vencimiento": fecha(d["_vencimiento"]),
+        "Fecha pago": fecha(d["_fecha_pago"]),
+        "Facturado": d["_monto"],
+        "Cobrado": d["_cobrado"],
+        "Pendiente": d["_pendiente"],
+        "Estado": d["_estado_ejecutivo"],
+    })
+
+
+def _seccion_calidad(f: pd.DataFrame, cols: dict[str, str | None], key: str) -> None:
+    tabla, puntaje = _quality(f, cols)
+    mascaras = _mascaras_calidad(f)
+    con_problemas = [c for c in tabla["Control"] if int(mascaras[c].sum()) > 0]
+    filas_afectadas = int(pd.concat(list(mascaras.values()), axis=1).any(axis=1).sum()) if mascaras else 0
+
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Índice de calidad", f"{puntaje:.0f}/100")
+    m2.metric("Controles con problemas", f"{len(con_problemas)} de {len(tabla)}")
+    m3.metric("Filas a revisar", f"{filas_afectadas:,}".replace(",", "."))
+
+    if not con_problemas:
+        st.success("No se encontraron problemas en los registros de esta vista.")
+    else:
+        _subtitulo("Qué revisar", "Corregí estos datos en 📋 Registros. Los totales se muestran igual, pero algunos indicadores (vencido, días de cobro) dependen de estas fechas.")
+        resumen = pd.DataFrame({
+            "Control": con_problemas,
+            "Filas": [int(mascaras[c].sum()) for c in con_problemas],
+            "Qué significa": [_DESCRIPCION_CONTROLES.get(c, "") for c in con_problemas],
+        }).sort_values("Filas", ascending=False)
+        st.dataframe(resumen, use_container_width=True, hide_index=True)
+
+        elegido = st.selectbox("Ver las filas de:", resumen["Control"].tolist(), key=f"{key}_cal_ver")
+        activos = f[~f["_cancelado"]]
+        filas = activos[mascaras[elegido]]
+        _tabla_montos(_detalle_registros(filas), ["Facturado", "Cobrado", "Pendiente"], height=min(42 + 35 * len(filas), 420))
+
+    with st.expander("Columnas de la planilla que se están leyendo", expanded=False):
+        mapa = pd.DataFrame({
+            "Dato": ["Mes", "Paciente / afiliado", "Obra social", "Procedimiento", "Médico", "Fecha factura",
+                     "N° factura", "Vencimiento", "Fecha pago", "Importe", "Estado"],
+            "Columna en la planilla": [cols.get(k) or "— no encontrada —" for k in
+                                       ["mes", "paciente", "obra_social", "procedimiento", "medico", "fecha_factura",
+                                        "numero_factura", "vencimiento", "fecha_pago", "monto", "estado"]],
+        })
+        st.dataframe(mapa, use_container_width=True, hide_index=True)
+
+
+def _seccion_exportar(
+    f: pd.DataFrame,
+    metrics: dict[str, float],
+    module_name: str,
+    cfg: Dict[str, Any],
+    table: str,
+    key: str,
+    gestion_renderer: Callable[..., None] | None,
+) -> None:
+    _subtitulo("Vista filtrada", "Lo que estás viendo con los filtros de arriba.")
+    detalle = _detalle_registros(f)
+    e1, e2 = st.columns(2)
+    e1.download_button(
+        "📄 Registros filtrados (CSV)",
+        data=detalle.to_csv(index=False).encode("utf-8-sig"),
+        file_name=f"{table}_vista.csv",
+        mime="text/csv",
+        use_container_width=True,
+        key=f"{key}_csv",
+    )
+    excel = _excel_export(metrics, _payer_table(f), _group_table(f, "_procedimiento", "Procedimiento"),
+                          _group_table(f, "_medico", "Médico"), _aging(f), _priority_queue(f), _quality(f, {})[0], _monthly(f))
+    if excel:
+        e2.download_button(
+            "📊 Informe para dirección (Excel)",
+            data=excel,
+            file_name=f"{table}_informe.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"{key}_xlsx",
+            help="Resumen, evolución mensual, obras sociales, prácticas, médicos, antigüedad, prioridades de cobro y calidad.",
+        )
+    else:
+        e2.info("El informe Excel no está disponible; el CSV sí.")
+    with st.expander(f"Ver los {len(detalle):,} registros".replace(",", "."), expanded=False):
+        _tabla_montos(detalle, ["Facturado", "Cobrado", "Pendiente"], height=460)
+
+    if gestion_renderer is not None:
+        st.divider()
+        _subtitulo("Planilla completa", "Todos los registros tal como están en Google Sheets, sin filtros.")
+        gestion_renderer(module_name, cfg, workspace="Exportar", embebido=True)
+        with st.expander("⚙️ Elegir y renombrar columnas de la planilla completa", expanded=False):
+            gestion_renderer(module_name, cfg, workspace="Columnas", embebido=True)
+
+
 def render_facturacion_ultra_pro(
     module_name: str,
     cfg: Dict[str, Any],
-    legacy_renderer: Callable[[str, Dict[str, Any]], None] | None = None,
+    legacy_renderer: Callable[..., None] | None = None,
+    header_renderer: Callable[[], None] | None = None,
 ) -> None:
     """
-    Centro inteligente para Facturación VM / VMR.
+    Pantalla única de Facturación VM / VMR.
 
-    - No escribe en Google Sheets.
-    - Lee la misma tabla definida en MODULES.
-    - Mantiene disponible la vista/gestión anterior mediante ``legacy_renderer``.
+    - ``legacy_renderer``: flujo existente de gestión (``render_facturacion_pro``),
+      llamado con ``workspace=`` y ``embebido=True`` para Registros, Cargar,
+      Importar y Exportar.
+    - ``header_renderer``: encabezado común de la app (login/permisos, barra de
+      sesión y copiloto).
     """
     table = str(cfg.get("table", "") or "")
     if not _is_facturacion(module_name, table):
@@ -788,362 +1332,61 @@ def render_facturacion_ultra_pro(
             legacy_renderer(module_name, cfg)
         return
 
-    company = "VMR" if "vmr" in _norm(f"{module_name} {table}") else "VM"
-    key = f"fx_ultra_{_norm(table or module_name)}"
-    _css()
+    st.session_state["vitae_current_module"] = str(module_name)
+    if header_renderer is not None:
+        header_renderer()
 
-    mode_options = ["🚀 Centro inteligente", "🧾 Gestión y carga actual"] if legacy_renderer else ["🚀 Centro inteligente"]
-    mode = st.radio("Vista de facturación", mode_options, horizontal=True, key=f"{key}_mode", label_visibility="collapsed")
-    if mode == "🧾 Gestión y carga actual" and legacy_renderer is not None:
-        legacy_renderer(module_name, cfg)
+    company = "VMR" if "vmr" in _norm(f"{module_name} {table}") else "VM"
+    key = f"fx_{_norm(table or module_name)}"
+    _css()
+    _css_pantalla()
+    _encabezado(module_name, company, key)
+
+    secciones = _SECCIONES_ANALISIS + (_SECCIONES_GESTION if legacy_renderer is not None else ["📤 Exportar"])
+    seleccion = st.segmented_control(
+        "Sección", secciones, default=secciones[0], key=f"{key}_seccion", label_visibility="collapsed"
+    )
+    seccion = seleccion or secciones[0]
+
+    # ---- Gestión: flujo existente, siempre sobre la planilla completa ----
+    if seccion in _WORKSPACE_GESTION and legacy_renderer is not None:
+        legacy_renderer(module_name, cfg, workspace=_WORKSPACE_GESTION[seccion], embebido=True)
         return
 
-    _hero(company)
-
+    # ---- Análisis (y Exportar): lectura + filtros compartidos ----
     if get_df is None:
-        st.error("No se pudo importar database.get_df.")
+        st.error("No se pudo conectar con la base de datos.")
         return
     try:
         df_raw = get_df(table)
     except Exception as exc:
-        st.error(f"No se pudo leer Google Sheets para {table}: {exc}")
+        st.error(f"No se pudo leer la planilla «{table}» de Google Sheets: {exc}")
         return
     if df_raw is None or df_raw.empty:
-        st.warning("No hay registros cargados en esta planilla.")
+        st.info("Todavía no hay registros. Podés cargarlos desde ➕ Cargar o 📥 Importar.")
         return
 
     data, cols = _prepare_facturacion(df_raw)
-    filtered = _filter_panel(data, key)
-    if filtered.empty:
-        st.info("No hay registros que coincidan con los filtros seleccionados.")
+    data = _ajustar_estado_manual(data)
+    filtrado, detalle = _panel_filtros(data, key)
+
+    if seccion == "📤 Exportar":
+        _seccion_exportar(filtrado, _metrics(filtrado), module_name, cfg, table, key, legacy_renderer)
         return
 
-    metrics = _metrics(filtered)
-    monthly = _monthly(filtered)
-    payer = _payer_table(filtered)
-    proc = _group_table(filtered, "_procedimiento", "Procedimiento")
-    med = _group_table(filtered, "_medico", "Médico")
-    aging = _aging(filtered)
-    queue = _priority_queue(filtered)
-    quality_table, quality_score = _quality(filtered, cols)
-    forecast = _forecast(monthly)
-    health = _health_dimensions(metrics, payer, quality_score)
+    if filtrado.empty:
+        st.info("Ningún registro coincide con los filtros. Probá ampliar el período o tocar «Limpiar».")
+        return
 
-    # Header KPIs
-    k1, k2, k3, k4 = st.columns(4)
-    with k1:
-        _kpi("💰 Facturado activo", _fmt_money(metrics["facturado"]), f"{metrics['registros']} registros")
-    with k2:
-        _kpi("✅ Cobrado", _fmt_money(metrics["cobrado"]), f"{_fmt_pct(metrics['tasa'])} del facturado")
-    with k3:
-        _kpi("⌛ Pendiente", _fmt_money(metrics["pendiente"]), f"{_fmt_pct(100-metrics['tasa'])} aún no cobrado")
-    with k4:
-        _kpi("🚨 Vencido", _fmt_money(metrics["vencido"]), f"{_fmt_pct(metrics['mora'])} de la cartera pendiente")
+    metrics = _metrics(filtrado)
+    _tarjetas(metrics)
+    st.caption(detalle)
 
-    k5, k6, k7, k8 = st.columns(4)
-    with k5:
-        _kpi("🧾 Ticket promedio", _fmt_money(metrics["ticket"]), "Promedio por registro con importe")
-    with k6:
-        _kpi("⏱ Días de cobro", f"{metrics['dso']:.1f}" if metrics["dso"] else "Sin dato", "Promedio ponderado observado")
-    with k7:
-        _kpi("👥 Pacientes", f"{metrics['pacientes']}", "Pacientes/afiliados únicos detectados")
-    with k8:
-        _kpi("🎯 Calidad de datos", f"{quality_score:.0f}/100", "Índice interno de completitud")
-
-    tabs = st.tabs([
-        "🧠 Dirección",
-        "💸 Cobranza",
-        "🏥 Producción",
-        "🔭 Proyección",
-        "🛡️ Auditoría",
-        "📋 Detalle",
-    ])
-
-    # ------------------------------------------------------------------
-    # Dirección
-    # ------------------------------------------------------------------
-    with tabs[0]:
-        st.markdown('<div class="fx-section">Pulso ejecutivo</div>', unsafe_allow_html=True)
-        brief = _executive_brief(metrics, monthly, payer, proc, quality_score)
-        left, right = st.columns([1.25, 1])
-        with left:
-            for msg in brief:
-                st.markdown(f"- {msg}")
-        with right:
-            fig_radar = go.Figure()
-            fig_radar.add_trace(go.Scatterpolar(
-                r=list(health.values()) + [next(iter(health.values()))],
-                theta=list(health.keys()) + [next(iter(health.keys()))],
-                fill="toself",
-                name="Salud",
-                line=dict(color=VITAE_PINK),
-                fillcolor="rgba(177,86,126,.20)",
-            ))
-            fig_radar.update_layout(
-                height=310,
-                margin=dict(l=25, r=25, t=30, b=20),
-                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                showlegend=False,
-                paper_bgcolor="rgba(0,0,0,0)",
-                title="Radar interno de salud",
-            )
-            st.plotly_chart(fig_radar, use_container_width=True, config={"displayModeBar": False})
-
-        if not monthly.empty:
-            melted = monthly.melt(id_vars=["mes", "Etiqueta"], value_vars=["Facturado", "Cobrado", "Pendiente"], var_name="Serie", value_name="Importe")
-            fig = px.bar(melted, x="Etiqueta", y="Importe", color="Serie", barmode="group", title="Evolución mensual: facturado, cobrado y pendiente")
-            st.plotly_chart(_clean_plot(fig, 410), use_container_width=True, config={"displaylogo": False})
-
-        c1, c2 = st.columns(2)
-        with c1:
-            if not payer.empty:
-                top = payer.head(8).sort_values("Facturado")
-                fig = px.bar(top, x="Facturado", y="Obra social", orientation="h", title="Top financiadores por facturación")
-                st.plotly_chart(_clean_plot(fig, 365), use_container_width=True, config={"displaylogo": False})
-        with c2:
-            comp = pd.DataFrame({"Estado": ["Cobrado", "Pendiente no vencido", "Vencido"], "Importe": [metrics["cobrado"], max(0, metrics["pendiente"] - metrics["vencido"]), metrics["vencido"]]})
-            fig = px.pie(comp, names="Estado", values="Importe", hole=.58, title="Composición económica de la cartera")
-            st.plotly_chart(_clean_plot(fig, 365), use_container_width=True, config={"displaylogo": False})
-
-        st.markdown('<div class="fx-section">Plan de acción 7–30–60–90</div>', unsafe_allow_html=True)
-        st.dataframe(_action_plan(metrics, queue, payer, quality_score, forecast), use_container_width=True, hide_index=True)
-
-    # ------------------------------------------------------------------
-    # Cobranza
-    # ------------------------------------------------------------------
-    with tabs[1]:
-        st.markdown('<div class="fx-section">Motor de cobranza y caja recuperable</div>', unsafe_allow_html=True)
-        a1, a2, a3, a4 = st.columns(4)
-        a1.metric("Vencido", _fmt_money(metrics["vencido"]), _fmt_pct(metrics["mora"]))
-        a2.metric("Recupero 30%", _fmt_money(metrics["vencido"] * .30))
-        a3.metric("Recupero 50%", _fmt_money(metrics["vencido"] * .50))
-        a4.metric("Recupero 70%", _fmt_money(metrics["vencido"] * .70))
-
-        sim = st.slider("Simulador de recupero sobre deuda vencida", 0, 100, 50, 5, key=f"{key}_recovery")
-        st.info(f"Con un recupero de {sim}% sobre la cartera vencida se liberarían aproximadamente **{_fmt_money(metrics['vencido'] * sim / 100)}** de caja.")
-
-        c1, c2 = st.columns([1, 1.15])
-        with c1:
-            if not aging.empty:
-                fig = px.bar(aging, x="Tramo", y="Pendiente", text_auto=".2s", title="Aging de cartera pendiente")
-                st.plotly_chart(_clean_plot(fig, 365), use_container_width=True, config={"displaylogo": False})
-        with c2:
-            if not payer.empty:
-                p = payer.head(12).copy()
-                p["Días cobro plot"] = p["Días cobro"].replace(0, pd.NA)
-                fig = px.scatter(
-                    p,
-                    x="Días cobro plot",
-                    y="Cobranza %",
-                    size="Facturado",
-                    color="Estado interno",
-                    hover_name="Obra social",
-                    hover_data={"Pendiente": ":,.0f", "Vencido": ":,.0f", "Facturado": ":,.0f"},
-                    title="Matriz financiador: velocidad vs cobranza",
-                    color_discrete_map={"Fuerte": VITAE_GREEN, "Sano": VITAE_PINK, "Atención": VITAE_AMBER, "Crítico": VITAE_RED},
-                )
-                st.plotly_chart(_clean_plot(fig, 365), use_container_width=True, config={"displaylogo": False})
-
-        if not payer.empty:
-            view = payer.copy()
-            for c in ["Facturado", "Cobrado", "Pendiente", "Vencido"]:
-                view[c] = view[c].map(_fmt_money)
-            for c in ["Cobranza %", "Mora %", "Participación %"]:
-                view[c] = view[c].map(_fmt_pct)
-            view["Días cobro"] = view["Días cobro"].map(lambda x: f"{x:.1f}" if x else "Sin dato")
-            st.markdown("#### Scorecard por obra social")
-            st.dataframe(view, use_container_width=True, hide_index=True, height=390)
-
-        st.markdown("#### Cola priorizada de cobranza")
-        if queue.empty:
-            st.success("No hay saldos pendientes en la vista seleccionada.")
-        else:
-            q = queue.head(30).copy()
-            q["Vencimiento"] = pd.to_datetime(q["Vencimiento"], errors="coerce").dt.strftime("%d/%m/%Y").fillna("Sin fecha")
-            q["Pendiente"] = q["Pendiente"].map(_fmt_money)
-            st.dataframe(q.drop(columns=["Impacto"]), use_container_width=True, hide_index=True, height=430)
-
-    # ------------------------------------------------------------------
-    # Producción
-    # ------------------------------------------------------------------
-    with tabs[2]:
-        st.markdown('<div class="fx-section">Producción económica y concentración</div>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            if not proc.empty:
-                top = proc.head(12).sort_values("Facturado")
-                fig = px.bar(top, x="Facturado", y="Procedimiento", orientation="h", title="Prácticas por peso económico")
-                st.plotly_chart(_clean_plot(fig, 405), use_container_width=True, config={"displaylogo": False})
-        with c2:
-            if not med.empty:
-                top = med.head(12).sort_values("Facturado")
-                fig = px.bar(top, x="Facturado", y="Médico", orientation="h", title="Médicos por peso económico")
-                st.plotly_chart(_clean_plot(fig, 405), use_container_width=True, config={"displaylogo": False})
-
-        ptab, mtab = st.tabs(["Procedimientos", "Médicos"])
-        with ptab:
-            if not proc.empty:
-                v = proc.copy()
-                for c in ["Facturado", "Cobrado", "Pendiente", "Vencido"]:
-                    v[c] = v[c].map(_fmt_money)
-                v["Cobranza %"] = v["Cobranza %"].map(_fmt_pct)
-                v["Participación %"] = v["Participación %"].map(_fmt_pct)
-                st.dataframe(v, use_container_width=True, hide_index=True, height=430)
-        with mtab:
-            if not med.empty:
-                v = med.copy()
-                for c in ["Facturado", "Cobrado", "Pendiente", "Vencido"]:
-                    v[c] = v[c].map(_fmt_money)
-                v["Cobranza %"] = v["Cobranza %"].map(_fmt_pct)
-                v["Participación %"] = v["Participación %"].map(_fmt_pct)
-                st.dataframe(v, use_container_width=True, hide_index=True, height=430)
-
-        if not proc.empty:
-            cumulative = proc[["Procedimiento", "Facturado"]].copy().sort_values("Facturado", ascending=False)
-            total = cumulative["Facturado"].sum()
-            cumulative["Acumulado %"] = 100 * cumulative["Facturado"].cumsum() / total if total else 0
-            n80 = int((cumulative["Acumulado %"] < 80).sum() + 1) if not cumulative.empty else 0
-            st.info(f"Las primeras **{n80}** prácticas explican aproximadamente el 80% del valor facturado de la vista. Útil para enfocar capacidad, convenios y seguimiento de cobro sin confundir facturación con rentabilidad.")
-
-    # ------------------------------------------------------------------
-    # Proyección
-    # ------------------------------------------------------------------
-    with tabs[3]:
-        st.markdown('<div class="fx-section">Run-rate, tendencia y escenarios</div>', unsafe_allow_html=True)
-        f1, f2, f3, f4 = st.columns(4)
-        f1.metric("Run-rate 12 meses", _fmt_money(float(forecast["run_rate"])), "Promedio reciente ponderado")
-        f2.metric("Cierre anual estimado", _fmt_money(float(forecast["year_close"])), "YTD + ritmo reciente")
-        f3.metric("Escenario conservador", _fmt_money(float(forecast["conservative"])), "Ajustado por volatilidad")
-        f4.metric("Escenario expansivo", _fmt_money(float(forecast["expansive"])), "Ajustado por volatilidad")
-
-        if not monthly.empty:
-            plot = monthly[["mes", "Facturado"]].copy()
-            future_start = plot["mes"].max() + pd.offsets.MonthBegin(1)
-            future_dates = pd.date_range(future_start, periods=6, freq="MS")
-            base = float(forecast["base_month"])
-            fut = pd.DataFrame({"mes": future_dates, "Facturado": [base] * 6, "Tipo": "Proyección base"})
-            hist = plot.assign(Tipo="Observado")
-            combined = pd.concat([hist, fut], ignore_index=True)
-            fig = px.line(combined, x="mes", y="Facturado", color="Tipo", markers=True, title="Facturación observada + proyección base a 6 meses")
-            st.plotly_chart(_clean_plot(fig, 400), use_container_width=True, config={"displaylogo": False})
-
-            if len(monthly) >= 3:
-                recent_avg = monthly.tail(3)["Facturado"].mean()
-                prev_avg = monthly.iloc[-6:-3]["Facturado"].mean() if len(monthly) >= 6 else monthly.iloc[:-3]["Facturado"].mean()
-                if prev_avg and not math.isnan(prev_avg):
-                    momentum = 100 * (recent_avg - prev_avg) / prev_avg
-                    st.caption(f"Momentum: el promedio de los últimos 3 meses está {momentum:+.1f}% frente al bloque anterior comparable.")
-
-        st.markdown("#### Alertas de tendencia")
-        alerts = []
-        if forecast["trend"] is not None:
-            tr = float(forecast["trend"])
-            if tr <= -20:
-                alerts.append(f"Caída relevante: el último mes completo bajó {abs(tr):.1f}% frente al anterior.")
-            elif tr >= 20:
-                alerts.append(f"Aceleración relevante: el último mes completo creció {tr:.1f}% frente al anterior.")
-            else:
-                alerts.append(f"Movimiento mensual dentro de una banda moderada: {tr:+.1f}%.")
-        if not payer.empty and payer.iloc[0]["Participación %"] >= 40:
-            alerts.append(f"Concentración comercial: {payer.iloc[0]['Obra social']} explica {_fmt_pct(payer.iloc[0]['Participación %'])} de la facturación.")
-        if metrics["mora"] >= 25:
-            alerts.append(f"Presión de mora: {_fmt_pct(metrics['mora'])} de la cartera pendiente ya está vencida.")
-        if metrics["dso"] > 60:
-            alerts.append(f"Velocidad de cobro: el promedio observado es {metrics['dso']:.1f} días.")
-        if not alerts:
-            alerts.append("No se detectan desvíos fuertes con los datos visibles.")
-        for a in alerts:
-            st.markdown(f"- {a}")
-
-    # ------------------------------------------------------------------
-    # Auditoría
-    # ------------------------------------------------------------------
-    with tabs[4]:
-        st.markdown('<div class="fx-section">Auditoría de trazabilidad y consistencia</div>', unsafe_allow_html=True)
-        q1, q2, q3 = st.columns(3)
-        q1.metric("Calidad de datos", f"{quality_score:.0f}/100")
-        q2.metric("Controles con incidencias", int((quality_table["Registros"] > 0).sum()))
-        q3.metric("Incidencias detectadas", int(quality_table["Registros"].sum()))
-        st.dataframe(quality_table, use_container_width=True, hide_index=True)
-
-        detected = pd.DataFrame({
-            "Dato": ["Mes", "Paciente / afiliado", "Obra social", "Procedimiento", "Médico", "Fecha servicio", "Fecha factura", "N.º factura", "Vencimiento", "Fecha pago", "Importe", "Cobrado", "Saldo", "Estado"],
-            "Columna detectada": [cols.get("mes"), cols.get("paciente"), cols.get("obra_social"), cols.get("procedimiento"), cols.get("medico"), cols.get("fecha_servicio"), cols.get("fecha_factura"), cols.get("numero_factura"), cols.get("vencimiento"), cols.get("fecha_pago"), cols.get("monto"), cols.get("cobrado"), cols.get("saldo"), cols.get("estado")],
-        }).fillna("No encontrada")
-        with st.expander("🧭 Mapa de lectura del Google Sheet", expanded=False):
-            st.dataframe(detected, use_container_width=True, hide_index=True)
-
-        if quality_score < 90:
-            st.warning("Antes de comparar finamente velocidad de cobro o rendimiento entre financiadores, conviene corregir vencimientos, fechas de pago y facturas faltantes. Los totales económicos siguen mostrándose, pero esas métricas dependen de la trazabilidad temporal.")
-        else:
-            st.success("La base presenta un nivel alto de completitud para análisis ejecutivo.")
-
-    # ------------------------------------------------------------------
-    # Detalle + export + IA
-    # ------------------------------------------------------------------
-    with tabs[5]:
-        st.markdown('<div class="fx-section">Detalle ejecutivo filtrado</div>', unsafe_allow_html=True)
-        detail_source = filtered.sort_values("_fecha_base", ascending=False).copy()
-        detail = pd.DataFrame({
-            "Fecha": detail_source["_fecha_base"].dt.strftime("%d/%m/%Y").fillna(""),
-            "Paciente / afiliado": detail_source["_paciente"],
-            "Obra social": detail_source["_obra_social"],
-            "Procedimiento": detail_source["_procedimiento"],
-            "Médico": detail_source["_medico"],
-            "Factura": detail_source["_numero_factura"],
-            "Vencimiento": detail_source["_vencimiento"].dt.strftime("%d/%m/%Y").fillna(""),
-            "Fecha pago": detail_source["_fecha_pago"].dt.strftime("%d/%m/%Y").fillna(""),
-            "Facturado": detail_source["_monto"],
-            "Cobrado": detail_source["_cobrado"],
-            "Pendiente": detail_source["_pendiente"],
-            "Estado": detail_source["_estado_ejecutivo"],
-        })
-        show = detail.copy()
-        for c in ["Facturado", "Cobrado", "Pendiente"]:
-            show[c] = show[c].map(_fmt_money)
-        st.dataframe(show, use_container_width=True, hide_index=True, height=520)
-
-        e1, e2 = st.columns(2)
-        e1.download_button(
-            "📥 Descargar vista CSV",
-            data=detail.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"{table}_revenue_intelligence.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"{key}_csv",
-        )
-        excel = _excel_export(metrics, payer, proc, med, aging, queue, quality_table, monthly)
-        if excel:
-            e2.download_button(
-                "📊 Descargar informe Excel",
-                data=excel,
-                file_name=f"{table}_informe_ejecutivo.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key=f"{key}_xlsx",
-            )
-        else:
-            e2.info("Exportación Excel no disponible; el CSV sí está listo.")
-
-        st.divider()
-        with st.expander("🤖 Copiloto IA de facturación", expanded=False):
-            st.caption("Usa el asistente ya existente en tu proyecto y únicamente la vista filtrada.")
-            question = st.text_input(
-                "Pregunta",
-                placeholder="Ej.: ¿Qué obra social debería priorizar esta semana y por qué?",
-                key=f"{key}_ai_q",
-            )
-            if st.button("Analizar", key=f"{key}_ai_btn", use_container_width=False):
-                if not question.strip():
-                    st.warning("Escribí una pregunta.")
-                else:
-                    try:
-                        from assistant import preguntar_ia
-                        ai_df = filtered[["_fecha_base", "_paciente", "_obra_social", "_procedimiento", "_medico", "_numero_factura", "_vencimiento", "_fecha_pago", "_monto", "_cobrado", "_pendiente", "_estado_ejecutivo"]].copy()
-                        ai_df.columns = ["fecha", "paciente", "obra_social", "procedimiento", "medico", "factura", "vencimiento", "fecha_pago", "facturado", "cobrado", "pendiente", "estado"]
-                        answer = preguntar_ia(module_name, ai_df, question)
-                        st.markdown(answer)
-                    except Exception as exc:
-                        st.error(f"El Copiloto IA no pudo responder: {exc}")
-
-    st.caption("Centro Revenue Intelligence · Solo lectura · Los scores, semáforos, escenarios y prioridades son indicadores internos calculados sobre la base visible; no reemplazan validación contable ni contractual.")
+    if seccion == "📊 Resumen":
+        _seccion_resumen(filtrado, metrics, module_name, key)
+    elif seccion == "💸 Cobranza":
+        _seccion_cobranza(filtrado, metrics, key)
+    elif seccion == "🩺 Producción":
+        _seccion_produccion(filtrado)
+    elif seccion == "🛡️ Calidad":
+        _seccion_calidad(filtrado, cols, key)

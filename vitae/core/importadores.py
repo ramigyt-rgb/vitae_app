@@ -3,14 +3,14 @@
 # =========================================================
 import pandas as pd
 import streamlit as st
-from helpers import show_business_table
+from vitae.core.helpers import show_business_table
 from typing import Any, Dict, List, Tuple
-from helpers import clean_for_db, default_value
-from helpers import parse_date
-from helpers import normalize_money_string
-from helpers import DATE_FMT
-from database import *
-from modules import MODULES
+from vitae.core.helpers import clean_for_db, default_value
+from vitae.core.helpers import parse_date
+from vitae.core.helpers import normalize_money_string
+from vitae.core.helpers import DATE_FMT
+from vitae.core.database import *
+from vitae.core.tablas import MODULES
 import numpy as np
 def clean_tabular_sheet(df_raw: pd.DataFrame) -> pd.DataFrame:
     if df_raw.empty:
