@@ -10,6 +10,7 @@ import streamlit as st
 from vitae.core.config import LOGO_PATH
 from vitae.core.movil import instalar_ajustes_moviles
 from vitae.core.navegacion import GRUPOS, ICONO_POR_DEFECTO
+from vitae.core.ui import logo_data_uri
 from vitae.core.tablas import MODULES
 
 # IMPORTANTE: el parche se aplica antes de importar las vistas, para que el
@@ -120,8 +121,12 @@ def main() -> None:
     # LOGIN GLOBAL: nada de la aplicación se construye antes de autenticar.
     require_vitae_login()
 
-    if LOGO_PATH.exists():
-        st.logo(str(LOGO_PATH), size="large")
+    logo = logo_data_uri()
+    if logo:
+        try:
+            st.logo(logo, size="large")  # incrustado: no depende de imágenes temporales
+        except Exception:
+            st.logo(str(LOGO_PATH), size="large")
 
     menu = _armar_menu()
     if not menu:

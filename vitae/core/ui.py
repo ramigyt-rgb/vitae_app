@@ -56,3 +56,25 @@ def tarjetas_kpi(tarjetas: list[tuple[str, str, str, str]]) -> None:
                 f'<div class="vitae-kpi-foot">{html.escape(pie)}</div></div>',
                 unsafe_allow_html=True,
             )
+
+
+def logo_data_uri() -> str | None:
+    """Logo como data URI (incrustado en la página).
+
+    Evita depender del servidor de imágenes temporales de Streamlit: en algunos
+    celulares esas imágenes no cargaban y aparecía un «?» con un «0».
+    """
+    global _LOGO_CACHE
+    if _LOGO_CACHE is None:
+        try:
+            import base64
+
+            from vitae.core.config import LOGO_PATH
+
+            _LOGO_CACHE = "data:image/png;base64," + base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+        except Exception:
+            _LOGO_CACHE = ""
+    return _LOGO_CACHE or None
+
+
+_LOGO_CACHE: str | None = None
