@@ -30,6 +30,7 @@ def render_farmacia_pro(
     """
 
     import html
+    import re as _re
     import unicodedata
     import uuid
     from datetime import date, datetime, timedelta
@@ -193,9 +194,39 @@ def render_farmacia_pro(
         return bool(default)
 
     def fecha_segura(valor):
-        if texto_limpio(valor) == "":
+        """Lee una fecha sin invertir día y mes.
+
+        Antes se usaba siempre dayfirst=True, y las fechas guardadas como
+        2026-11-05 (5 de noviembre) se leían como 11 de mayo. Como la planilla
+        se vuelve a guardar completa al registrar movimientos, los días 1 a 12
+        se intercambiaban en cada guardado.
+        """
+        if isinstance(valor, (pd.Timestamp, datetime)):
+            return pd.Timestamp(valor)
+        if isinstance(valor, date):
+            return pd.Timestamp(valor)
+        texto = texto_limpio(valor)
+        if texto == "":
             return pd.NaT
-        return pd.to_datetime(valor, errors="coerce", dayfirst=True)
+        iso = _re.match(r"^(\d{4})[-/](\d{1,2})[-/](\d{1,2})", texto)
+        if iso:
+            try:
+                return pd.Timestamp(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+            except ValueError:
+                return pd.NaT
+        dmy = _re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})", texto)
+        if dmy:
+            try:
+                return pd.Timestamp(int(dmy.group(3)), int(dmy.group(2)), int(dmy.group(1)))
+            except ValueError:
+                return pd.NaT
+        try:
+            numero = float(texto.replace(",", "."))
+            if 20000 <= numero <= 80000:  # número de serie de Excel / Sheets
+                return pd.Timestamp("1899-12-30") + pd.Timedelta(days=round(numero))
+        except ValueError:
+            pass
+        return pd.to_datetime(texto, errors="coerce", dayfirst=True)
 
     def fecha_para_guardar(valor):
         fecha = fecha_segura(valor)
@@ -585,30 +616,44 @@ def render_farmacia_pro(
         * activos["costo_unitario"]
     ).sum() if not activos.empty else 0
 
-    r1, r2, r3, r4, r5 = st.columns(5)
-    r1.metric("Artículos activos", total_articulos)
-    r2.metric("Unidades Quirófano", formato_cantidad(unidades_qx))
-    r3.metric("Unidades Farmacia", formato_cantidad(unidades_farm))
-    r4.metric("Stocks críticos", int(bajo_qx + bajo_farm))
-    r5.metric("Valor estimado", formato_pesos(valor_total))
-
-    if vencen_90 > 0:
-        st.warning(
-            f"Hay {vencen_90} registros de lote que vencen dentro de los próximos 90 días "
-            "o ya están vencidos."
-        )
+    sin_stock_total = int(
+        ((activos["stock_quirofano"] <= 0).sum() + (activos["stock_farmacia"] <= 0).sum())
+        if not activos.empty else 0
+    )
+    try:
+        from vitae.core.ui import tarjetas_kpi
+    except Exception:  # pragma: no cover
+        tarjetas_kpi = None
+    tarjetas = [
+        ("Artículos activos", formato_cantidad(total_articulos),
+         f"Quirófano {formato_cantidad(unidades_qx)} u. · Farmacia {formato_cantidad(unidades_farm)} u.", "#8C2853"),
+        ("Para reponer", formato_cantidad(int(bajo_qx + bajo_farm)),
+         f"{sin_stock_total} sin stock en algún sector", "#C58A32"),
+        ("Vencidos o por vencer", formato_cantidad(vencen_90), "lotes vencidos o a ≤ 90 días", "#B14E5E"),
+        ("Valor del stock", formato_pesos(valor_total).split(",")[0], "a costo unitario cargado", "#5F9D78"),
+    ]
+    if tarjetas_kpi is not None:
+        tarjetas_kpi(tarjetas)
+    else:
+        for col, (titulo, valor, pie, _) in zip(st.columns(4), tarjetas):
+            col.metric(titulo, valor, help=pie)
 
     # =====================================================
     # DOS MÓDULOS INTERNOS
     # =====================================================
 
-    tab_quirofano, tab_farmacia, tab_provision = st.tabs(
-        [
-            "Stock Quirófano",
-            "Stock Farmacia",
-            "Provisión por paciente",
-        ]
-    )
+    # Una sección por vez (antes eran pestañas: se cargaban las tres juntas).
+    _secciones_farmacia = ["Resumen", "Stock Quirófano", "Stock Farmacia", "Provisión por paciente",
+                           "Catálogo", "Historial"]
+    if stock.empty:
+        # Sin artículos, lo primero es cargar el catálogo.
+        _secciones_farmacia = ["Catálogo"] + [x for x in _secciones_farmacia if x != "Catálogo"]
+    try:
+        from vitae.vistas import _vitae_lazy_selector as _selector_secciones
+        seccion = _selector_secciones("Sección de farmacia", _secciones_farmacia, key="farmacia_seccion")
+    except Exception:  # pragma: no cover
+        seccion = st.radio("Sección", _secciones_farmacia, horizontal=True, key="farmacia_seccion",
+                           label_visibility="collapsed")
 
     def render_sector(sector, titulo, icono):
         col_stock = f"stock_{sector}"
@@ -624,9 +669,7 @@ def render_farmacia_pro(
             lambda fila: estado_stock(fila, sector), axis=1
         )
         data["_fecha_vencimiento"] = pd.to_datetime(
-            data[col_vencimiento],
-            errors="coerce",
-            dayfirst=True,
+            data[col_vencimiento].apply(fecha_segura), errors="coerce"
         )
         data["_dias_vencimiento"] = (
             data["_fecha_vencimiento"] - pd.Timestamp.today().normalize()
@@ -1812,21 +1855,105 @@ def render_farmacia_pro(
                         ):
                             st.rerun()
 
-    with tab_quirofano:
+    def render_resumen_farmacia():
+        """Lo que hay que atender hoy: reponer, vencimientos y control diario."""
+        sectores = [("quirofano", "Quirófano"), ("farmacia", "Farmacia")]
+        hoy_ts = pd.Timestamp.today().normalize()
+        fecha_hoy_txt = date.today().strftime("%Y-%m-%d")
+
+        # Control diario de hoy por sector
+        st.markdown("#### Control diario de hoy")
+        cols_control = st.columns(2)
+        for col, (sector, nombre) in zip(cols_control, sectores):
+            hechos = movimientos[
+                movimientos["fecha"].eq(fecha_hoy_txt)
+                & movimientos["sector"].astype(str).str.lower().eq(nombre.lower())
+                & movimientos["tipo"].eq("Control diario")
+            ] if not movimientos.empty else movimientos
+            with col:
+                if hechos.empty:
+                    st.warning(f"{nombre}: control diario pendiente.")
+                else:
+                    ultimo = hechos.iloc[-1]
+                    st.success(f"{nombre}: hecho por {ultimo['responsable'] or 'sin responsable'} "
+                               f"a las {ultimo['hora'] or '—'}.")
+
+        if activos.empty:
+            st.info("Todavía no hay artículos activos. Cargalos en la sección Catálogo.")
+            return
+
+        # Para reponer
+        filas = []
+        for sector, nombre in sectores:
+            cant = activos[f"stock_{sector}"]
+            minimo = activos[f"stock_minimo_{sector}"]
+            faltan = activos[(cant <= 0) | ((minimo > 0) & (cant <= minimo))]
+            for _, fila in faltan.iterrows():
+                filas.append({
+                    "Artículo": fila["articulo"],
+                    "Sector": nombre,
+                    "Stock": formato_cantidad(fila[f"stock_{sector}"]),
+                    "Mínimo": formato_cantidad(fila[f"stock_minimo_{sector}"]),
+                    "Sugerido a pedir": formato_cantidad(max(0.0, numero_seguro(fila[f"stock_minimo_{sector}"]) * 2
+                                                          - numero_seguro(fila[f"stock_{sector}"]))),
+                    "Estado": estado_stock(fila, sector),
+                    "_orden": 0 if numero_seguro(fila[f"stock_{sector}"]) <= 0 else 1,
+                })
+        st.markdown("#### Para reponer")
+        if not filas:
+            st.success("Ningún artículo está por debajo del mínimo.")
+        else:
+            reponer = pd.DataFrame(filas).sort_values(["_orden", "Artículo"]).drop(columns=["_orden"])
+            st.caption(f"{len(reponer)} artículos sin stock o por debajo del mínimo. "
+                       "Sugerido a pedir: lo necesario para llegar al doble del mínimo.")
+            st.dataframe(reponer, use_container_width=True, hide_index=True,
+                         height=min(42 + 35 * len(reponer), 420))
+
+        # Vencimientos
+        filas = []
+        for sector, nombre in sectores:
+            for _, fila in activos.iterrows():
+                fecha = fecha_segura(fila.get(f"vencimiento_{sector}"))
+                if pd.isna(fecha) or numero_seguro(fila.get(f"stock_{sector}")) <= 0:
+                    continue
+                dias = (fecha.normalize() - hoy_ts).days
+                if dias <= 90:
+                    filas.append({
+                        "Artículo": fila["articulo"],
+                        "Sector": nombre,
+                        "Lote": fila.get(f"lote_{sector}", ""),
+                        "Vence": fecha.strftime("%d/%m/%Y"),
+                        "Días": dias,
+                        "Stock": formato_cantidad(fila[f"stock_{sector}"]),
+                        "Estado": estado_vencimiento(fila, sector),
+                    })
+        st.markdown("#### Vencidos y próximos a vencer (90 días)")
+        if not filas:
+            st.success("No hay lotes con stock vencidos ni por vencer en los próximos 90 días.")
+        else:
+            venc = pd.DataFrame(filas).sort_values("Días")
+            st.caption("Solo lotes con stock. Ordenados del más urgente al menos urgente.")
+            st.dataframe(venc, use_container_width=True, hide_index=True,
+                         height=min(42 + 35 * len(venc), 420))
+
+    if seccion == "Resumen":
+        render_resumen_farmacia()
+
+    if seccion == "Stock Quirófano":
         render_sector("quirofano", "Control y gestión de Stock Quirófano", "🏥")
 
-    with tab_farmacia:
+    if seccion == "Stock Farmacia":
         render_sector("farmacia", "Control y gestión de Stock Farmacia", "💊")
 
-    with tab_provision:
+    if seccion == "Provisión por paciente":
         render_provision_paciente()
 
     # =====================================================
     # CATÁLOGO COMPARTIDO
     # =====================================================
 
-    st.divider()
-    with st.expander("Catálogo compartido de artículos", expanded=stock.empty):
+    if seccion == "Catálogo":
+        st.markdown("#### Catálogo compartido de artículos")
         st.caption(
             "El artículo se carga una sola vez. Después aparece tanto en Stock Quirófano "
             "como en Stock Farmacia, cada uno con su propia cantidad, mínimo, lote y vencimiento."
@@ -2068,7 +2195,8 @@ def render_farmacia_pro(
     # HISTORIAL Y AUDITORÍA
     # =====================================================
 
-    with st.expander("Historial de movimientos y auditoría", expanded=False):
+    if seccion == "Historial":
+        st.markdown("#### Historial de movimientos y auditoría")
         if movimientos.empty:
             st.info("Todavía no hay movimientos registrados.")
         else:
