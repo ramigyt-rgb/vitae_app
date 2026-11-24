@@ -12,6 +12,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 try:
+    from vitae.core.ui import encabezado_modulo, sin_icono
+except Exception:  # pragma: no cover
+    encabezado_modulo = None
+
+    def sin_icono(texto):
+        return re.sub(r":material/[a-z0-9_]+:\s*", "", str(texto))
+
+try:
     from vitae.core.movil import es_movil
 except Exception:  # pragma: no cover
     def es_movil() -> bool:
@@ -1365,14 +1373,17 @@ def render_facturacion_ultra_pro(
     key = f"fx_{_norm(table or module_name)}"
     _css()
     _css_pantalla()
-    _encabezado(module_name, company, key)
+    if encabezado_modulo is not None:
+        encabezado_modulo(module_name, cfg)
+    else:
+        _encabezado(module_name, company, key)
 
     secciones = _SECCIONES_ANALISIS + (_SECCIONES_GESTION if legacy_renderer is not None else [":material/download: Exportar"])
     if es_movil():
         # En el celular 8 botones no entran en una fila: desplegable compacto.
         seccion = st.selectbox(
             "Sección", secciones, key=f"{key}_seccion_movil", label_visibility="collapsed",
-            format_func=lambda x: re.sub(r":material/[a-z_]+:\s*", "", x),
+            format_func=sin_icono,
         )
     else:
         seleccion = st.segmented_control(

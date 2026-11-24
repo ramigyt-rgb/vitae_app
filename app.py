@@ -9,6 +9,7 @@ import streamlit as st
 
 from vitae.core.config import LOGO_PATH
 from vitae.core.movil import instalar_ajustes_moviles
+from vitae.core.navegacion import GRUPOS, ICONO_POR_DEFECTO
 from vitae.core.tablas import MODULES
 
 # IMPORTANTE: el parche se aplica antes de importar las vistas, para que el
@@ -39,47 +40,8 @@ st.set_page_config(
 instalar_ajustes_moviles()
 
 
-# ---------------------------------------------------------------------------
-# Menú lateral: módulos agrupados por tipo, con íconos.
-# Un módulo nuevo en MODULES que no figure acá aparece solo en "Otros".
-# ---------------------------------------------------------------------------
-GRUPOS: list[tuple[str, list[tuple[str, str]]]] = [
-    ("Facturación y cobros", [
-        ("Facturación VMR", ":material/receipt_long:"),
-        ("Facturación VM", ":material/receipt_long:"),
-        ("Cuenta Corriente VMR", ":material/account_balance_wallet:"),
-        ("Cuenta Corriente VM", ":material/account_balance_wallet:"),
-        ("Honorarios médicos", ":material/medical_information:"),
-        ("Convenios", ":material/handshake:"),
-    ]),
-    ("Cajas y bancos", [
-        ("Caja VMR", ":material/point_of_sale:"),
-        ("Banco Macro VMR", ":material/account_balance:"),
-        ("Caja VM", ":material/point_of_sale:"),
-        ("Banco Galicia VM", ":material/account_balance:"),
-    ]),
-    ("Deudas y pagos", [
-        ("Deuda total", ":material/monitoring:"),
-        ("Deudas Impositivas VMR", ":material/gavel:"),
-        ("Deudas Impositivas VM", ":material/gavel:"),
-        ("Planes de pagos y préstamos", ":material/credit_score:"),
-        ("Pagos pendientes Vitae", ":material/pending_actions:"),
-        ("Gastos comunes", ":material/shopping_cart:"),
-        ("Vencimientos", ":material/event_upcoming:"),
-    ]),
-    ("Operación clínica", [
-        ("Agenda Quirófano", ":material/calendar_month:"),
-        ("Farmacia", ":material/medication:"),
-        ("Gine Vitae", ":material/female:"),
-    ]),
-    ("Contratos y tareas", [
-        ("Contratos", ":material/contract:"),
-        ("Valores Alquileres", ":material/real_estate_agent:"),
-        ("Tareas Pendientes", ":material/task_alt:"),
-    ]),
-]
-
-
+# Menú lateral: módulos agrupados por tipo, con íconos (vitae/core/navegacion.py).
+# Un módulo nuevo en MODULES que no figure en GRUPOS aparece solo en "Otros".
 def _slug(texto: str) -> str:
     t = unicodedata.normalize("NFKD", texto.lower())
     t = "".join(c for c in t if not unicodedata.combining(c))
@@ -144,7 +106,7 @@ def _armar_menu() -> dict[str, list]:
     if otros:
         menu["Otros"] = []
         for n in otros:
-            menu["Otros"].append(st.Page(_pagina_modulo(n), title=n, icon=":material/folder:",
+            menu["Otros"].append(st.Page(_pagina_modulo(n), title=n, icon=ICONO_POR_DEFECTO,
                                          url_path=_slug(n), default=falta_inicio))
             falta_inicio = False
 

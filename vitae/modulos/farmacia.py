@@ -586,11 +586,11 @@ def render_farmacia_pro(
     ).sum() if not activos.empty else 0
 
     r1, r2, r3, r4, r5 = st.columns(5)
-    r1.metric("📦 Artículos activos", total_articulos)
-    r2.metric("🏥 Unidades Quirófano", formato_cantidad(unidades_qx))
-    r3.metric("💊 Unidades Farmacia", formato_cantidad(unidades_farm))
-    r4.metric("🚨 Stocks críticos", int(bajo_qx + bajo_farm))
-    r5.metric("💰 Valor estimado", formato_pesos(valor_total))
+    r1.metric("Artículos activos", total_articulos)
+    r2.metric("Unidades Quirófano", formato_cantidad(unidades_qx))
+    r3.metric("Unidades Farmacia", formato_cantidad(unidades_farm))
+    r4.metric("Stocks críticos", int(bajo_qx + bajo_farm))
+    r5.metric("Valor estimado", formato_pesos(valor_total))
 
     if vencen_90 > 0:
         st.warning(
@@ -604,9 +604,9 @@ def render_farmacia_pro(
 
     tab_quirofano, tab_farmacia, tab_provision = st.tabs(
         [
-            "🏥 Stock Quirófano",
-            "💊 Stock Farmacia",
-            "👤 Provisión por paciente",
+            "Stock Quirófano",
+            "Stock Farmacia",
+            "Provisión por paciente",
         ]
     )
 
@@ -678,7 +678,7 @@ def render_farmacia_pro(
                 unsafe_allow_html=True,
             )
 
-        st.markdown("### 🔎 Buscar y filtrar inventario")
+        st.markdown("### Buscar y filtrar inventario")
         f1, f2, f3 = st.columns([2.2, 1.4, 1.4])
         buscar = f1.text_input(
             "Buscar artículo, código, principio activo o lote",
@@ -758,7 +758,7 @@ def render_farmacia_pro(
         elif situacion == "Controlados":
             filtrado = filtrado[filtrado["medicamento_controlado"]]
 
-        st.markdown("### 📋 Inventario operativo")
+        st.markdown("### Inventario operativo")
         tabla = tabla_sector(filtrado, sector)
         if tabla.empty:
             st.info("No hay artículos que coincidan con los filtros seleccionados.")
@@ -775,7 +775,7 @@ def render_farmacia_pro(
             )
 
         st.download_button(
-            f"⬇️ Descargar inventario de {nombre_sector}",
+            f"Descargar inventario de {nombre_sector}",
             data=tabla.to_csv(index=False, encoding="utf-8-sig"),
             file_name=f"stock_{sector}_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
             mime="text/csv",
@@ -795,7 +795,7 @@ def render_farmacia_pro(
             (reposicion[col_minimo] > 0) & (reposicion["pedido_sugerido"] > 0)
         ].sort_values(["pedido_sugerido", "articulo"], ascending=[False, True])
 
-        with st.expander("🛒 Pedido sugerido y faltantes", expanded=not reposicion.empty):
+        with st.expander("Pedido sugerido y faltantes", expanded=not reposicion.empty):
             if reposicion.empty:
                 st.success("No hay reposición sugerida según los mínimos configurados.")
             else:
@@ -812,7 +812,7 @@ def render_farmacia_pro(
                 )
                 st.dataframe(pedido, use_container_width=True, hide_index=True)
                 st.download_button(
-                    "⬇️ Descargar pedido sugerido",
+                    "Descargar pedido sugerido",
                     data=pedido.to_csv(index=False, encoding="utf-8-sig"),
                     file_name=f"pedido_sugerido_{sector}_{date.today().strftime('%Y%m%d')}.csv",
                     mime="text/csv",
@@ -826,7 +826,7 @@ def render_farmacia_pro(
         izquierda, derecha = st.columns(2)
 
         with izquierda:
-            st.markdown("### 🔄 Registrar movimiento")
+            st.markdown("### Registrar movimiento")
             articulos_disponibles = stock[stock["activo"] & stock["articulo"].ne("")].copy()
             opciones = articulos_disponibles["id_articulo"].tolist()
 
@@ -965,7 +965,7 @@ def render_farmacia_pro(
                                     st.rerun()
 
         with derecha:
-            st.markdown("### ✅ Control diario")
+            st.markdown("### Control diario")
             with st.form(f"farmacia_control_diario_{sector}", clear_on_submit=True):
                 responsable_control = st.text_input(
                     "Responsable del control *",
@@ -1042,7 +1042,7 @@ def render_farmacia_pro(
         )
         prioridades = prioridades.sort_values("Cobertura sobre mínimo").head(12)
         if not prioridades.empty:
-            st.markdown("### 📊 Artículos con menor cobertura")
+            st.markdown("### Artículos con menor cobertura")
             grafico = prioridades[
                 ["articulo", col_stock, col_minimo]
             ].rename(
@@ -1080,7 +1080,7 @@ def render_farmacia_pro(
         las cantidades del Stock Quirófano, conservando auditoría completa.
         """
 
-        st.markdown("## 👤 Provisión de insumos por paciente")
+        st.markdown("## Provisión de insumos por paciente")
         st.caption(
             "Cada entrega queda asociada al paciente, fecha, procedimiento, "
             "anestesista y responsable. Al confirmar, se descuenta automáticamente "
@@ -1187,7 +1187,7 @@ def render_farmacia_pro(
             etiquetas_articulos.append(etiqueta)
             etiqueta_a_id[etiqueta] = id_articulo
 
-        st.markdown("### ➕ Registrar nueva provisión")
+        st.markdown("### Registrar nueva provisión")
 
         if articulos_disponibles.empty:
             st.warning(
@@ -1479,7 +1479,7 @@ def render_farmacia_pro(
                         st.rerun()
 
         st.divider()
-        st.markdown("### 📋 Historial de provisiones")
+        st.markdown("### Historial de provisiones")
 
         if provisiones.empty:
             st.info("Todavía no hay provisiones registradas.")
@@ -1618,7 +1618,7 @@ def render_farmacia_pro(
         )
 
         st.download_button(
-            "⬇️ Descargar historial de provisiones",
+            "Descargar historial de provisiones",
             data=detalle.to_csv(index=False).encode("utf-8-sig"),
             file_name=(
                 f"provisiones_pacientes_"
@@ -1636,7 +1636,7 @@ def render_farmacia_pro(
 
         if not provisiones_anulables.empty:
             with st.expander(
-                "↩️ Corregir una carga: anular provisión",
+                "Corregir una carga: anular provisión",
                 expanded=False,
             ):
                 resumen_anulable = (
@@ -1826,13 +1826,13 @@ def render_farmacia_pro(
     # =====================================================
 
     st.divider()
-    with st.expander("🧾 Catálogo compartido de artículos", expanded=stock.empty):
+    with st.expander("Catálogo compartido de artículos", expanded=stock.empty):
         st.caption(
             "El artículo se carga una sola vez. Después aparece tanto en Stock Quirófano "
             "como en Stock Farmacia, cada uno con su propia cantidad, mínimo, lote y vencimiento."
         )
 
-        st.markdown("### ➕ Nuevo artículo")
+        st.markdown("### Nuevo artículo")
         with st.form("farmacia_nuevo_articulo", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
             codigo = c1.text_input("Código interno")
@@ -1985,7 +1985,7 @@ def render_farmacia_pro(
                     st.rerun()
 
         if not stock.empty:
-            st.markdown("### ✏️ Configuración del catálogo")
+            st.markdown("### Configuración del catálogo")
             st.caption(
                 "Acá se editan datos maestros, mínimos, ubicaciones, lotes y vencimientos. "
                 "Las cantidades de stock se modifican únicamente mediante movimientos, para conservar auditoría."
@@ -2068,7 +2068,7 @@ def render_farmacia_pro(
     # HISTORIAL Y AUDITORÍA
     # =====================================================
 
-    with st.expander("🕵️ Historial de movimientos y auditoría", expanded=False):
+    with st.expander("Historial de movimientos y auditoría", expanded=False):
         if movimientos.empty:
             st.info("Todavía no hay movimientos registrados.")
         else:
@@ -2198,7 +2198,7 @@ def render_farmacia_pro(
                 height=520,
             )
             st.download_button(
-                "⬇️ Descargar historial filtrado",
+                "Descargar historial filtrado",
                 data=tabla_historial.to_csv(index=False, encoding="utf-8-sig"),
                 file_name=f"movimientos_farmacia_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
                 mime="text/csv",

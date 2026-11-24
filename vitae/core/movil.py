@@ -40,10 +40,10 @@ def es_movil() -> bool:
         pass
     try:
         agente = st.context.headers.get("User-Agent", "") or ""
+        # Las tablets (iPad, Android sin "Mobile") se tratan como escritorio.
+        return isinstance(agente, str) and bool(_PATRON_MOVIL.search(agente))
     except Exception:
         return False
-    # Las tablets (iPad, Android sin "Mobile") se tratan como escritorio.
-    return bool(_PATRON_MOVIL.search(agente))
 
 
 def ajustar_figura_movil(fig: Any) -> Any:
@@ -117,7 +117,7 @@ def instalar_ajustes_moviles() -> None:
 # Títulos grandes de los distintos módulos (≥ 24 px en escritorio).
 _TITULOS = [
     "gv-title", "dt-title", "pp-title", "dg-title", "agenda-hero-title", "farmacia-titulo",
-    "fx-head-title", "empresas-title", "qx-title", "fx-title", "empresa-codigo",
+    "fx-head-title", "vitae-page-title", "empresas-title", "qx-title", "fx-title", "empresa-codigo",
     "banco-pro-title", "caja-pro-title", "ccvmr-title",
 ]
 _VALORES = ["dt-card-value", "pp-card-value", "gv-card-value", "fx-value"]

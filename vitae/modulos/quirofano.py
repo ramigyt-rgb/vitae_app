@@ -823,7 +823,7 @@ def _render_filtros(df: pd.DataFrame) -> pd.DataFrame:
     inicio_default = hoy - timedelta(days=30)
     fin_default = hoy + timedelta(days=180)
 
-    st.markdown("### 🔎 Filtros operativos")
+    st.markdown("### Filtros operativos")
     fila1 = st.columns([1.7, 1, 1, 1])
     buscar = fila1[0].text_input(
         "Buscar paciente, médico o procedimiento",
@@ -870,7 +870,7 @@ def _render_filtros(df: pd.DataFrame) -> pd.DataFrame:
     with fila2[4]:
         st.write("")
         st.write("")
-        if st.button("↺ Limpiar", use_container_width=True, key="agenda_ultra_limpiar"):
+        if st.button("Limpiar", use_container_width=True, key="agenda_ultra_limpiar"):
             for clave in [
                 "agenda_ultra_buscar",
                 "agenda_ultra_estado",
@@ -965,12 +965,12 @@ def _render_metricas(df_total: pd.DataFrame, df_filtrado: pd.DataFrame) -> None:
     preparacion = float(semana["_preparacion_pct"].mean()) if not semana.empty else 0.0
 
     metricas = st.columns(6)
-    metricas[0].metric("🏥 Cirugías de hoy", cirugias_hoy)
-    metricas[1].metric("⏳ Pendientes autorización", pendientes_aut)
-    metricas[2].metric("📅 Programados filtrados", programados)
-    metricas[3].metric("🔴 En quirófano", en_quirofano)
-    metricas[4].metric("✅ Realizados este mes", realizados_mes)
-    metricas[5].metric("🛡️ Preparación próximos 7 días", f"{preparacion:.0f}%")
+    metricas[0].metric("Cirugías de hoy", cirugias_hoy)
+    metricas[1].metric("Pendientes autorización", pendientes_aut)
+    metricas[2].metric("Programados filtrados", programados)
+    metricas[3].metric("En quirófano", en_quirofano)
+    metricas[4].metric("Realizados este mes", realizados_mes)
+    metricas[5].metric("Preparación próximos 7 días", f"{preparacion:.0f}%")
 
 
 def _datos_formulario(
@@ -1096,7 +1096,7 @@ def _render_operacion_hoy(
     for _, fila in agenda.iterrows():
         _render_tarjeta(fila)
         posicion = int(fila["_row_position"])
-        with st.expander(f"⚙️ Gestionar · {fila['paciente'] or 'Paciente sin nombre'}", expanded=False):
+        with st.expander(f"Gestionar · {fila['paciente'] or 'Paciente sin nombre'}", expanded=False):
             with st.form(f"agenda_hoy_gestion_{posicion}"):
                 columnas = st.columns([1.2, 1, 1, 1])
                 nuevo_estado = columnas[0].selectbox(
@@ -1122,7 +1122,7 @@ def _render_operacion_hoy(
                     "Observación operativa", value=fila["observaciones"]
                 )
                 guardar = st.form_submit_button(
-                    "💾 Guardar actualización", type="primary", use_container_width=True
+                    "Guardar actualización", type="primary", use_container_width=True
                 )
 
             if guardar:
@@ -1146,7 +1146,7 @@ def _render_kanban(
     mapa: dict[str, str],
     guardar_callback: Optional[GuardarCallback],
 ) -> None:
-    st.markdown("### 🧭 Gestión visual del circuito quirúrgico")
+    st.markdown("### Gestión visual del circuito quirúrgico")
     colores = {
         "Consulta": "#3b82f6",
         "Autorización": "#f59e0b",
@@ -1208,7 +1208,7 @@ def _render_kanban(
 
 def _render_calendario(df: pd.DataFrame) -> None:
     tab_dia, tab_semana, tab_mes, tab_anio = st.tabs(
-        ["📆 Día", "🗓️ Semana", "📅 Mes", "📊 Año"]
+        ["Día", "Semana", "Mes", "Año"]
     )
 
     with tab_dia:
@@ -1334,11 +1334,11 @@ def _render_alertas(df: pd.DataFrame) -> None:
     m3.metric("Conflictos de agenda", len(conflictos))
 
     if alertas.empty and conflictos.empty:
-        st.success("✅ No se detectaron problemas operativos evidentes.")
+        st.success("No se detectaron problemas operativos evidentes.")
         return
 
     if not conflictos.empty:
-        st.markdown("### 🔴 Superposiciones detectadas")
+        st.markdown("### Superposiciones detectadas")
         st.dataframe(
             conflictos.drop(columns=["_fila_a", "_fila_b"], errors="ignore"),
             use_container_width=True,
@@ -1346,7 +1346,7 @@ def _render_alertas(df: pd.DataFrame) -> None:
         )
 
     if not alertas.empty:
-        st.markdown("### 🚨 Alertas de seguridad y gestión")
+        st.markdown("### Alertas de seguridad y gestión")
         st.dataframe(alertas, use_container_width=True, hide_index=True, height=420)
         st.download_button(
             "⬇️ Descargar alertas",
@@ -1363,7 +1363,7 @@ def _render_nuevo(
     mapa: dict[str, str],
     guardar_callback: Optional[GuardarCallback],
 ) -> None:
-    st.markdown("### ➕ Registrar nuevo paciente / procedimiento")
+    st.markdown("### Registrar nuevo paciente / procedimiento")
     st.caption("Los campos con * son obligatorios. El sistema controla superposición de sala y médico.")
 
     with st.form("agenda_ultra_nuevo_registro", clear_on_submit=False):
@@ -1407,7 +1407,7 @@ def _render_nuevo(
             help="Usar solamente si la superposición es intencional o corresponde a salas/recursos distintos.",
         )
         enviar = st.form_submit_button(
-            "💾 Guardar nuevo registro", type="primary", use_container_width=True
+            "Guardar nuevo registro", type="primary", use_container_width=True
         )
 
     if enviar:
@@ -1465,7 +1465,7 @@ def _render_editar(
     mapa: dict[str, str],
     guardar_callback: Optional[GuardarCallback],
 ) -> None:
-    st.markdown("### ✏️ Editar un registro")
+    st.markdown("### Editar un registro")
     if df.empty:
         st.info("No hay registros para editar con los filtros actuales.")
         return
@@ -1539,7 +1539,7 @@ def _render_editar(
         observaciones = st.text_area("Observaciones", value=fila["observaciones"], height=100)
         permitir = st.checkbox("Permitir superposición excepcional")
         guardar = st.form_submit_button(
-            "💾 Guardar cambios", type="primary", use_container_width=True
+            "Guardar cambios", type="primary", use_container_width=True
         )
 
     if guardar:
@@ -1581,7 +1581,7 @@ def _render_editar(
             st.rerun()
 
     st.divider()
-    with st.expander("🗑️ Eliminar este registro", expanded=False):
+    with st.expander("Eliminar este registro", expanded=False):
         st.warning("Esta acción elimina la fila completa de Google Sheets.")
         confirmar = st.checkbox(
             f"Confirmo eliminar a {fila['paciente'] or 'este registro'}",
@@ -1735,7 +1735,7 @@ def render_agenda_quirofano_ultra_pro(
 
     if not callable(guardar_callback):
         st.warning(
-            "⚠️ Modo lectura: la agenda puede verse, pero los cambios no se guardarán "
+            "Modo lectura: la agenda puede verse, pero los cambios no se guardarán "
             "hasta conectar el callback de Google Sheets."
         )
 
@@ -1759,13 +1759,13 @@ def render_agenda_quirofano_ultra_pro(
         tab_listado,
     ) = st.tabs(
         [
-            "🏥 Operación",
-            "🧭 Flujo de pacientes",
-            "📆 Calendario",
-            "🚨 Alertas",
-            "➕ Cargar",
-            "✏️ Editar",
-            "📋 Listado",
+            "Operación",
+            "Flujo de pacientes",
+            "Calendario",
+            "Alertas",
+            "Cargar",
+            "Editar",
+            "Listado",
         ]
     )
 
