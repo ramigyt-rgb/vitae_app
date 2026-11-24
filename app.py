@@ -8,6 +8,7 @@ import unicodedata
 import streamlit as st
 
 from vitae.core.config import LOGO_PATH
+from vitae.core.movil import instalar_ajustes_moviles
 from vitae.core.tablas import MODULES
 
 # IMPORTANTE: el parche se aplica antes de importar las vistas, para que el
@@ -33,8 +34,9 @@ st.set_page_config(
     page_title="Vitae",
     page_icon=str(LOGO_PATH) if LOGO_PATH.exists() else "🏥",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="auto",  # en el celular el menú arranca cerrado
 )
+instalar_ajustes_moviles()
 
 
 # ---------------------------------------------------------------------------

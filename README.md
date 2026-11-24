@@ -50,3 +50,9 @@ También pueden definirse como variables de entorno con el mismo nombre.
 ## Deploy
 
 Pensado para **Streamlit Community Cloud**: archivo principal `app.py`, Python 3.11 (`runtime.txt`), secretos cargados en *Settings → Secrets*.
+
+## Celulares
+
+La app se adapta sola a pantallas chicas (`vitae/core/movil.py`): menú lateral plegado, indicadores de a dos, gráficos más bajos y sin zoom por arrastre, tablas con las columnas clave, campos que no hacen zoom en iPhone.
+
+Para ver la versión de celular desde la computadora, agregá `?vista=movil` a la dirección de la app (y `?vista=escritorio` para volver).
