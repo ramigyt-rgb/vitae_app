@@ -173,119 +173,148 @@ def first_available_date_col(df: pd.DataFrame, module_name: str) -> str | None:
         if col in df.columns:
             return col
     return None
+MESES_ES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto",
+            "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+_TODO_EL_HISTORIAL = "Todo el historial"
+_RANGO = "Rango personalizado"
+
+
+def leer_fechas_ar(valores: Any) -> pd.Series:
+    """Lee fechas tal como vienen de Google Sheets, sin invertir día y mes.
+
+    Acepta, en este orden: ISO (2026-11-05, con o sin hora), 2026/11/05,
+    formato argentino 05/11/2026 o 05-11-2026 (con o sin hora), 05/11/26,
+    y número de serie de Excel / Sheets. Lo que no se reconoce queda vacío.
+    """
+    if isinstance(valores, pd.DataFrame):
+        valores = valores.iloc[:, 0]
+    original = pd.Series(valores)
+    if pd.api.types.is_datetime64_any_dtype(original):
+        fechas = pd.to_datetime(original, errors="coerce")
+        return fechas.dt.tz_convert(None) if fechas.dt.tz is not None else fechas
+    raw = original.astype("string").str.strip()
+    fechas = pd.Series(pd.NaT, index=original.index, dtype="datetime64[ns]")
+    formatos = [
+        (r"^(\d{4}-\d{1,2}-\d{1,2})", "%Y-%m-%d"),
+        (r"^(\d{4}/\d{1,2}/\d{1,2})", "%Y/%m/%d"),
+        (r"^(\d{1,2}/\d{1,2}/\d{4})", "%d/%m/%Y"),
+        (r"^(\d{1,2}-\d{1,2}-\d{4})", "%d-%m-%Y"),
+        (r"^(\d{1,2}\.\d{1,2}\.\d{4})", "%d.%m.%Y"),
+        (r"^(\d{1,2}/\d{1,2}/\d{2})(?!\d)", "%d/%m/%y"),
+    ]
+    for patron, formato in formatos:
+        texto = raw.str.extract(patron, expand=False)
+        faltan = fechas.isna() & texto.notna()
+        if faltan.any():
+            fechas.loc[faltan] = pd.to_datetime(texto.loc[faltan], format=formato, errors="coerce")
+    numeros = pd.to_numeric(original, errors="coerce")
+    seriales = fechas.isna() & numeros.between(20000, 80000, inclusive="both")
+    if seriales.any():
+        fechas.loc[seriales] = pd.Timestamp("1899-12-30") + pd.to_timedelta(numeros.loc[seriales].round(), unit="D")
+    return fechas
+
+
+def nombre_mes_es(periodo: Any) -> str:
+    p = pd.Period(periodo, freq="M")
+    return f"{MESES_ES[p.month - 1]} {p.year}"
+
+
+def _filtro_select(df: pd.DataFrame, columna: str, etiqueta: str, key: str) -> str:
+    opciones = sorted({str(x).strip() for x in df[columna].dropna().astype(str) if str(x).strip()}, key=str.casefold)
+    return st.selectbox(etiqueta, ["Todos"] + opciones, key=key)
+
+
 def apply_filters(df: pd.DataFrame, module_name: str) -> pd.DataFrame:
+    """Filtros comunes de los módulos: mes, búsqueda, estado, obra social,
+    procedimiento y médico.
+
+    El mes se elige de una lista armada con los meses que realmente tienen
+    registros. Las fechas se leen en formato argentino (día/mes/año), igual
+    que en el editor: antes se leían como mes/día y los registros del mes
+    elegido no aparecían o aparecían en otro mes.
+    """
     if df.empty:
         return df
     df = df.copy()
-    st.subheader("Filtros")
-    c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
+    fecha_col = first_available_date_col(df, module_name)
+    fechas = leer_fechas_ar(df[fecha_col]) if fecha_col else pd.Series(pd.NaT, index=df.index)
+    periodos = fechas.dt.to_period("M")
+    meses = sorted(periodos.dropna().unique(), reverse=True)
+    hoy = pd.Timestamp.today().normalize()
+    mes_actual = hoy.to_period("M")
+    if mes_actual not in meses:
+        meses = sorted(set(meses) | {mes_actual}, reverse=True)
 
-    with c1:
-        search = st.text_input("Buscar texto", key=f"search_{module_name}")
-    with c2:
-        estado = "Todos"
-        if "estado" in df.columns:
-            estados = [str(x).strip() for x in df["estado"].dropna().unique().tolist() if str(x).strip() != ""]
-            estado = st.selectbox("Estado", ["Todos"] + sorted(estados), key=f"estado_{module_name}")
-    with c3:
-        obra_social = "Todos"
-        if "obra_social" in df.columns:
-            obra_social = st.selectbox(
-                "Obra Social",
-                ["Todos"] + sorted(df["obra_social"].dropna().astype(str).unique().tolist())
+    medico_col = "medico" if module_name == "Honorarios médicos" and "medico" in df.columns else (
+        "medico_responsable" if "medico_responsable" in df.columns else None
+    )
+    with st.container(border=True):
+        c1, c2, c3 = st.columns([1.1, 1.6, 1.0])
+        with c1:
+            opciones_mes = ([str(m) for m in meses] + [_TODO_EL_HISTORIAL, _RANGO]) if fecha_col else [_TODO_EL_HISTORIAL]
+            mes_sel = st.selectbox(
+                "Mes",
+                opciones_mes,
+                index=opciones_mes.index(str(mes_actual)) if str(mes_actual) in opciones_mes else 0,
+                format_func=lambda o: o if o in (_TODO_EL_HISTORIAL, _RANGO) else nombre_mes_es(o),
+                key=f"mes_{module_name}",
+                help="Muestra los registros del mes elegido. Los meses de la lista son los que tienen datos.",
             )
-    with c4:
-        procedimiento = "Todos"
-        if "procedimiento" in df.columns:
-            procedimiento = st.selectbox(
-                "Procedimiento",
-                ["Todos"] + sorted(df["procedimiento"].dropna().astype(str).unique().tolist())
-            )
-    with c5:
+        with c2:
+            search = st.text_input("Buscar texto", key=f"search_{module_name}", placeholder="Nombre, concepto, comprobante…")
+        with c3:
+            estado = _filtro_select(df, "estado", "Estado", f"estado_{module_name}") if "estado" in df.columns else "Todos"
 
-        medico = "Todos"
-    
-        if module_name == "Honorarios médicos":
-    
-            if "medico" in df.columns:
-    
-                medico = st.selectbox(
-    
-                    "Médico",
-    
-                    ["Todos"] + sorted(df["medico"].dropna().astype(str).unique().tolist())
-    
-                )
-    
-        else:
-    
-            if "medico_responsable" in df.columns:
-    
-                medico = st.selectbox(
-    
-                    "Médico",
-    
-                    ["Todos"] + sorted(df["medico_responsable"].dropna().astype(str).unique().tolist())
-    
-                )
-    from datetime import date, timedelta
-    
-    with c6:
-        hoy = date.today()
-        primer_dia_mes = hoy.replace(day=1)
-        fecha_desde = st.date_input("Desde", value=primer_dia_mes, key=f"desde_{module_name}")
-    with c7:
-        fecha_hasta = st.date_input("Hasta", value=hoy, key=f"hasta_{module_name}")
+        if mes_sel == _RANGO:
+            r1, r2, _ = st.columns([1, 1, 2])
+            fecha_desde = r1.date_input("Desde", value=mes_actual.start_time.date(), format="DD/MM/YYYY", key=f"desde_{module_name}")
+            fecha_hasta = r2.date_input("Hasta", value=hoy.date(), format="DD/MM/YYYY", key=f"hasta_{module_name}")
+        extra = [c for c in ("obra_social", "procedimiento") if c in df.columns] + ([medico_col] if medico_col else [])
+        obra_social = procedimiento = medico = "Todos"
+        if extra:
+            cols = st.columns(len(extra))
+            for col_ui, campo in zip(cols, extra):
+                with col_ui:
+                    if campo == "obra_social":
+                        obra_social = _filtro_select(df, campo, "Obra Social", f"os_{module_name}")
+                    elif campo == "procedimiento":
+                        procedimiento = _filtro_select(df, campo, "Procedimiento", f"proc_{module_name}")
+                    else:
+                        medico = _filtro_select(df, campo, "Médico", f"medico_{module_name}")
+
+    mascara = pd.Series(True, index=df.index)
     if search:
-        mask = df.astype(str).apply(
-            lambda col: col.str.contains(search, case=False, na=False)
-        ).any(axis=1)
-        df = df[mask]
+        mascara &= df.astype(str).apply(lambda col: col.str.contains(search, case=False, na=False, regex=False)).any(axis=1)
+
     def norm(s):
         return s.astype(str).str.strip().str.lower()
+
     if "estado" in df.columns and estado != "Todos":
-        df = df[norm(df["estado"]) == str(estado).strip().lower()]
+        mascara &= norm(df["estado"]) == str(estado).strip().lower()
     if "obra_social" in df.columns and obra_social != "Todos":
-        df = df[norm(df["obra_social"]) == str(obra_social).strip().lower()]
+        mascara &= norm(df["obra_social"]) == str(obra_social).strip().lower()
     if "procedimiento" in df.columns and procedimiento != "Todos":
-        df = df[norm(df["procedimiento"]) == str(procedimiento).strip().lower()]
-    if medico != "Todos":
+        mascara &= norm(df["procedimiento"]) == str(procedimiento).strip().lower()
+    if medico_col and medico != "Todos":
+        mascara &= norm(df[medico_col]) == str(medico).strip().lower()
 
-        if module_name == "Honorarios médicos" and "medico" in df.columns:
-    
-            df = df[norm(df["medico"]) == str(medico).strip().lower()]
-    
-        elif "medico_responsable" in df.columns:
-    
-            df = df[norm(df["medico_responsable"]) == str(medico).strip().lower()]
-    fecha_col = first_available_date_col(df, module_name)
-    if fecha_col:
+    sin_fecha = int((fechas.isna() & mascara).sum()) if fecha_col and mes_sel != _TODO_EL_HISTORIAL else 0
+    if fecha_col and mes_sel == _RANGO:
+        desde_ts, hasta_ts = pd.Timestamp(fecha_desde), pd.Timestamp(fecha_hasta)
+        if desde_ts > hasta_ts:
+            desde_ts, hasta_ts = hasta_ts, desde_ts
+        mascara &= fechas.between(desde_ts, hasta_ts + pd.Timedelta(hours=23, minutes=59, seconds=59))
+        texto_periodo = f"del {desde_ts.strftime('%d/%m/%Y')} al {hasta_ts.strftime('%d/%m/%Y')}"
+    elif fecha_col and mes_sel != _TODO_EL_HISTORIAL:
+        mascara &= periodos == pd.Period(mes_sel, freq="M")
+        texto_periodo = f"de {nombre_mes_es(mes_sel)}"
+    else:
+        texto_periodo = "de todo el historial"
 
-        fecha_data = df[fecha_col]
-    
-        if isinstance(fecha_data, pd.DataFrame):
-    
-            fecha_data = fecha_data.iloc[:, 0]
-    
-        fechas = pd.to_datetime(
-    
-            fecha_data.astype(str).str.strip(),
-    
-            errors="coerce",
-    
-            dayfirst=False
-    
-        )
-    
-        desde_ts = pd.Timestamp(fecha_desde)
-    
-        hasta_ts = pd.Timestamp(fecha_hasta)
-    
-        df = df[
-    
-            (fechas >= desde_ts) &
-    
-            (fechas <= hasta_ts)
-    
-        ]
-    return df
+    resultado = df[mascara]
+    st.session_state[f"periodo_texto_{module_name}"] = texto_periodo
+    aviso = f"{len(resultado):,} registros {texto_periodo}".replace(",", ".")
+    if sin_fecha:
+        aviso += f" · {sin_fecha} registros sin fecha válida no se incluyen (se ven en «Todo el historial»)"
+    st.caption(aviso)
+    return resultado
