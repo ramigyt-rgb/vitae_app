@@ -118,6 +118,9 @@ def _series_number(df: pd.DataFrame, col: str | None) -> pd.Series:
                 tail = v.split(",")[-1]
                 v = v.replace(".", "")
                 v = v.replace(",", ".") if len(tail) <= 2 else v.replace(",", "")
+            elif re.fullmatch(r"-?[1-9]\d{0,2}(\.\d{3})+", v):
+                # Punto de miles sin decimales (150.000 · 1.500.000): antes se leía 150 o 1.500.
+                v = v.replace(".", "")
             elif v.count(".") > 1:
                 parts = v.split(".")
                 v = "".join(parts[:-1]) + "." + parts[-1]

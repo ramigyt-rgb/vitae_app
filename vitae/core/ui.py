@@ -39,3 +39,20 @@ def encabezado_modulo(module_name: str, cfg: dict[str, Any] | None = None, descr
         """,
         unsafe_allow_html=True,
     )
+
+
+def tarjetas_kpi(tarjetas: list[tuple[str, str, str, str]]) -> None:
+    """Fila de indicadores: (título, valor, aclaración, color del punto).
+
+    Mismo estilo que Facturación; en el celular se acomodan de a dos.
+    """
+    columnas = st.columns(len(tarjetas))
+    for col, (titulo, valor, pie, color) in zip(columnas, tarjetas):
+        with col:
+            st.markdown(
+                f'<div class="vitae-kpi"><div class="vitae-kpi-label">'
+                f'<span class="vitae-kpi-dot" style="background:{html.escape(color)}"></span>{html.escape(titulo)}</div>'
+                f'<div class="vitae-kpi-value">{html.escape(valor)}</div>'
+                f'<div class="vitae-kpi-foot">{html.escape(pie)}</div></div>',
+                unsafe_allow_html=True,
+            )
