@@ -7709,6 +7709,97 @@ def _facturacion_editor_source(df: pd.DataFrame | None) -> pd.DataFrame:
     return out.reset_index(drop=True)
 
 
+_EDITOR_SIN_OS = "(Sin obra social)"
+_EDITOR_TODAS_OS = "Todas"
+
+
+def _editor_os_normalizada(df: pd.DataFrame) -> pd.Series:
+    """Obra social sin espacios sobrantes y en mayúsculas, para comparar."""
+    if "obra_social" not in df.columns:
+        return pd.Series("", index=df.index, dtype="object")
+    return df["obra_social"].fillna("").astype(str).str.strip().str.upper()
+
+
+def _editor_opciones_obra_social(df: pd.DataFrame) -> list[str]:
+    """Obras sociales distintas (sin duplicar por mayúsculas/espacios)."""
+    if "obra_social" not in df.columns:
+        return []
+    vistas: dict[str, str] = {}
+    for valor in df["obra_social"].fillna("").astype(str):
+        limpio = valor.strip()
+        if limpio and limpio.upper() not in vistas:
+            vistas[limpio.upper()] = limpio
+    opciones = sorted(vistas.values(), key=lambda v: v.upper())
+    if (_editor_os_normalizada(df) == "").any():
+        opciones.append(_EDITOR_SIN_OS)
+    return opciones
+
+
+def _editor_filtrar_obra_social(df: pd.DataFrame, elegida: str) -> pd.DataFrame:
+    """Filas de la obra social elegida, conservando el índice original."""
+    if not elegida or elegida == _EDITOR_TODAS_OS or "obra_social" not in df.columns:
+        return df
+    objetivo = "" if elegida == _EDITOR_SIN_OS else elegida.strip().upper()
+    return df.loc[_editor_os_normalizada(df) == objetivo]
+
+
+def _editor_volcar_cambios(base: pd.DataFrame, editado: pd.DataFrame, ignorar: tuple = ()) -> pd.DataFrame:
+    """Copia las celdas editadas de una vista filtrada sobre la tabla completa.
+
+    ``editado`` conserva el índice de ``base``; sólo se tocan esas filas.
+    """
+    completo = base.copy()
+    if editado is None or editado.empty:
+        return completo
+    filas = [i for i in editado.index if i in completo.index]
+    for col in editado.columns:
+        if col in ignorar or col not in completo.columns:
+            continue
+        nuevos = editado.loc[filas, col]
+        serie = completo[col].copy()
+        try:
+            serie.loc[filas] = nuevos.values
+        except Exception:
+            serie = serie.astype(object)
+            serie.loc[filas] = nuevos.values
+        completo[col] = serie
+    return completo
+
+
+def _editor_guardar_pendientes(table: str, delete_col: str) -> None:
+    """Antes de cambiar el filtro, guarda en memoria lo editado en la vista actual.
+
+    El editor de Streamlit guarda los cambios por posición de la vista que se
+    está mostrando; al cambiar el filtro esa vista cambia, así que primero se
+    trasladan esos cambios a la copia de trabajo completa.
+    """
+    work_key = f"_vitae_editor_work_{table}"
+    rev_key = f"_vitae_editor_rev_{table}"
+    widget_key = st.session_state.get(f"_vitae_editor_widget_{table}")
+    indices = st.session_state.get(f"_vitae_editor_vista_idx_{table}") or []
+    work = st.session_state.get(work_key)
+    estado = st.session_state.get(widget_key) if widget_key else None
+    if isinstance(work, pd.DataFrame) and isinstance(estado, dict):
+        cambios = estado.get("edited_rows") or {}
+        if cambios:
+            work = work.copy()
+            for pos, columnas in cambios.items():
+                try:
+                    idx = indices[int(pos)]
+                except Exception:
+                    continue
+                for col, valor in (columnas or {}).items():
+                    if col == delete_col or col not in work.columns or idx not in work.index:
+                        continue
+                    try:
+                        work.at[idx, col] = valor
+                    except Exception:
+                        work[col] = work[col].astype(object)
+                        work.at[idx, col] = valor
+            st.session_state[work_key] = work
+    st.session_state[rev_key] = int(st.session_state.get(rev_key, 0)) + 1
+
+
 def _vitae_dataframe_signature(df: pd.DataFrame | None) -> str:
     """Huella estable de filas + columnas para detectar cambios reales de fuente."""
     if df is None or not isinstance(df, pd.DataFrame):
@@ -21501,9 +21592,34 @@ def render_facturacion_pro(
                         st.session_state.get(editor_rev_key, 0)
                     ) + 1
 
-            editor_input = st.session_state[editor_work_key].copy()
-            editor_input = editor_input.drop(columns=[delete_col], errors="ignore")
+            work_full = st.session_state[editor_work_key].drop(columns=[delete_col], errors="ignore")
+            filtro_os = _EDITOR_TODAS_OS
+            if table in ["facturacion_vm", "facturacion_vmr"] and "obra_social" in work_full.columns:
+                opciones_os = [_EDITOR_TODAS_OS] + _editor_opciones_obra_social(work_full)
+                filtro_os_key = f"_vitae_editor_filtro_os_{table}"
+                if st.session_state.get(filtro_os_key) not in opciones_os:
+                    st.session_state[filtro_os_key] = _EDITOR_TODAS_OS
+                filtro_os = st.selectbox(
+                    "Filtrar por obra social",
+                    opciones_os,
+                    key=filtro_os_key,
+                    on_change=_editor_guardar_pendientes,
+                    args=(table, delete_col),
+                    help="Muestra sólo los registros de esa obra social. Al guardar se conserva la planilla completa.",
+                )
+            vista = _editor_filtrar_obra_social(work_full, filtro_os)
+            filtrado = len(vista) != len(work_full)
+            st.session_state[f"_vitae_editor_vista_idx_{table}"] = list(vista.index)
+            if filtrado:
+                st.caption(
+                    f"Mostrando {len(vista):,} de {len(work_full):,} registros · {filtro_os}. "
+                    "Lo que edites o elimines acá se guarda sin tocar el resto."
+                )
+
+            editor_input = vista.copy()
             editor_input.insert(0, delete_col, False)
+            editor_widget_key = f"editor_{table}_{st.session_state[editor_rev_key]}"
+            st.session_state[f"_vitae_editor_widget_{table}"] = editor_widget_key
 
             edited_df = st.data_editor(
                 editor_input,
@@ -21533,7 +21649,7 @@ def render_facturacion_pro(
                         ),
                     } if table == "caja_vmr" else {}),
                 },
-                key=f"editor_{table}_{st.session_state[editor_rev_key]}",
+                key=editor_widget_key,
             )
 
             delete_mask = edited_df.get(delete_col, pd.Series(False, index=edited_df.index))
@@ -21559,9 +21675,17 @@ def render_facturacion_pro(
                     use_container_width=True,
                 )
 
+            # Con filtro activo el editor muestra sólo una parte: los cambios se
+            # vuelcan sobre la tabla completa para no perder ninguna fila al guardar.
+            if filtrado:
+                tabla_editada = _editor_volcar_cambios(work_full, edited_df, ignorar=(delete_col,))
+            else:
+                tabla_editada = edited_df.drop(columns=[delete_col], errors="ignore")
+
             if delete_pressed:
                 # Conserva también cualquier edición hecha antes de borrar.
-                restante = edited_df.loc[~delete_mask].copy()
+                a_borrar = edited_df.index[delete_mask.to_numpy()]
+                restante = tabla_editada.drop(index=a_borrar, errors="ignore")
                 restante = restante.drop(columns=[delete_col], errors="ignore").reset_index(drop=True)
                 st.session_state[editor_work_key] = restante
                 st.session_state[editor_rev_key] += 1
@@ -21574,7 +21698,7 @@ def render_facturacion_pro(
 
             if save_pressed:
                 try:
-                    limpio = edited_df.copy()
+                    limpio = tabla_editada.copy()
                     limpio = limpio.drop(
                         columns=[delete_col, "saldo", "saldo_usd", "saldo_movimiento"],
                         errors="ignore"
