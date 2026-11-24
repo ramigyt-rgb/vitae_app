@@ -12,7 +12,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 try:
-    from database import get_df
+    from vitae.core.database import get_df
 except Exception:  # pragma: no cover - solo para que el módulo pueda importarse aislado
     get_df = None
 
@@ -1138,7 +1138,7 @@ def render_facturacion_ultra_pro(
                     st.warning("Escribí una pregunta.")
                 else:
                     try:
-                        from assistant import preguntar_ia
+                        from vitae.ia.copiloto import preguntar_ia
                         ai_df = filtered[["_fecha_base", "_paciente", "_obra_social", "_procedimiento", "_medico", "_numero_factura", "_vencimiento", "_fecha_pago", "_monto", "_cobrado", "_pendiente", "_estado_ejecutivo"]].copy()
                         ai_df.columns = ["fecha", "paciente", "obra_social", "procedimiento", "medico", "factura", "vencimiento", "fecha_pago", "facturado", "cobrado", "pendiente", "estado"]
                         answer = preguntar_ia(module_name, ai_df, question)

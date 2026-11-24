@@ -56,7 +56,7 @@ def aplicar_parche_acceso_total() -> bool:
     Aplica el parche sobre el módulo assistant ya instalado.
     Puede llamarse varias veces sin duplicar cambios.
     """
-    import assistant as a
+    import vitae.ia.copiloto as a
 
     if getattr(a, "_VITAE_FULL_ACCESS_PATCH_APPLIED", False):
         return True

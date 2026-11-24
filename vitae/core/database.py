@@ -7,8 +7,8 @@ import pandas as pd
 import streamlit as st
 from typing import Any, Dict, List
 from google.oauth2.service_account import Credentials
-from config import SHEET_ID
-from modules import MODULES
+from vitae.core.config import SHEET_ID
+from vitae.core.tablas import MODULES
 @st.cache_resource
 
 def get_gs_client():

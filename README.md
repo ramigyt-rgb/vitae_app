@@ -2,23 +2,29 @@
 
 Aplicación interna de gestión para Vitae, hecha en **Streamlit**. Usa **Google Sheets** como base de datos y **Gemini** para el asistente con IA.
 
-## Módulos
+## Estructura
 
-| Área | Archivo principal |
-|---|---|
-| Inicio / dashboard, login, configuración y vistas generales | `views.py` |
-| Facturación (KPIs, aging, pronóstico, exportación) | `facturacion_ultra_pro.py` |
-| Farmacia | `farmacia_pro.py` |
-| Agenda de quirófano | `agenda_quirofano_ultra_pro.py` |
-| Copiloto Vitae (preguntas a la IA) | `assistant.py`, `assistant_full_access_patch.py` |
-| Director IA / briefing ejecutivo | `director_ia.py` |
-| Definición de tablas y campos | `modules.py` |
-| Acceso a Google Sheets | `database.py` |
-| Importación de planillas | `importers.py` |
-| Utilidades (fechas, montos, filtros) | `helpers.py` |
-| Configuración y secretos | `config.py` |
-
-`app.py` es el punto de entrada.
+```
+app.py                          Punto de entrada (streamlit run app.py)
+vitae/
+  vistas.py                     Dashboard, login/usuarios, configuración y vistas generales
+  core/
+    config.py                   Configuración y lectura de secretos
+    database.py                 Acceso a Google Sheets
+    tablas.py                   Definición de tablas y campos (MODULES)
+    helpers.py                  Utilidades: fechas, montos, filtros
+    importadores.py             Importación de planillas
+  modulos/
+    facturacion.py              Facturación: KPIs, aging, pronóstico, exportación
+    farmacia.py                 Farmacia: stock quirófano/farmacia y movimientos
+    quirofano.py                Agenda de quirófano
+  ia/
+    copiloto.py                 Copiloto Vitae (preguntas a la IA)
+    copiloto_acceso_total.py    Amplía el acceso del copiloto a todos los módulos
+    director.py                 Director IA / briefing ejecutivo
+assets/logo_vitae.png
+plantillas/                     Encabezados de planillas para importar
+```
 
 ## Correr en local
 

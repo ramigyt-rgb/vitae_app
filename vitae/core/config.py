@@ -24,8 +24,10 @@ GEMINI_API_KEY = _secret("GEMINI_API_KEY", "")
 GEMINI_MODEL = _secret("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 APP_TITLE = "Sistema de Gestión"
-DB_PATH = Path("vitae_gestion.db")
-LOGO_PATH = Path("logo_vitae.png")
+# Raíz del proyecto (carpeta donde está app.py)
+BASE_DIR = Path(__file__).resolve().parents[2]
+DB_PATH = BASE_DIR / "vitae_gestion.db"
+LOGO_PATH = BASE_DIR / "assets" / "logo_vitae.png"
 SHEET_ID = _secret("GOOGLE_SHEET_ID", "").replace('"', "")
 DATE_FMT = "%Y-%m-%d"
 TECH_COLUMNS = ["id", "created_at", "updated_at"]

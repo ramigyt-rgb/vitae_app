@@ -2,12 +2,12 @@
 # HELPERS
 # =========================================================
 import re
-from config import DATE_FMT, TECH_COLUMNS
+from vitae.core.config import DATE_FMT, TECH_COLUMNS
 from datetime import date, timedelta
 from typing import Any, Dict, List, Tuple
 import pandas as pd
 import streamlit as st
-from modules import MODULES
+from vitae.core.tablas import MODULES
 import numpy as np
 def normalize_money_string(value: Any) -> str:
     if value is None:
