@@ -2,9 +2,19 @@
 # BASE DE DATOS - SOLO GOOGLE SHEETS
 # =========================================================
 import json
+import re
 import threading
 import uuid
 import gspread
+try:
+    from gspread.utils import rowcol_to_a1
+except Exception:  # respaldo: misma función, por si cambia la librería
+    def rowcol_to_a1(row: int, col: int) -> str:
+        letras = ""
+        while col:
+            col, resto = divmod(col - 1, 26)
+            letras = chr(65 + resto) + letras
+        return f"{letras}{row}"
 import pandas as pd
 import streamlit as st
 from typing import Any, Dict, List
@@ -227,20 +237,158 @@ def _limpiar_cache_tablas() -> None:
 get_df.clear = _limpiar_cache_tablas  # type: ignore[attr-defined]
 
 
+class ErrorGuardadoSheets(Exception):
+    """Error de Google Sheets explicado en castellano (se muestra tal cual)."""
+
+
+def _email_cuenta_servicio() -> str:
+    try:
+        raw = str(st.secrets.get("GOOGLE_SERVICE_ACCOUNT_JSON", "") or "")
+        encontrado = re.search(r'"client_email"\s*:\s*"([^"]+)"', raw)
+        return encontrado.group(1) if encontrado else ""
+    except Exception:
+        return ""
+
+
+def _explicar_error_sheets(exc: Exception, table: str) -> Exception:
+    estado = getattr(getattr(exc, "response", None), "status_code", None)
+    if estado == 403:
+        cuenta = _email_cuenta_servicio()
+        quien = f"la cuenta {cuenta}" if cuenta else "la cuenta de servicio de la app"
+        try:
+            detectado = explicar_diagnostico(diagnosticar_permisos(table), table)
+        except Exception:
+            detectado = ""
+        return ErrorGuardadoSheets(
+            f"Google Sheets no dio permiso para guardar en «{table}». "
+            + (f"Diagnóstico: {detectado} " if detectado else "")
+            + f"Para solucionarlo: abrí la planilla → Compartir → agregá {quien} como Editor; si ya figura, "
+            f"revisá Datos → Proteger hojas y rangos. No se modificó nada de la planilla."
+        )
+    if estado == 429:
+        return ErrorGuardadoSheets(
+            "Google Sheets recibió demasiadas operaciones seguidas. Esperá un minuto y volvé a guardar. "
+            "No se modificó nada de la planilla."
+        )
+    return exc
+
+
+def diagnosticar_permisos(table: str | None = None) -> Dict[str, Any]:
+    """Pregunta a Google qué puede hacer la app con la planilla (solo lectura).
+
+    Devuelve: cuenta de servicio, nombre del archivo, si Google la considera
+    editora (Drive «canEdit»), su rol en el archivo y qué pestañas tienen
+    rangos protegidos (y si la cuenta figura entre sus editores).
+    """
+    info: Dict[str, Any] = {
+        "cuenta": _email_cuenta_servicio(), "archivo": None, "puede_editar": None, "rol": None,
+        "pestanas_protegidas": {}, "notas": [],
+    }
+    try:
+        sh = get_spreadsheet()
+        info["archivo"] = getattr(sh, "title", None)
+    except Exception as exc:
+        info["notas"].append(f"No se pudo abrir la planilla: {exc}")
+        return info
+    # Protecciones por pestaña
+    try:
+        meta = sh.fetch_sheet_metadata({
+            "fields": "sheets(properties(title),protectedRanges(description,warningOnly,range,editors(users,groups,domainUsersCanEdit)))"
+        })
+        cuenta = (info["cuenta"] or "").lower()
+        for hoja in meta.get("sheets", []):
+            titulo = hoja.get("properties", {}).get("title", "")
+            bloqueos = [p for p in hoja.get("protectedRanges", []) if not p.get("warningOnly")]
+            if bloqueos:
+                editores = sorted({u.lower() for p in bloqueos for u in p.get("editors", {}).get("users", [])})
+                info["pestanas_protegidas"][titulo] = {
+                    "rangos": len(bloqueos),
+                    "cuenta_puede": bool(cuenta) and cuenta in editores,
+                    "editores": editores,
+                }
+    except Exception as exc:
+        info["notas"].append(f"No se pudieron leer las protecciones: {exc}")
+    # Capacidad de edición según Google Drive
+    try:
+        cliente = sh.client
+        http = getattr(cliente, "http_client", None) or cliente
+        url = f"https://www.googleapis.com/drive/v3/files/{SHEET_ID}"
+        respuesta = http.request("get", url, params={
+            "fields": "name,capabilities(canEdit),permissions(emailAddress,role,type)",
+            "supportsAllDrives": "true",
+        })
+        datos = respuesta.json()
+        info["puede_editar"] = datos.get("capabilities", {}).get("canEdit")
+        cuenta = (info["cuenta"] or "").lower()
+        for permiso in datos.get("permissions", []) or []:
+            if str(permiso.get("emailAddress", "")).lower() == cuenta:
+                info["rol"] = permiso.get("role")
+        if info["rol"] is None and datos.get("permissions") is not None:
+            info["notas"].append("La cuenta de la app no figura con su email entre los permisos del archivo "
+                                 "(puede estar leyendo por el enlace público o por un grupo).")
+    except Exception as exc:
+        info["notas"].append(f"No se pudo consultar el permiso en Google Drive: {exc}")
+    return info
+
+
+def explicar_diagnostico(info: Dict[str, Any], table: str | None = None) -> str:
+    """Resumen en castellano de diagnosticar_permisos()."""
+    partes = []
+    if info.get("puede_editar") is False:
+        rol = {"reader": "Lector", "commenter": "Comentarista"}.get(str(info.get("rol")), info.get("rol"))
+        partes.append(
+            f"Google confirma que la cuenta {info.get('cuenta') or 'de la app'} NO puede editar el archivo "
+            f"«{info.get('archivo') or ''}»" + (f" (su rol es {rol})" if rol else "") + ". Tiene que figurar como Editor."
+        )
+    protegidas = info.get("pestanas_protegidas", {})
+    if table and table in protegidas and not protegidas[table]["cuenta_puede"]:
+        partes.append(
+            f"La pestaña «{table}» tiene {protegidas[table]['rangos']} protección(es) y la cuenta de la app no está "
+            "entre quienes pueden editarla (Datos → Proteger hojas y rangos)."
+        )
+    if not partes and info.get("puede_editar") is True:
+        partes.append("Google indica que la cuenta sí puede editar el archivo; el rechazo puede ser temporal: "
+                      "volvé a intentar en unos minutos.")
+    return " ".join(partes)
+
+
 def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
-    ws = get_or_create_worksheet(table)
+    """Reemplaza el contenido de la pestaña por ``df``.
+
+    Orden seguro: primero se ESCRIBE el contenido nuevo y recién después se
+    limpia lo que sobra. Antes se borraba la pestaña y luego se escribía: si
+    la escritura fallaba, la pestaña quedaba vacía.
+    """
     df = df.copy()
     df = df.where(pd.notnull(df), "")
     df = df.astype(str)
-    ws.clear()
-    if df.empty:
-        ws.update([["Sin datos"]])
-        st.cache_data.clear()
-        return 0
-    data = [df.columns.tolist()] + df.values.tolist()
-    ws.update(data)
+    data = [df.columns.tolist()] + df.values.tolist() if not df.empty else [["Sin datos"]]
+    filas = len(data)
+    columnas = max(len(fila) for fila in data)
+    try:
+        # Lectura fresca de la pestaña para conocer su tamaño real.
+        try:
+            ws = get_spreadsheet().worksheet(table)
+        except gspread.WorksheetNotFound:
+            ws = get_or_create_worksheet(table)
+        with _cache_lock:
+            _cache_hojas[table] = ws
+        if ws.row_count < filas or ws.col_count < columnas:
+            ws.resize(rows=max(ws.row_count, filas), cols=max(ws.col_count, columnas))
+        ws.update(data)
+        sobrantes = []
+        if ws.row_count > filas:
+            sobrantes.append(f"{rowcol_to_a1(filas + 1, 1)}:{rowcol_to_a1(ws.row_count, ws.col_count)}")
+        if ws.col_count > columnas:
+            sobrantes.append(f"{rowcol_to_a1(1, columnas + 1)}:{rowcol_to_a1(filas, ws.col_count)}")
+        if sobrantes:
+            ws.batch_clear(sobrantes)
+    except gspread.exceptions.APIError as exc:
+        raise _explicar_error_sheets(exc, table) from exc
     st.cache_data.clear()
-    return len(df)
+    return 0 if df.empty else len(df)
+
+
 def insert_row(table: str, data: Dict[str, Any]) -> None:
     df = get_df(table)
     new_row = pd.DataFrame([data])
