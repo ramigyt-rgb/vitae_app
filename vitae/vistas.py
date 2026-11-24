@@ -405,6 +405,9 @@ def _vitae_exception_detail(exc: Exception, context: str = "") -> None:
 
 def _vitae_render_error(message: str, exc: Exception | None = None, context: str = "") -> None:
     """Error visible, claro y aislado; el resto de la pantalla sigue operativo."""
+    if exc is not None and type(exc).__name__ == "ErrorGuardadoSheets":
+        # Error de Google Sheets ya explicado (permisos, límite de uso): se muestra completo.
+        message = f"{message} {exc}"
     st.error(message)
     if exc is not None:
         _vitae_exception_detail(exc, context=context or message)
