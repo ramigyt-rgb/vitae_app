@@ -21434,7 +21434,19 @@ def render_caja_pro_panel(df: pd.DataFrame, module_name: str, df_total: pd.DataF
 
 
 
-def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
+def render_facturacion_pro(
+    module_name: str,
+    cfg: Dict[str, Any],
+    workspace: str | None = None,
+    embebido: bool = False,
+) -> None:
+    """Vista genérica de un módulo.
+
+    ``workspace``: si se indica ("Cargar", "Importar", "Editar tabla",
+    "Columnas", "Exportar"), se muestra solo esa área sin el selector.
+    ``embebido``: la pantalla que la contiene ya dibujó el encabezado
+    (lo usa la pantalla única de Facturación VM/VMR).
+    """
     st.session_state["vitae_current_module"] = str(module_name)
     table = cfg["table"]
 
@@ -21459,9 +21471,10 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
             context=f"lectura_sheet:{table}",
         )
         df_base = pd.DataFrame()
-    render_header()
-    st.header(module_name)
-    st.caption(cfg.get("descripcion", ""))
+    if not embebido:
+        render_header()
+        st.header(module_name)
+        st.caption(cfg.get("descripcion", ""))
 
     # DEUDAS IMPOSITIVAS VM / VMR: lector especializado de Google Sheets e
     # importador Excel con selección de hojas, cuadros laterales, celdas
@@ -21563,11 +21576,14 @@ def render_facturacion_pro(module_name: str, cfg: Dict[str, Any]) -> None:
         "Columnas",
         "Exportar",
     ]
-    active_workspace = _vitae_lazy_selector(
-        "Área de trabajo",
-        workspace_options,
-        key=f"workspace_{table}",
-    )
+    if workspace in workspace_options:
+        active_workspace = workspace
+    else:
+        active_workspace = _vitae_lazy_selector(
+            "Área de trabajo",
+            workspace_options,
+            key=f"workspace_{table}",
+        )
 
     # Facturación VM/VMR: al entrar al editor hacemos una lectura REAL de la
     # fuente, sin reutilizar una respuesta cacheada anterior. Esto es importante

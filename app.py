@@ -17,6 +17,7 @@ except Exception:
 
 from vitae.vistas import (
     render_dashboard,
+    render_header,
     render_facturacion_pro as render_facturacion_actual,
     render_configuracion,
     require_vitae_login,
@@ -85,6 +86,7 @@ def main() -> None:
                 module_name,
                 cfg,
                 legacy_renderer=render_facturacion_actual,
+                header_renderer=render_header,
             )
         else:
             render_facturacion_actual(module_name, cfg)
