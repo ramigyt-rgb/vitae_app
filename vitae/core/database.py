@@ -215,6 +215,18 @@ def get_df(table: str) -> pd.DataFrame:
         return _cache_tablas[table].copy()
 
 
+def _limpiar_cache_tablas() -> None:
+    """Descarta las tablas en memoria (la próxima lectura va a Google Sheets)
+    sin borrar el resto de los cálculos cacheados de la app."""
+    with _cache_lock:
+        _cache_tablas.clear()
+
+
+# Compatibilidad: el editor de Facturación llama a get_df.clear() para forzar
+# una lectura fresca antes de editar.
+get_df.clear = _limpiar_cache_tablas  # type: ignore[attr-defined]
+
+
 def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
     ws = get_or_create_worksheet(table)
     df = df.copy()
