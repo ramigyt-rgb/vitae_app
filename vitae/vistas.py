@@ -449,6 +449,9 @@ _SECCION_ICONOS = [
     ("cargar", "add_circle"), ("nueva", "add_circle"), ("registrar", "add_circle"),
     ("editar", "edit_note"), ("gestionar", "edit_note"), ("gestión", "edit_note"),
     ("a pagar", "payments"), ("liquidación", "receipt_long"), ("control de datos", "verified"),
+    ("pacientes", "groups"), ("pendientes", "pending_actions"), ("planilla", "grid_on"),
+    ("stock quirófano", "medical_services"), ("stock farmacia", "medication"), ("provisión", "inventory_2"),
+    ("catálogo", "menu_book"), ("historial", "history"),
     ("cobranza", "payments"), ("finanzas", "account_balance"), ("caja", "point_of_sale"),
     ("producción", "stethoscope"), ("médicos", "stethoscope"), ("procedimientos", "stethoscope"),
     ("calidad", "verified"), ("auditoría", "verified"), ("control y detalle", "verified"),
@@ -467,11 +470,11 @@ _EMOJI_INICIAL = re.compile(
 )
 
 
-def _etiqueta_seccion(opcion: str, con_icono: bool = True) -> str:
+def _etiqueta_seccion(opcion: str, con_icono: bool = True, nombres: dict[str, str] | None = None) -> str:
     """Texto visible de una sección: sin emoji, con nombre uniforme e ícono.
     El valor que usa el código no cambia, solo lo que se ve."""
     texto = _EMOJI_INICIAL.sub("", str(opcion)).strip()
-    texto = _SECCION_NOMBRES.get(texto, texto)
+    texto = (nombres or {}).get(texto) or _SECCION_NOMBRES.get(texto, texto)
     if not con_icono:
         return texto
     bajo = texto.lower()
@@ -481,7 +484,7 @@ def _etiqueta_seccion(opcion: str, con_icono: bool = True) -> str:
     return texto
 
 
-def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
+def _vitae_lazy_selector(label: str, options: list[str], key: str, nombres: dict[str, str] | None = None) -> str:
     """Menú de secciones de un módulo: muestra una sola sección por vez.
 
     Mismo aspecto en todos los módulos (íconos y nombres uniformes); en el
@@ -495,7 +498,7 @@ def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
             options,
             key=f"{key}__movil",
             label_visibility="collapsed",
-            format_func=lambda o: _etiqueta_seccion(o, con_icono=False),
+            format_func=lambda o: _etiqueta_seccion(o, con_icono=False, nombres=nombres),
         )
         return str(selected or options[0])
     segmented = getattr(st, "segmented_control", None)
@@ -506,7 +509,7 @@ def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
             default=options[0],
             key=key,
             label_visibility="collapsed",
-            format_func=_etiqueta_seccion,
+            format_func=lambda o: _etiqueta_seccion(o, nombres=nombres),
         )
     else:
         selected = st.radio(
@@ -515,7 +518,7 @@ def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
             horizontal=True,
             key=key,
             label_visibility="collapsed",
-            format_func=lambda o: _etiqueta_seccion(o, con_icono=False),
+            format_func=lambda o: _etiqueta_seccion(o, con_icono=False, nombres=nombres),
         )
     return str(selected or options[0])
 
@@ -19124,8 +19127,8 @@ def _gv_number(value: Any) -> float:
         decimals = len(text.rsplit(",", 1)[-1])
         text = text.replace(".", "")
         text = text.replace(",", "." if decimals <= 2 else "")
-    elif text.count(".") > 1:
-        text = text.replace(".", "")
+    elif re.fullmatch(r"-?[1-9]\d{0,2}(\.\d{3})+", text) or text.count(".") > 1:
+        text = text.replace(".", "")  # punto de miles: 150.000 · 1.500.000
     text = re.sub(r"[^0-9.\-]", "", text)
     try:
         number = float(text)
@@ -19792,8 +19795,7 @@ def _gv_read_uploaded_bytes(filename: str, content: bytes) -> tuple[dict[str, pd
 
 def _gv_money(value: Any) -> str:
     number = _gv_number(value)
-    formatted = f"{number:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    return f"$ {formatted}"
+    return "$ " + f"{number:,.0f}".replace(",", ".")
 
 
 def _gv_bool_label(value: Any) -> str:
@@ -19945,65 +19947,56 @@ def render_gine_vitae_pro(
     patients = _gv_attach_position(patients, summary)
     data = _gv_enrich(patients)
 
-    hero_left, hero_right = st.columns([5.7, 1.1])
-    with hero_left:
-        st.markdown(
-            """
-            <div class="gv-hero">
-                <div class="gv-kicker">Programa preventivo · Gestión integral</div>
-                <div class="gv-title">Planes Gine Vitae</div>
-                <div class="gv-subtitle">
-                    Pacientes, cobros, facturación, autorizaciones, entregas y caja en una sola pantalla.
-                    Lee Google Sheets, importa el Excel por hoja y conserva el cuadro original como respaldo permanente.
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with hero_right:
-        st.write("")
-        st.write("")
-        if st.button("Actualizar", key=f"gv_refresh_{table}", use_container_width=True):
-            st.cache_data.clear()
-            st.rerun()
-        st.caption(f"Corte: {today.strftime('%d/%m/%Y')}")
-
+    # Encabezado común arriba (título y descripción). «Actualizar» está en el menú lateral.
     gine_section = _vitae_lazy_selector(
         "Vista Gine Vitae",
         ["Centro ejecutivo", "Planes y pacientes", "Operación", "Caja",
          "Gestión", "Importar Excel", "Vista original", "IA y exportación"],
         key=f"{table}_gine_active_section",
+        nombres={
+            "Centro ejecutivo": "Resumen",
+            "Planes y pacientes": "Pacientes",
+            "Operación": "Pendientes",
+            "Gestión": "Editar",
+            "Vista original": "Planilla original",
+            "IA y exportación": "IA y exportar",
+        },
     )
 
     if gine_section == "Centro ejecutivo":
         if data.empty:
-            st.info("Todavía no hay pacientes reconocidos. Importá el Excel desde la pestaña “Importar Excel”.")
+            st.info("Todavía no hay pacientes cargados. Importalos desde la sección «Importar Excel».")
         else:
+            movil = es_movil()
             sheet_options = sorted(data["hoja_origen"].dropna().astype(str).unique().tolist())
             status_options = sorted(data["_estado"].dropna().astype(str).unique().tolist())
-            f1, f2, f3 = st.columns([1.3, 1.5, 1.2])
-            with f1:
-                selected_sheets = st.multiselect(
-                    "Hoja de origen", sheet_options, default=sheet_options, key=f"gv_exec_sheets_{table}"
-                )
-            with f2:
-                selected_status = st.multiselect(
-                    "Estado operativo", status_options, default=status_options, key=f"gv_exec_status_{table}"
-                )
-            with f3:
-                period_options = ["Todos"] + sorted(
-                    [value for value in data["_mes"].dropna().astype(str).unique().tolist() if value != "Sin fecha"],
-                    reverse=True,
-                ) + (["Sin fecha"] if "Sin fecha" in data["_mes"].values else [])
-                selected_period = st.selectbox("Período", period_options, key=f"gv_exec_period_{table}")
+            meses = sorted([m for m in data["_mes"].dropna().astype(str).unique() if m != "Sin fecha"], reverse=True)
+            todos = "Todos los meses"
+            period_options = meses + [todos] + (["Sin fecha"] if "Sin fecha" in data["_mes"].values else [])
+            mes_actual = str(today.to_period("M"))
+            indice = period_options.index(mes_actual) if mes_actual in period_options else period_options.index(todos)
 
-            visible = data.copy()
+            with st.container(border=True):
+                f1, f2, f3 = st.columns([1.1, 1.4, 1.4])
+                selected_period = f1.selectbox(
+                    "Mes", period_options, index=indice, key=f"gv_exec_period_{table}",
+                    format_func=lambda m: m if m in (todos, "Sin fecha") else nombre_mes_es(m),
+                )
+                selected_sheets = f2.multiselect("Hoja / jornada", sheet_options, placeholder="Todas",
+                                                 key=f"gv_exec_sheets_v2_{table}")
+                selected_status = f3.multiselect("Estado", status_options, placeholder="Todos",
+                                                 key=f"gv_exec_status_v2_{table}")
+
+            base = data.copy()
             if selected_sheets:
-                visible = visible[visible["hoja_origen"].isin(selected_sheets)]
+                base = base[base["hoja_origen"].isin(selected_sheets)]
             if selected_status:
-                visible = visible[visible["_estado"].isin(selected_status)]
-            if selected_period != "Todos":
-                visible = visible[visible["_mes"].eq(selected_period)]
+                base = base[base["_estado"].isin(selected_status)]
+            visible = base if selected_period == todos else base[base["_mes"].eq(selected_period)]
+            texto_periodo = (
+                "de todos los meses" if selected_period == todos
+                else ("sin fecha" if selected_period == "Sin fecha" else f"de {nombre_mes_es(selected_period)}")
+            )
 
             total_patients = len(visible)
             total_collected = float(visible["_total"].sum())
@@ -20013,37 +20006,15 @@ def render_gine_vitae_pro(
             delivered = int(visible["_entregado"].sum())
             invoiced = int(visible["_factura"].sum())
             absent = int(visible["_ausente"].sum())
+            pending_authorization = int((~visible["_autorizado"] & ~visible["_ausente"]).sum())
+            pending_delivery = int((visible["_autorizado"] & ~visible["_entregado"] & ~visible["_ausente"]).sum())
+            pending_invoice = int((visible["_entregado"] & ~visible["_factura"] & ~visible["_ausente"]).sum())
+            pendientes = pending_authorization + pending_delivery + pending_invoice
 
-            r1 = st.columns(5)
-            with r1[0]:
-                _gv_card("Pacientes", str(total_patients), f"{absent} ausentes / no realizados")
-            with r1[1]:
-                _gv_card("Cobrado total", _gv_money(total_collected), "Efectivo + MP")
-            with r1[2]:
-                _gv_card("Efectivo", _gv_money(total_cash), f"{(total_cash / total_collected * 100) if total_collected else 0:.1f}% del total")
-            with r1[3]:
-                _gv_card("Mercado Pago", _gv_money(total_mp), f"{(total_mp / total_collected * 100) if total_collected else 0:.1f}% del total")
-            with r1[4]:
-                average = total_collected / total_patients if total_patients else 0
-                _gv_card("Promedio por paciente", _gv_money(average), "Ingreso medio registrado")
-
-            r2 = st.columns(3)
-            with r2[0]:
-                _gv_card("Autorizados", f"{authorized}/{total_patients}", f"{(authorized / total_patients * 100) if total_patients else 0:.1f}%")
-            with r2[1]:
-                _gv_card("Entregados", f"{delivered}/{total_patients}", f"{(delivered / total_patients * 100) if total_patients else 0:.1f}%")
-            with r2[2]:
-                _gv_card("Facturados", f"{invoiced}/{total_patients}", f"{(invoiced / total_patients * 100) if total_patients else 0:.1f}%")
-
-            # El cuadro original muestra tres conceptos distintos y no deben
-            # confundirse: CAJA, CUENTA y el TOTAL de movimientos. Antes se
-            # mostraba únicamente $68.000 como “Posición de caja”, aunque ese
-            # importe es el consolidado ($345.000 + -$277.000), no la caja.
+            # Caja y cuenta: valores declarados en el cuadro original (no se mezclan con lo cobrado).
             selected_summary = summary.copy()
             if selected_sheets and not selected_summary.empty:
-                selected_summary = selected_summary[
-                    selected_summary["hoja_origen"].astype(str).isin(selected_sheets)
-                ]
+                selected_summary = selected_summary[selected_summary["hoja_origen"].astype(str).isin(selected_sheets)]
             cash_declared = float(selected_summary["caja_declarada"].sum()) if not selected_summary.empty else 0.0
             account_declared = float(selected_summary["cuenta_declarada"].sum()) if not selected_summary.empty else 0.0
             movement_balance = float(selected_summary["saldo_movimientos"].sum()) if not selected_summary.empty else 0.0
@@ -20051,78 +20022,118 @@ def render_gine_vitae_pro(
             if abs(cash_declared) <= 0.001 and abs(account_declared) <= 0.001:
                 consolidated_position = movement_balance
 
-            r3 = st.columns(3)
-            with r3[0]:
-                _gv_card("Caja declarada", _gv_money(cash_declared), "Valor exacto de la celda CAJA")
-            with r3[1]:
-                _gv_card("Cuenta declarada", _gv_money(account_declared), "Valor exacto de la celda CUENTA")
-            with r3[2]:
-                _gv_card("Posición consolidada", _gv_money(consolidated_position), "Caja + cuenta")
+            def pct(parte: float, total: float) -> str:
+                return f"{(parte / total * 100) if total else 0:.0f}%"
 
-            pending_authorization = int((~visible["_autorizado"] & ~visible["_ausente"]).sum())
-            pending_delivery = int((visible["_autorizado"] & ~visible["_entregado"] & ~visible["_ausente"]).sum())
-            pending_invoice = int((visible["_entregado"] & ~visible["_factura"] & ~visible["_ausente"]).sum())
-            if pending_authorization or pending_delivery or pending_invoice:
-                st.markdown(
-                    f'<div class="gv-alert"><b>Cola operativa:</b> {pending_authorization} pendientes de autorización · '
-                    f'{pending_delivery} autorizados pendientes de entrega · {pending_invoice} entregados pendientes de factura.</div>',
-                    unsafe_allow_html=True,
+            tarjetas_kpi([
+                ("Pacientes", str(total_patients),
+                 f"{absent} ausentes / no realizados" if absent else f"{texto_periodo}", "#8C2853"),
+                ("Cobrado", _gv_money(total_collected),
+                 f"Efectivo {pct(total_cash, total_collected)} · MP {pct(total_mp, total_collected)}", "#5F9D78"),
+                ("Pendientes", str(pendientes), "autorización, entrega o factura", "#C58A32"),
+                ("Caja + cuenta", _gv_money(consolidated_position),
+                 f"Caja {_gv_money(cash_declared)} · Cuenta {_gv_money(account_declared)}", "#B14E5E"),
+            ])
+            st.caption(f"{total_patients} pacientes {texto_periodo}. Caja y cuenta son los valores declarados "
+                       "en el cuadro original de cada hoja.")
+
+            if pendientes:
+                st.warning(
+                    f"**Para gestionar:** {pending_authorization} pendientes de autorización · "
+                    f"{pending_delivery} autorizados sin entregar · {pending_invoice} entregados sin factura. "
+                    "El detalle está en la sección Pendientes."
                 )
             else:
-                st.markdown('<div class="gv-alert gv-ok"><b>Operación al día:</b> no hay pendientes en la selección actual.</div>', unsafe_allow_html=True)
+                st.success("Operación al día: no hay pendientes en la selección.")
 
-            c1, c2 = st.columns(2)
+            c1, c2 = st.columns([1.3, 1])
             with c1:
-                payment = pd.DataFrame({
-                    "Medio": ["Efectivo", "Mercado Pago"],
-                    "Importe": [total_cash, total_mp],
-                })
-                st.markdown("#### Composición de cobros")
-                if payment["Importe"].sum() > 0:
-                    fig = px.pie(payment, names="Medio", values="Importe", hole=.56)
-                    fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), legend_title_text="")
-                    st.plotly_chart(fig, use_container_width=True, key=f"gv_payment_{table}")
-                else:
-                    st.info("No hay importes para graficar.")
-            with c2:
+                st.markdown("#### Circuito de los pacientes")
                 funnel = pd.DataFrame({
                     "Etapa": ["Registrados", "Autorizados", "Entregados", "Facturados"],
                     "Pacientes": [total_patients, authorized, delivered, invoiced],
                 })
-                st.markdown("#### Embudo operativo")
-                fig = px.bar(funnel, x="Etapa", y="Pacientes", text="Pacientes")
-                fig.update_traces(textposition="outside")
-                fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), yaxis_title="Pacientes")
-                st.plotly_chart(fig, use_container_width=True, key=f"gv_funnel_{table}")
+                funnel["Texto"] = [f"{v} ({pct(v, total_patients)})" for v in funnel["Pacientes"]]
+                fig = px.bar(funnel.iloc[::-1], x="Pacientes", y="Etapa", orientation="h", text="Texto",
+                             color_discrete_sequence=["#8C2853"])
+                fig.update_traces(textposition="outside", cliponaxis=False)
+                fig.update_layout(height=260, margin=dict(l=10, r=40, t=10, b=10), xaxis_title=None, yaxis_title=None,
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(fig, use_container_width=True, key=f"gv_funnel_{table}",
+                                config={"displayModeBar": False})
+            with c2:
+                st.markdown("#### Cómo se cobró")
+                if total_collected > 0:
+                    payment = pd.DataFrame({"Medio": ["Efectivo", "Mercado Pago"], "Importe": [total_cash, total_mp]})
+                    fig = px.pie(payment, names="Medio", values="Importe", hole=.6, color="Medio",
+                                 color_discrete_map={"Efectivo": "#5F9D78", "Mercado Pago": "#3B82C4"})
+                    fig.update_layout(height=260, margin=dict(l=10, r=10, t=10, b=10), legend_title_text="",
+                                      legend=dict(orientation="h", y=-0.05), paper_bgcolor="rgba(0,0,0,0)")
+                    st.plotly_chart(fig, use_container_width=True, key=f"gv_payment_{table}",
+                                    config={"displayModeBar": False})
+                else:
+                    st.info("No hay cobros registrados en la selección.")
 
-            monthly = visible[visible["_fecha"].notna()].copy()
-            if not monthly.empty:
-                monthly["Mes"] = monthly["_fecha"].dt.to_period("M").astype(str)
-                monthly_summary = monthly.groupby("Mes", as_index=False).agg(
+            monthly = base[base["_fecha"].notna()].copy()
+            if not monthly.empty and monthly["_fecha"].dt.to_period("M").nunique() > 1:
+                st.markdown("#### Evolución mensual")
+                st.caption("Todos los meses, con las hojas y estados elegidos arriba.")
+                monthly["_p"] = monthly["_fecha"].dt.to_period("M")
+                monthly_summary = monthly.groupby("_p", as_index=False).agg(
+                    Pacientes=("id_registro", "count"), Cobrado=("_total", "sum"),
+                ).sort_values("_p")
+                monthly_summary["Mes"] = monthly_summary["_p"].map(nombre_mes_es)
+                fig = px.bar(monthly_summary, x="Mes", y="Cobrado", text="Pacientes",
+                             color_discrete_sequence=["#8C2853"], category_orders={"Mes": list(monthly_summary["Mes"])})
+                fig.update_traces(texttemplate="%{text} pac.", textposition="outside", cliponaxis=False)
+                fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), xaxis_title=None, yaxis_title=None,
+                                  separators=",.", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                fig.update_yaxes(tickformat=",.0f")
+                st.plotly_chart(fig, use_container_width=True, key=f"gv_monthly_{table}",
+                                config={"displayModeBar": False})
+
+            st.divider()
+            st.markdown(f"#### Pacientes {texto_periodo}")
+            if visible.empty:
+                st.info("No hay pacientes con los filtros elegidos.")
+            else:
+                lista = visible.sort_values(["_fecha", "paciente"], ascending=[False, True], na_position="last")
+                tabla = pd.DataFrame({
+                    "Fecha": lista["_fecha"].dt.strftime("%d/%m/%Y").fillna("Sin fecha"),
+                    "Paciente": lista["paciente"],
+                    "Efectivo": lista["_efectivo"].map(_gv_money),
+                    "Mercado Pago": lista["_mp"].map(_gv_money),
+                    "Total": lista["_total"].map(_gv_money),
+                    "Autorizado": lista["_autorizado"],
+                    "Entregado": lista["_entregado"],
+                    "Facturado": lista["_factura"],
+                    "Estado": lista["_estado"],
+                    "Hoja": lista["hoja_origen"],
+                })
+                if movil:
+                    tabla = tabla[["Fecha", "Paciente", "Total", "Estado"]]
+                st.dataframe(
+                    tabla, use_container_width=True, hide_index=True,
+                    height=min(42 + 35 * len(tabla), 520),
+                    column_config={
+                        "Autorizado": st.column_config.CheckboxColumn("Autorizado"),
+                        "Entregado": st.column_config.CheckboxColumn("Entregado"),
+                        "Facturado": st.column_config.CheckboxColumn("Facturado"),
+                    },
+                )
+
+            with st.expander("Rendimiento por jornada", icon=":material/event:", expanded=False):
+                campaign = visible.copy()
+                campaign["Fecha"] = campaign["_fecha"].dt.strftime("%d/%m/%Y").fillna("Sin fecha")
+                campaign_summary = campaign.groupby("Fecha", as_index=False).agg(
                     Pacientes=("id_registro", "count"),
                     Cobrado=("_total", "sum"),
-                ).sort_values("Mes")
-                st.markdown("#### Evolución mensual")
-                fig = px.bar(monthly_summary, x="Mes", y="Cobrado", text="Pacientes", hover_data=["Pacientes"])
-                fig.update_layout(margin=dict(l=10, r=10, t=20, b=10), yaxis_title="Cobrado")
-                st.plotly_chart(fig, use_container_width=True, key=f"gv_monthly_{table}")
-
-            campaign = visible.copy()
-            campaign["Fecha"] = campaign["_fecha"].dt.strftime("%d/%m/%Y").fillna("Sin fecha")
-            campaign_summary = campaign.groupby("Fecha", as_index=False).agg(
-                Pacientes=("id_registro", "count"),
-                Cobrado=("_total", "sum"),
-                Autorizados=("_autorizado", "sum"),
-                Entregados=("_entregado", "sum"),
-                Facturados=("_factura", "sum"),
-            ).sort_values("Cobrado", ascending=False)
-            st.markdown("#### Rendimiento por jornada / fecha")
-            st.dataframe(
-                campaign_summary,
-                use_container_width=True,
-                hide_index=True,
-                column_config={"Cobrado": st.column_config.NumberColumn(format="$ %.2f")},
-            )
+                    Autorizados=("_autorizado", "sum"),
+                    Entregados=("_entregado", "sum"),
+                    Facturados=("_factura", "sum"),
+                ).sort_values("Cobrado", ascending=False)
+                campaign_summary["Cobrado"] = campaign_summary["Cobrado"].map(_gv_money)
+                st.dataframe(campaign_summary, use_container_width=True, hide_index=True)
 
     if gine_section == "Planes y pacientes":
         if data.empty:
