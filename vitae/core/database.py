@@ -6,7 +6,15 @@ import re
 import threading
 import uuid
 import gspread
-from gspread.utils import rowcol_to_a1
+try:
+    from gspread.utils import rowcol_to_a1
+except Exception:  # respaldo: misma función, por si cambia la librería
+    def rowcol_to_a1(row: int, col: int) -> str:
+        letras = ""
+        while col:
+            col, resto = divmod(col - 1, 26)
+            letras = chr(65 + resto) + letras
+        return f"{letras}{row}"
 import pandas as pd
 import streamlit as st
 from typing import Any, Dict, List
