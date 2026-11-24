@@ -23238,11 +23238,11 @@ def render_configuracion() -> None:
                 d2.metric("Rol en el archivo", rol)
                 st.markdown(f"**Cuenta que usa la app:** `{info.get('cuenta') or 'no encontrada en Secrets'}`")
                 st.markdown(f"**Planilla:** {info.get('archivo') or '—'}")
-                if puede is False:
-                    st.error("Google confirma que esta cuenta NO puede editar la planilla. En Google Sheets → "
-                             "Compartir, agregá exactamente ese email como Editor.")
+                from vitae.core.database import explicar_diagnostico
+                if info.get("bloqueado") or info.get("puede_modificar_contenido") is False or puede is False:
+                    st.error(explicar_diagnostico(info))
                 elif puede:
-                    st.success("La cuenta puede editar la planilla.")
+                    st.success("La cuenta puede editar la planilla y el archivo no está bloqueado.")
                 protegidas = info.get("pestanas_protegidas") or {}
                 if protegidas:
                     st.markdown("**Pestañas con protección**")
@@ -23256,6 +23256,24 @@ def render_configuracion() -> None:
                     st.caption("Ninguna pestaña tiene protecciones.")
                 for nota in info.get("notas") or []:
                     st.caption(nota)
+
+        st.markdown("#### Probar escritura")
+        st.caption("Reescribe la celda A1 de cada pestaña con su mismo valor: no cambia ningún dato, pero muestra "
+                   "si Google acepta guardar y, si no, el motivo exacto.")
+        pestanas = sorted({cfg.get("table") for cfg in MODULES.values() if cfg.get("table") and cfg.get("table") != "convenios"})
+        elegidas = st.multiselect(
+            "Pestañas a probar", pestanas,
+            default=[t for t in ("agenda_quirofano", "tareas_pendientes") if t in pestanas],
+            key="cfg_diag_pestanas",
+        )
+        if st.button("Probar escritura", icon=":material/edit_document:", key="cfg_diag_escritura") and elegidas:
+            from vitae.core.database import probar_escritura
+            filas_prueba = []
+            with st.spinner("Probando…"):
+                for pestana in elegidas:
+                    ok, detalle = probar_escritura(pestana)
+                    filas_prueba.append({"Pestaña": pestana, "¿Guarda?": "Sí" if ok else "No", "Detalle": detalle})
+            st.dataframe(pd.DataFrame(filas_prueba), use_container_width=True, hide_index=True)
         st.divider()
         st.markdown("### Sincronización Google Sheets")
         col1, col2 = st.columns(2)
