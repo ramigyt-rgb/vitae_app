@@ -7743,6 +7743,42 @@ def _editor_filtrar_obra_social(df: pd.DataFrame, elegida: str) -> pd.DataFrame:
     return df.loc[_editor_os_normalizada(df) == objetivo]
 
 
+_EDITOR_ESTADOS = ["Todos", "Pendientes", "Vencidos", "Cobrados"]
+
+
+def _editor_cobranza(df: pd.DataFrame) -> pd.DataFrame:
+    """Facturado, pendiente y vencido por fila, con el mismo criterio que la
+    sección Cobranza (anulados en 0; Completo/pagado = cobrado)."""
+    vacio = pd.DataFrame(
+        {"_monto": 0.0, "_pendiente": 0.0, "_vencido": False, "_cancelado": False},
+        index=df.index,
+    )
+    if df is None or df.empty:
+        return vacio
+    try:
+        from vitae.modulos.facturacion import _prepare_facturacion
+
+        prep, _ = _prepare_facturacion(df)
+        return prep[["_monto", "_pendiente", "_vencido", "_cancelado"]].reindex(df.index)
+    except Exception:
+        return vacio
+
+
+def _editor_filtrar_estado(df: pd.DataFrame, estado: str, cobranza: pd.DataFrame) -> pd.DataFrame:
+    """Pendientes (incluye vencidos), sólo vencidos, o cobrados."""
+    if not estado or estado == "Todos" or df.empty:
+        return df
+    c = cobranza.reindex(df.index)
+    pendiente = c["_pendiente"].fillna(0) > 0
+    if estado == "Pendientes":
+        mascara = pendiente
+    elif estado == "Vencidos":
+        mascara = pendiente & c["_vencido"].fillna(False).astype(bool)
+    else:  # Cobrados
+        mascara = ~pendiente & (c["_monto"].fillna(0) > 0) & ~c["_cancelado"].fillna(False).astype(bool)
+    return df.loc[mascara.astype(bool)]
+
+
 def _editor_volcar_cambios(base: pd.DataFrame, editado: pd.DataFrame, ignorar: tuple = ()) -> pd.DataFrame:
     """Copia las celdas editadas de una vista filtrada sobre la tabla completa.
 
@@ -21594,27 +21630,67 @@ def render_facturacion_pro(
 
             work_full = st.session_state[editor_work_key].drop(columns=[delete_col], errors="ignore")
             filtro_os = _EDITOR_TODAS_OS
-            if table in ["facturacion_vm", "facturacion_vmr"] and "obra_social" in work_full.columns:
-                opciones_os = [_EDITOR_TODAS_OS] + _editor_opciones_obra_social(work_full)
-                filtro_os_key = f"_vitae_editor_filtro_os_{table}"
-                if st.session_state.get(filtro_os_key) not in opciones_os:
-                    st.session_state[filtro_os_key] = _EDITOR_TODAS_OS
-                filtro_os = st.selectbox(
-                    "Filtrar por obra social",
-                    opciones_os,
-                    key=filtro_os_key,
-                    on_change=_editor_guardar_pendientes,
-                    args=(table, delete_col),
-                    help="Muestra sólo los registros de esa obra social. Al guardar se conserva la planilla completa.",
-                )
+            filtro_estado = "Todos"
+            es_facturacion = table in ["facturacion_vm", "facturacion_vmr"]
+            cobranza = None
+            if es_facturacion:
+                cobranza = _editor_cobranza(work_full)
+                col_os, col_estado = st.columns([1.6, 1])
+                if "obra_social" in work_full.columns:
+                    opciones_os = [_EDITOR_TODAS_OS] + _editor_opciones_obra_social(work_full)
+                    filtro_os_key = f"_vitae_editor_filtro_os_{table}"
+                    if st.session_state.get(filtro_os_key) not in opciones_os:
+                        st.session_state[filtro_os_key] = _EDITOR_TODAS_OS
+                    with col_os:
+                        filtro_os = st.selectbox(
+                            "Obra social",
+                            opciones_os,
+                            key=filtro_os_key,
+                            on_change=_editor_guardar_pendientes,
+                            args=(table, delete_col),
+                            help="Muestra sólo los registros de esa obra social. Al guardar se conserva la planilla completa.",
+                        )
+                filtro_estado_key = f"_vitae_editor_filtro_estado_{table}"
+                if st.session_state.get(filtro_estado_key) not in _EDITOR_ESTADOS:
+                    st.session_state[filtro_estado_key] = "Todos"
+                with col_estado:
+                    filtro_estado = st.selectbox(
+                        "Cobro",
+                        _EDITOR_ESTADOS,
+                        key=filtro_estado_key,
+                        on_change=_editor_guardar_pendientes,
+                        args=(table, delete_col),
+                        help="Pendientes: con saldo a cobrar (incluye vencidos). Vencidos: pendientes con vencimiento pasado. Anulados no cuentan.",
+                    )
             vista = _editor_filtrar_obra_social(work_full, filtro_os)
+            if es_facturacion:
+                vista = _editor_filtrar_estado(vista, filtro_estado, cobranza)
             filtrado = len(vista) != len(work_full)
+            filtro_activo = filtro_os != _EDITOR_TODAS_OS or filtro_estado != "Todos"
             st.session_state[f"_vitae_editor_vista_idx_{table}"] = list(vista.index)
-            if filtrado:
+            if es_facturacion and filtro_activo:
+                c = cobranza.reindex(vista.index)
+                facturado = float(c["_monto"].fillna(0).sum())
+                pendiente = float(c["_pendiente"].fillna(0).sum())
+                vencido = float(c.loc[c["_vencido"].fillna(False).astype(bool), "_pendiente"].fillna(0).sum())
+                n_pend = int((c["_pendiente"].fillna(0) > 0).sum())
+
+                def _pesos(v: float) -> str:
+                    return "$ " + f"{v:,.0f}".replace(",", ".")
+
+                partes = [p for p in (filtro_os if filtro_os != _EDITOR_TODAS_OS else "", filtro_estado if filtro_estado != "Todos" else "") if p]
+                tarjetas_kpi([
+                    ("Total facturado", _pesos(facturado), f"{len(vista):,} registros".replace(",", "."), "#8C2853"),
+                    ("Pendiente de cobro", _pesos(pendiente), f"{n_pend:,} registros".replace(",", "."), "#C58A32"),
+                    ("Vencido", _pesos(vencido), f"{(100 * vencido / pendiente) if pendiente else 0:.0f}% de lo pendiente", "#B14E5E"),
+                ])
                 st.caption(
-                    f"Mostrando {len(vista):,} de {len(work_full):,} registros · {filtro_os}. "
-                    "Lo que edites o elimines acá se guarda sin tocar el resto."
+                    f"Mostrando {len(vista):,} de {len(work_full):,} registros · {' · '.join(partes)}. ".replace(",", ".")
+                    + "Lo que edites o elimines acá se guarda sin tocar el resto. "
+                    "Los totales se actualizan al guardar."
                 )
+            if es_facturacion and vista.empty:
+                st.info("No hay registros con esos filtros.")
 
             editor_input = vista.copy()
             editor_input.insert(0, delete_col, False)
