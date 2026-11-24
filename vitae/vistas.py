@@ -1,5 +1,6 @@
 import hashlib
 import html
+import unicodedata
 # =========================================================
 # VISTAS
 # ========================================================
@@ -18,6 +19,7 @@ import streamlit as st
 
 from vitae.core.config import APP_TITLE, BASE_DIR, LOGO_PATH
 from vitae.core.movil import css_movil, es_movil
+from vitae.core.ui import encabezado_modulo, sin_icono
 from vitae.core.tablas import MODULES
 from vitae.core.database import *
 from vitae.core.helpers import *
@@ -426,10 +428,75 @@ def _vitae_invalidate_data_cache() -> None:
         pass
 
 
+_SECCION_NOMBRES = {
+    "Panel PRO": "Panel",
+    "Editar tabla": "Registros",
+    "Centro ejecutivo": "Resumen",
+    "Resumen ejecutivo": "Resumen",
+    "Centro de control": "Resumen",
+    "Analista IA": "Preguntar a la IA",
+    "IA y exportación": "IA y exportar",
+    "Base en Sheets": "Base",
+}
+
+# Primera coincidencia gana: palabra clave (en minúsculas) -> ícono.
+_SECCION_ICONOS = [
+    ("flujo de pacientes", "route"), ("plan de cancelación", "event_repeat"), ("planes y pacientes", "groups"),
+    ("vista original", "grid_on"), ("mapa", "map"), ("buscador", "search"), ("comparador", "compare"),
+    ("ficha", "description"), ("reglas", "rule"), ("conciliación", "compare_arrows"),
+    ("director ia", "auto_awesome"), (r"\bia\b", "auto_awesome"), ("columnas", "tune"), ("registros", "table_view"),
+    ("exportar", "download"), ("importar", "upload_file"), ("migrar", "upload_file"),
+    ("cargar", "add_circle"), ("nueva", "add_circle"), ("registrar", "add_circle"),
+    ("editar", "edit_note"), ("gestionar", "edit_note"), ("gestión", "edit_note"),
+    ("cobranza", "payments"), ("finanzas", "account_balance"), ("caja", "point_of_sale"),
+    ("producción", "stethoscope"), ("médicos", "stethoscope"), ("procedimientos", "stethoscope"),
+    ("calidad", "verified"), ("auditoría", "verified"), ("control y detalle", "verified"),
+    ("vencimientos", "event_upcoming"), ("alertas", "notification_important"), ("riesgos", "warning"),
+    ("evolución", "trending_up"), ("proyección", "trending_up"), ("cronograma", "calendar_month"),
+    ("agenda", "calendar_month"), ("calendario", "calendar_month"), ("próximas", "event"),
+    ("indicadores", "monitoring"), ("ocupación", "event_available"), ("operaci", "medical_services"),
+    ("entidades", "domain"), ("empresas", "domain"), ("usuarios", "group"), ("permisos", "lock"),
+    ("sistema", "settings"), ("movimientos", "swap_vert"), ("listado", "table_view"),
+    ("detalle", "table_view"), ("base", "table_view"), ("resumen", "insights"), ("panel", "insights"),
+    ("panorama", "insights"),
+]
+
+_EMOJI_INICIAL = re.compile(
+    "^[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2300-\u23FF][\uFE0F\u200D]*\\s*"
+)
+
+
+def _etiqueta_seccion(opcion: str, con_icono: bool = True) -> str:
+    """Texto visible de una sección: sin emoji, con nombre uniforme e ícono.
+    El valor que usa el código no cambia, solo lo que se ve."""
+    texto = _EMOJI_INICIAL.sub("", str(opcion)).strip()
+    texto = _SECCION_NOMBRES.get(texto, texto)
+    if not con_icono:
+        return texto
+    bajo = texto.lower()
+    for clave, icono in _SECCION_ICONOS:
+        if (re.search(clave, bajo) if clave.startswith("\\b") else clave in bajo):
+            return f":material/{icono}: {texto}"
+    return texto
+
+
 def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
-    """Navegación de una sola sección por rerun; fallback compatible a st.radio."""
+    """Menú de secciones de un módulo: muestra una sola sección por vez.
+
+    Mismo aspecto en todos los módulos (íconos y nombres uniformes); en el
+    celular se muestra como desplegable para que no se amontonen los botones.
+    """
     if not options:
         return ""
+    if es_movil():
+        selected = st.selectbox(
+            label,
+            options,
+            key=f"{key}__movil",
+            label_visibility="collapsed",
+            format_func=lambda o: _etiqueta_seccion(o, con_icono=False),
+        )
+        return str(selected or options[0])
     segmented = getattr(st, "segmented_control", None)
     if callable(segmented):
         selected = segmented(
@@ -438,6 +505,7 @@ def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
             default=options[0],
             key=key,
             label_visibility="collapsed",
+            format_func=_etiqueta_seccion,
         )
     else:
         selected = st.radio(
@@ -446,6 +514,7 @@ def _vitae_lazy_selector(label: str, options: list[str], key: str) -> str:
             horizontal=True,
             key=key,
             label_visibility="collapsed",
+            format_func=lambda o: _etiqueta_seccion(o, con_icono=False),
         )
     return str(selected or options[0])
 
@@ -1292,7 +1361,14 @@ def _render_vitae_app_shell() -> None:
 
         /* ---------- Encabezado de la app (versión compacta) ---------- */
         .vitae-app-header { display:none; }
-        .vitae-page-kicker { font-size:.75rem; color:var(--vitae-muted); font-weight:500; margin-bottom:.1rem; }
+        .vitae-page-head { margin: 0 0 1rem 0; }
+        .vitae-page-kicker { font-size:.74rem; color:var(--vitae-accent); font-weight:600; letter-spacing:.04em; text-transform:uppercase; margin-bottom:.15rem; }
+        .vitae-page-title { font-size:1.75rem; font-weight:700; letter-spacing:-.025em; color:var(--vitae-navy); line-height:1.15; }
+        .vitae-page-sub { font-size:.92rem; color:var(--vitae-muted); margin-top:.3rem; max-width:860px; line-height:1.45; }
+        /* Los módulos tenían su propio cartel con un segundo título: el
+           encabezado común ya muestra título y descripción. */
+        .caja-pro-hero, .banco-pro-hero, .ccvmr-hero, .dt-hero, .pp-hero, .gv-hero, .di-vm-hero,
+        .cv-hero, .agenda-hero, .farmacia-hero, .qx-hero, .fx-hero { display:none !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -1440,7 +1516,7 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
                 st.markdown("---")
                 if last_question:
                     st.markdown(f"**Vos** · {last_question}")
-                st.markdown("**✦ Copiloto Vitae**")
+                st.markdown("**Copiloto Vitae**")
                 st.markdown(last_answer)
 
 
@@ -4227,7 +4303,7 @@ def _render_column_preferences(
 
 def render_analisis_anual_2026(df: pd.DataFrame):
 
-    st.subheader("📈 Análisis anual 2026")
+    st.subheader("Análisis anual 2026")
 
     if df.empty or "mes" not in df.columns:
 
@@ -4504,7 +4580,7 @@ def render_analisis_anual_2026(df: pd.DataFrame):
 
     )
 def render_analisis_mensual_2026(df: pd.DataFrame):
-    st.subheader("📈 Análisis mensual 2026")
+    st.subheader("Análisis mensual 2026")
     if df.empty or "mes" not in df.columns:
         st.info("No hay datos suficientes para analizar.")
         return
@@ -4698,7 +4774,7 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
 
     st.divider()
     
-    st.subheader("🤖 Asistente IA")
+    st.subheader("Asistente IA")
     
     pregunta = st.text_input(
     
@@ -4776,50 +4852,50 @@ def render_metricas_panel(filtered: pd.DataFrame, table: str) -> None:
     pendiente_usd = _money_usd_sum(df, "saldo_usd")
     if table == "Contratos":
 
-        st.metric("👥 Registros", registros)
+        st.metric("Registros", registros)
 
     elif table == "cuenta_corriente_vm":
 
         c1, c2, c3 = st.columns(3)
 
-        c1.metric("💰 Total Facturas", fmt_money(total))
+        c1.metric("Total Facturas", fmt_money(total))
 
-        c2.metric("💸 Total Pagado", fmt_money(cobrado))
+        c2.metric("Total Pagado", fmt_money(cobrado))
 
-        c3.metric("⏳ Deuda Total", fmt_money(pendiente))
+        c3.metric("Deuda Total", fmt_money(pendiente))
 
     elif table == "cuenta_corriente_vmr":
 
         c1, c2, c3, c4, c5, c6 = st.columns(6)
 
-        c1.metric("🛒 Compras ARS", fmt_money(total))
+        c1.metric("Compras ARS", fmt_money(total))
 
-        c2.metric("🛒 Compras USD", f"USD {total_usd:,.2f}")
+        c2.metric("Compras USD", f"USD {total_usd:,.2f}")
 
-        c3.metric("💵 Pagado ARS", fmt_money(cobrado))
+        c3.metric("Pagado ARS", fmt_money(cobrado))
 
-        c4.metric("💵 Pagado USD", f"USD {pagado_usd:,.2f}")
+        c4.metric("Pagado USD", f"USD {pagado_usd:,.2f}")
 
-        c5.metric("📌 A Pagar ARS", fmt_money(pendiente))
+        c5.metric("A Pagar ARS", fmt_money(pendiente))
 
-        c6.metric("📌 A Pagar USD", f"USD {pendiente_usd:,.2f}")
+        c6.metric("A Pagar USD", f"USD {pendiente_usd:,.2f}")
 
     else:
 
         c1, c2, c3, c4 = st.columns(4)
 
-        c1.metric("💰 Facturado", fmt_money(total))
+        c1.metric("Facturado", fmt_money(total))
 
-        c2.metric("✅ Cobrado", fmt_money(cobrado))
+        c2.metric("Cobrado", fmt_money(cobrado))
 
-        c3.metric("⏳ Pendiente", fmt_money(pendiente))
+        c3.metric("Pendiente", fmt_money(pendiente))
 
-        c4.metric("👥 Registros", registros)
+        c4.metric("Registros", registros)
 def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
     if not {"importe", "pagado", "persona_entidad"}.issubset(filtered.columns):
         return
     st.divider()
-    st.markdown("## 📊 Dashboard Financiero Proveedores VM")
+    st.markdown("## Dashboard Financiero Proveedores VM")
     graf = filtered.copy()
     graf["Deuda"] = (
         pd.to_numeric(graf["importe"], errors="coerce").fillna(0)
@@ -4839,7 +4915,7 @@ def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
             y="Proveedor",
             orientation="h",
             text="Deuda",
-            title="💰 Ranking de deuda por proveedor",
+            title="Ranking de deuda por proveedor",
         )
         fig.update_layout(height=500, yaxis=dict(categoryorder="total ascending"))
         st.plotly_chart(fig, use_container_width=True)
@@ -4863,7 +4939,7 @@ def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
                 x="vencimiento",
                 y="saldo",
                 text="saldo",
-                title="📅 Calendario de vencimientos",
+                title="Calendario de vencimientos",
             )
             fig.update_layout(height=400)
             st.plotly_chart(fig, use_container_width=True)
@@ -4873,11 +4949,11 @@ def render_dashboard_proveedores_vm(filtered: pd.DataFrame) -> None:
         "Estado": ["Pagado", "Pendiente"],
         "Monto": [pagado_total, pendiente_total],
     })
-    fig = px.pie(pie_df, names="Estado", values="Monto", hole=0.55, title="💳 Pagado vs Pendiente")
+    fig = px.pie(pie_df, names="Estado", values="Monto", hole=0.55, title="Pagado vs Pendiente")
     fig.update_layout(height=450)
     st.plotly_chart(fig, use_container_width=True)
     st.divider()
-    st.markdown("### 🚨 Facturas más importantes pendientes")
+    st.markdown("### Facturas más importantes pendientes")
     top = filtered.copy()
     top["saldo"] = (
         pd.to_numeric(top["importe"], errors="coerce").fillna(0)
@@ -5708,7 +5784,7 @@ def render_agenda_quirofano_pro(
         f"""
         <div class="agenda-hero">
             <div class="agenda-hero-title">
-                🏥 Agenda Quirúrgica
+                Agenda Quirúrgica
             </div>
             <div class="agenda-hero-subtitle">
                 Programación, autorizaciones, consultas y seguimiento
@@ -5726,7 +5802,7 @@ def render_agenda_quirofano_pro(
 
     with st.container(border=True):
 
-        st.markdown("### 🔎 Filtros de agenda")
+        st.markdown("### Filtros de agenda")
 
         fila_filtros_1 = st.columns([1.7, 1.3, 1.3, 1.3])
 
@@ -6124,7 +6200,7 @@ def render_agenda_quirofano_pro(
 
     metricas[0].metric(
 
-        "💬 Consultas",
+        "Consultas",
 
         total_consultas,
 
@@ -6132,7 +6208,7 @@ def render_agenda_quirofano_pro(
 
     metricas[1].metric(
 
-        "⏳ Pendientes autorización",
+        "Pendientes autorización",
 
         total_pendientes,
 
@@ -6140,7 +6216,7 @@ def render_agenda_quirofano_pro(
 
     metricas[2].metric(
 
-        "📅 Programados",
+        "Programados",
 
         total_programados,
 
@@ -6148,7 +6224,7 @@ def render_agenda_quirofano_pro(
 
     metricas[3].metric(
 
-        "✅ Realizados",
+        "Realizados",
 
         total_realizados,
 
@@ -6156,7 +6232,7 @@ def render_agenda_quirofano_pro(
 
     metricas[4].metric(
 
-        "🏥 Cirugías de hoy",
+        "Cirugías de hoy",
 
         total_hoy,
 
@@ -6190,7 +6266,7 @@ def render_agenda_quirofano_pro(
     if agenda_section == "Flujo de pacientes":
         st.markdown("---")
 
-        st.subheader("📋 Gestión Visual de Pacientes")
+        st.subheader("Gestión Visual de Pacientes")
 
         # Si no existe la columna
 
@@ -6311,7 +6387,7 @@ def render_agenda_quirofano_pro(
     if agenda_section == "Agenda del día":
         st.markdown("---")
 
-        st.subheader("📅 Agenda del Día")
+        st.subheader("Agenda del Día")
 
         hoy = pd.Timestamp.today().date()
 
@@ -6358,7 +6434,7 @@ def render_agenda_quirofano_pro(
     if agenda_section == "Indicadores":
         st.markdown("---")
 
-        st.subheader("📊 Indicadores")
+        st.subheader("Indicadores")
 
         c1,c2,c3,c4,c5,c6 = st.columns(6)
 
@@ -6419,7 +6495,7 @@ def render_agenda_quirofano_pro(
     if agenda_section == "Próximas cirugías":
         st.markdown("---")
 
-        st.subheader("⏰ Próximas Cirugías")
+        st.subheader("Próximas Cirugías")
 
         if "fecha" in df.columns:
 
@@ -6450,7 +6526,7 @@ def render_agenda_quirofano_pro(
     if agenda_section == "Ocupación":
         st.markdown("---")
 
-        st.subheader("📆 Ocupación del Quirófano")
+        st.subheader("Ocupación del Quirófano")
 
         if "fecha" in df.columns:
 
@@ -6479,7 +6555,7 @@ def render_agenda_quirofano_pro(
     if agenda_section == "Alertas":
         st.markdown("---")
 
-        st.subheader("🚨 Alertas")
+        st.subheader("Alertas")
 
         if "estado" in df.columns:
 
@@ -7002,7 +7078,7 @@ def render_agenda_quirofano_ultra_pro(
     k6.metric("Realizados mes", int(len(done_month)))
 
     if conflict_rows:
-        st.error(f"⚠️ Hay {len(conflict_rows)} pacientes involucrados en superposiciones de quirófano. Revisalos antes de confirmar la agenda.")
+        st.error(f"Hay {len(conflict_rows)} pacientes involucrados en superposiciones de quirófano. Revisalos antes de confirmar la agenda.")
     elif not alerts_df.empty and (alerts_df["Nivel"] == "Alta").any():
         st.warning(f"Hay {(alerts_df['Nivel'] == 'Alta').sum()} alertas de prioridad alta pendientes de revisión.")
 
@@ -7080,10 +7156,10 @@ def render_agenda_quirofano_ultra_pro(
                         _save_updates(pos, {"estado": new_state}, "Estado actualizado.")
                 a, b = st.columns(2)
                 if state not in {"En quirófano", "Realizado", "Suspendido", "Cancelado"}:
-                    if a.button("🔴 Ingresó a quirófano", key=f"{key_prefix}_or_{pos}", use_container_width=True):
+                    if a.button("Ingresó a quirófano", key=f"{key_prefix}_or_{pos}", use_container_width=True):
                         _save_updates(pos, {"estado": "En quirófano"}, "Paciente marcado en quirófano.")
                 if state == "En quirófano":
-                    if b.button("✅ Finalizar", key=f"{key_prefix}_done_{pos}", use_container_width=True):
+                    if b.button("Finalizar", key=f"{key_prefix}_done_{pos}", use_container_width=True):
                         _save_updates(pos, {"estado": "Realizado"}, "Procedimiento finalizado.")
                 if row["telefono"]:
                     st.caption(f"📞 {row['telefono']}")
@@ -7134,7 +7210,7 @@ def render_agenda_quirofano_ultra_pro(
                 for _, row in room_df.iterrows():
                     _render_patient_card(row, "op", detailed=True)
 
-        with st.expander("📌 Resumen compacto para reunión / pase", expanded=False):
+        with st.expander("Resumen compacto para reunión / pase", expanded=False):
             if day_df.empty:
                 st.caption("Sin datos para mostrar.")
             else:
@@ -7415,7 +7491,7 @@ def render_agenda_quirofano_ultra_pro(
                 height=min(650, 95 + 35 * max(len(editor), 5)),
             )
             ec1, ec2 = st.columns([1, 3])
-            if ec1.button("💾 Guardar cambios", key="qx_save_editor", use_container_width=True, type="primary"):
+            if ec1.button("Guardar cambios", key="qx_save_editor", use_container_width=True, type="primary"):
                 map_display = {
                     "Paciente": "paciente", "Fecha": "fecha", "Inicio": "hora_inicio", "Fin": "hora_fin",
                     "Quirófano": "sala", "Procedimiento": "procedimiento", "Médico": "medico",
@@ -7698,7 +7774,7 @@ def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
     import re
     import unicodedata
 
-    st.markdown("## 🩺 Centro de Control de Honorarios Médicos")
+    st.markdown("## Centro de Control de Honorarios Médicos")
     st.caption(
         "Facturación asociada, honorarios generados, pagos, saldos pendientes "
         "y productividad por médico."
@@ -7925,16 +8001,16 @@ def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
     pendientes_30 = int(data["_pendiente_30"].sum())
 
     fila_1 = st.columns(4)
-    fila_1[0].metric("💵 Facturación asociada", fmt_ars(facturacion_total))
-    fila_1[1].metric("🩺 Honorarios generados", fmt_ars(honorarios_total))
-    fila_1[2].metric("✅ Honorarios pagados", fmt_ars(pagado_total))
-    fila_1[3].metric("⏳ Saldo pendiente", fmt_ars(pendiente_total))
+    fila_1[0].metric("Facturación asociada", fmt_ars(facturacion_total))
+    fila_1[1].metric("Honorarios generados", fmt_ars(honorarios_total))
+    fila_1[2].metric("Honorarios pagados", fmt_ars(pagado_total))
+    fila_1[3].metric("Saldo pendiente", fmt_ars(pendiente_total))
 
     fila_2 = st.columns(4)
-    fila_2[0].metric("🎯 Porcentaje pagado", f"{porcentaje_pagado:,.1f}%".replace(".", ","))
-    fila_2[1].metric("👨‍⚕️ Médicos", medicos)
-    fila_2[2].metric("👥 Pacientes", pacientes)
-    fila_2[3].metric("📋 Prestaciones", registros)
+    fila_2[0].metric("Porcentaje pagado", f"{porcentaje_pagado:,.1f}%".replace(".", ","))
+    fila_2[1].metric("Médicos", medicos)
+    fila_2[2].metric("Pacientes", pacientes)
+    fila_2[3].metric("Prestaciones", registros)
 
     st.caption(
         f"Promedio por prestación: **{fmt_ars(promedio_honorario)}** · "
@@ -7942,10 +8018,10 @@ def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
     )
 
     if pendiente_total <= 0 and honorarios_total > 0:
-        st.success("✅ No existen honorarios pendientes dentro del período filtrado.")
+        st.success("No existen honorarios pendientes dentro del período filtrado.")
     elif pendientes_30 > 0:
         st.warning(
-            f"⚠️ Hay {pendientes_30} prestaciones con saldo pendiente desde hace más de 30 días, "
+            f"Hay {pendientes_30} prestaciones con saldo pendiente desde hace más de 30 días, "
             f"por un total de {fmt_ars(data.loc[data['_pendiente_30'], '_saldo'].sum())}."
         )
     elif pendiente_total > 0:
@@ -7953,7 +8029,7 @@ def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
 
     if sin_honorario > 0:
         st.warning(
-            f"🧾 Hay {sin_honorario} registros sin monto de honorario cargado. "
+            f"Hay {sin_honorario} registros sin monto de honorario cargado. "
             "No se incluyen como deuda hasta completar el importe."
         )
 
@@ -8258,7 +8334,7 @@ def render_honorarios_medicos_pro(df: pd.DataFrame) -> None:
         )
         csv = exportar.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
         st.download_button(
-            "📥 Descargar análisis de honorarios",
+            "Descargar análisis de honorarios",
             data=csv,
             file_name="honorarios_medicos_analizados.csv",
             mime="text/csv",
@@ -8664,6 +8740,9 @@ def render_banco_pro_panel(
     diferencias_saldo = int(data_saldo["_diferencia_saldo"].abs().gt(1.0).fillna(False).sum())
 
     alertas = sin_fecha + sin_concepto + sin_movimiento + mixtos + futuros + duplicados + diferencias_saldo
+    # Calidad de datos: proporción de movimientos sin incidencias (antes no se
+    # calculaba y la pantalla fallaba al mostrarla).
+    calidad = max(0.0, 100.0 * (1 - alertas / len(data))) if len(data) else 100.0
     # Estado factual: no usa ponderaciones ni umbrales arbitrarios.
     if saldo_actual < 0:
         estado, nivel_estado = "Saldo negativo", "error"
@@ -8677,35 +8756,44 @@ def render_banco_pro_panel(
     )
 
     k1, k2, k3 = st.columns(3)
-    k1.metric("🏦 Saldo bancario actual", moneda(saldo_actual), help="Último saldo informado hasta hoy; si no existe, se reconstruye con todo el historial.")
-    k2.metric("⏮️ Saldo inicial", moneda(saldo_inicial), help="Saldo anterior al primer día incluido en los filtros.")
-    k3.metric("⏭️ Saldo al cierre", moneda(saldo_cierre), delta=moneda(saldo_cierre - saldo_inicial))
+    k1.metric("Saldo bancario actual", moneda(saldo_actual), help="Último saldo informado hasta hoy; si no existe, se reconstruye con todo el historial.")
+    k2.metric("Saldo inicial", moneda(saldo_inicial), help="Saldo anterior al primer día incluido en los filtros.")
+    k3.metric("Saldo al cierre", moneda(saldo_cierre), delta=moneda(saldo_cierre - saldo_inicial))
 
     # Posición bimonetaria: USD se informa separado y solo se convierte para una lectura aproximada.
     ingresos_usd = float(data.get("_ingreso_usd", pd.Series(dtype=float)).sum())
     egresos_usd = float(data.get("_egreso_usd", pd.Series(dtype=float)).sum())
     flujo_usd = ingresos_usd - egresos_usd
-    saldo_usd_actual = float(historial_hasta_hoy.get("_neto_usd", pd.Series(dtype=float)).sum()) if not historial_hasta_hoy.empty else 0.0
+    saldo_usd_actual = float(historial_hoy.get("_neto_usd", pd.Series(dtype=float)).sum()) if not historial_hoy.empty else 0.0
+    # Cotización manual (antes esta variable no existía en el panel de bancos y la pantalla fallaba).
+    cot_key = f"banco_{clave}_usd_ars_quote"
+    if empresa == "VMR":
+        with st.expander("Dólares · Cotización para valuación aproximada", icon=":material/currency_exchange:", expanded=False):
+            st.session_state[cot_key] = float(st.number_input(
+                "Cotización USD → ARS", min_value=0.0, value=float(st.session_state.get(cot_key, 0.0) or 0.0),
+                step=10.0, format="%.2f", key=f"{cot_key}_input",
+                help="Valor manual de 1 USD en pesos. Solo se usa para la valuación aproximada; no modifica movimientos.",
+            ) or 0.0)
     cot_usd = float(st.session_state.get(cot_key, 0.0) or 0.0)
     equivalente_usd_ars = saldo_usd_actual * cot_usd
     patrimonio_aprox_ars = saldo_actual + equivalente_usd_ars
 
     if empresa == "VMR":
         u1, u2, u3, u4 = st.columns(4)
-        u1.metric("💵 Saldo USD", f"US$ {saldo_usd_actual:,.2f}")
+        u1.metric("Saldo USD", f"US$ {saldo_usd_actual:,.2f}")
         u2.metric("USD del período", f"US$ {flujo_usd:,.2f}", help=f"Ingresos US$ {ingresos_usd:,.2f} · Egresos US$ {egresos_usd:,.2f}")
         u3.metric("Equiv. USD en ARS", moneda(equivalente_usd_ars), help=f"Calculado a $ {cot_usd:,.2f} por USD" if cot_usd > 0 else "Ingresá una cotización arriba")
         u4.metric("Posición total aprox.", moneda(patrimonio_aprox_ars), help="Saldo ARS + saldo USD convertido con la cotización manual. Es una valuación, no un saldo contable.")
 
     k4, k5, k6 = st.columns(3)
-    k4.metric("📥 Créditos", moneda(ingresos), delta=f"{var_ingresos:+.1f}% vs. período anterior" if var_ingresos is not None else None)
-    k5.metric("📤 Débitos", moneda(egresos), delta=f"{var_egresos:+.1f}% vs. período anterior" if var_egresos is not None else None, delta_color="inverse")
-    k6.metric("💹 Flujo neto", moneda(flujo), delta=moneda(var_flujo) + " vs. período anterior" if var_flujo is not None else None)
+    k4.metric("Créditos", moneda(ingresos), delta=f"{var_ingresos:+.1f}% vs. período anterior" if var_ingresos is not None else None)
+    k5.metric("Débitos", moneda(egresos), delta=f"{var_egresos:+.1f}% vs. período anterior" if var_egresos is not None else None, delta_color="inverse")
+    k6.metric("Flujo neto", moneda(flujo), delta=moneda(var_flujo) + " vs. período anterior" if var_flujo is not None else None)
 
     k7, k8, k9 = st.columns(3)
-    k7.metric("✅ Conciliación", porcentaje(conciliacion_pct), f"{conciliados} conciliados")
-    k8.metric("⏳ Pendiente de conciliar", moneda(importe_pendiente), f"{pendientes} movimientos")
-    k9.metric("🧾 Movimientos", f"{len(data):,}".replace(",", "."), f"{cantidad_ingresos} créditos · {cantidad_egresos} débitos")
+    k7.metric("Conciliación", porcentaje(conciliacion_pct), f"{conciliados} conciliados")
+    k8.metric("Pendiente de conciliar", moneda(importe_pendiente), f"{pendientes} movimientos")
+    k9.metric("Movimientos", f"{len(data):,}".replace(",", "."), f"{cantidad_ingresos} créditos · {cantidad_egresos} débitos")
 
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Estado bancario", estado, f"{alertas} incidencias de datos")
@@ -8973,7 +9061,7 @@ def render_banco_pro_panel(
         )
         exportable = tabla.copy()
         csv = exportable.to_csv(index=False, sep=";", decimal=",", encoding="utf-8-sig").encode("utf-8-sig")
-        st.download_button("📥 Descargar movimientos filtrados", data=csv, file_name=f"{clave}_movimientos.csv", mime="text/csv", key=f"{clave}_descarga_movimientos")
+        st.download_button("Descargar movimientos filtrados", data=csv, file_name=f"{clave}_movimientos.csv", mime="text/csv", key=f"{clave}_descarga_movimientos")
 
     if banco_section == "Auditoría":
         st.markdown("### Auditoría automática")
@@ -9137,7 +9225,7 @@ def render_caja_pro_panel(
     cot_key = f"{clave_widget}_usd_ars_quote"
     if cot_key not in st.session_state:
         st.session_state[cot_key] = 0.0
-    with st.expander("💵 Dólares · Cotización y valuación aproximada", expanded=(empresa == "VMR")):
+    with st.expander("Dólares · Cotización y valuación aproximada", expanded=(empresa == "VMR")):
         q1, q2 = st.columns([1, 2])
         with q1:
             cotizacion_manual = st.number_input(
@@ -9502,7 +9590,7 @@ def render_caja_pro_panel(
             t = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             return f"{'-' if n < 0 else ''}US$ {t}"
 
-        st.markdown("## 💵 CAJA USD · VMR")
+        st.markdown("## CAJA USD · VMR")
         st.caption("Saldo real en dólares. Los movimientos USD quedan excluidos de Caja ARS.")
         uu1, uu2, uu3, uu4 = st.columns(4)
         uu1.metric("SALDO USD", _fmt_usd(saldo_usd_actual))
@@ -9517,17 +9605,17 @@ def render_caja_pro_panel(
 
     k1, k2, k3 = st.columns(3)
     k1.metric(
-        "💼 Saldo actual real",
+        "Saldo actual real",
         moneda(saldo_actual),
         help="Último saldo histórico disponible. Si la hoja no posee saldo acumulado, se calcula como ingresos históricos menos egresos históricos.",
     )
     k2.metric(
-        "⏮️ Saldo inicial del período",
+        "Saldo inicial del período",
         moneda(saldo_inicial),
         help="Saldo existente antes del primer día incluido en el filtro.",
     )
     k3.metric(
-        "⏭️ Saldo al cierre del período",
+        "Saldo al cierre del período",
         moneda(saldo_cierre),
         delta=moneda(saldo_cierre - saldo_inicial),
         help="Saldo inicial más el flujo contable completo del período.",
@@ -9535,18 +9623,18 @@ def render_caja_pro_panel(
 
     k4, k5, k6 = st.columns(3)
     k4.metric(
-        "📥 Ingresos",
+        "Ingresos",
         moneda(ingresos),
         delta=f"{delta_ingresos:+.1f}% vs. período anterior" if delta_ingresos is not None else None,
     )
     k5.metric(
-        "📤 Egresos",
+        "Egresos",
         moneda(egresos),
         delta=f"{delta_egresos:+.1f}% vs. período anterior" if delta_egresos is not None else None,
         delta_color="inverse",
     )
     k6.metric(
-        "⚖️ Flujo neto",
+        "Flujo neto",
         moneda(flujo_visible),
         delta=moneda(delta_flujo) if delta_flujo is not None else None,
     )
@@ -9726,7 +9814,7 @@ def render_caja_pro_panel(
             "Incidencias de datos": problemas,
         }])
         st.download_button(
-            "📥 Descargar snapshot ejecutivo VMR",
+            "Descargar snapshot ejecutivo VMR",
             data=resumen_dir.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
             file_name=f"caja_vmr_snapshot_{hoy.strftime('%Y%m%d')}.csv",
             mime="text/csv",
@@ -9988,9 +10076,9 @@ def render_caja_pro_panel(
         a4.metric("Estado", "Conciliada" if abs(diferencia) <= tolerancia else "Con diferencia")
 
         if abs(diferencia) <= tolerancia:
-            st.success(f"✅ Caja conciliada dentro de la tolerancia de {moneda(tolerancia)}.")
+            st.success(f"Caja conciliada dentro de la tolerancia de {moneda(tolerancia)}.")
         else:
-            st.error(f"⚠️ Existe una diferencia de {moneda(diferencia)}. Revisá movimientos omitidos, duplicados, retiros y comprobantes pendientes.")
+            st.error(f"Existe una diferencia de {moneda(diferencia)}. Revisá movimientos omitidos, duplicados, retiros y comprobantes pendientes.")
 
         observacion_cierre = st.text_area(
             "Observación del cierre",
@@ -10012,7 +10100,7 @@ def render_caja_pro_panel(
             "observacion": observacion_cierre,
         }])
         st.download_button(
-            "📥 Descargar acta de conciliación",
+            "Descargar acta de conciliación",
             data=reporte_cierre.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
             file_name=f"conciliacion_{clave_widget}_{hoy.strftime('%Y%m%d')}.csv",
             mime="text/csv",
@@ -10080,7 +10168,7 @@ def render_caja_pro_panel(
         )
         st.caption(f"Movimientos mostrados: {len(tabla_detalle):,} · Neto visible: {moneda(float(detalle['_neto'].sum()))}".replace(",", "."))
         st.download_button(
-            "📥 Descargar movimientos filtrados",
+            "Descargar movimientos filtrados",
             data=tabla_detalle.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
             file_name=f"{clave_widget}_movimientos_{hoy.strftime('%Y%m%d')}.csv",
             mime="text/csv",
@@ -10098,7 +10186,7 @@ def render_caja_pro_panel(
         q6.metric("Fechas futuras", futuras)
 
         if problemas == 0:
-            st.success("✅ No se detectaron inconsistencias evidentes en la vista analizada.")
+            st.success("No se detectaron inconsistencias evidentes en la vista analizada.")
         else:
             if sin_fecha:
                 st.warning(f"Hay {sin_fecha} movimientos sin fecha válida.")
@@ -10881,16 +10969,16 @@ def render_facturacion_industrial(
     dso = float(dias_cobro.mean()) if not dias_cobro.empty else 0.0
 
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("💰 Facturado activo", fmt_money(facturado))
-    k2.metric("✅ Cobrado", fmt_money(cobrado), f"{tasa_cobro:.1f}% del facturado")
-    k3.metric("⏳ Pendiente", fmt_money(pendiente))
-    k4.metric("🚨 Vencido", fmt_money(vencido), f"{mora:.1f}% de la cartera")
+    k1.metric("Facturado activo", fmt_money(facturado))
+    k2.metric("Cobrado", fmt_money(cobrado), f"{tasa_cobro:.1f}% del facturado")
+    k3.metric("Pendiente", fmt_money(pendiente))
+    k4.metric("Vencido", fmt_money(vencido), f"{mora:.1f}% de la cartera")
 
     k5, k6, k7, k8 = st.columns(4)
-    k5.metric("📄 Registros", f"{registros:,}".replace(",", "."))
-    k6.metric("👥 Pacientes", f"{pacientes:,}".replace(",", "."))
-    k7.metric("🎫 Ticket promedio", fmt_money(ticket))
-    k8.metric("⏱️ Días promedio de cobro", f"{dso:.1f}" if dso else "Sin dato")
+    k5.metric("Registros", f"{registros:,}".replace(",", "."))
+    k6.metric("Pacientes", f"{pacientes:,}".replace(",", "."))
+    k7.metric("Ticket promedio", fmt_money(ticket))
+    k8.metric("Días promedio de cobro", f"{dso:.1f}" if dso else "Sin dato")
 
     if anulado > 0:
         st.caption(f"Importe anulado dentro del filtro: {fmt_money(anulado)}")
@@ -11199,7 +11287,7 @@ def render_facturacion_industrial(
         # Facturación. Esto evita que las métricas de calidad mezclen el
         # historial completo con el período visible y muestren, por ejemplo,
         # más incidencias que registros en pantalla.
-        st.markdown("### 🧬 Centro PRO de Calidad de Datos")
+        st.markdown("### Centro de Calidad de Datos")
         st.caption(
             "Auditoría de integridad, coherencia, duplicados y trazabilidad. "
             "No modifica ni elimina ninguna fila del Google Sheet."
@@ -11409,9 +11497,9 @@ def render_facturacion_industrial(
             d4.metric("Con incidencias", f"{registros_con_problemas:,}".replace(",", "."), f"{registros_con_problemas / n_dq * 100:.1f}%")
 
             d5, d6, d7, d8 = st.columns(4)
-            d5.metric("🔴 Críticos", criticos)
-            d6.metric("🟠 Importantes", importantes)
-            d7.metric("🟡 Para revisar", revisar)
+            d5.metric("Críticos", criticos)
+            d6.metric("Importantes", importantes)
+            d7.metric("Para revisar", revisar)
             d8.metric("Posibles duplicados", int(m_duplicado.sum()))
 
             st.progress(float(calidad_global) / 100.0)
@@ -11430,7 +11518,7 @@ def render_facturacion_industrial(
                     "No se detectan inconsistencias críticas, pero quedan datos importantes o registros para revisar."
                 )
             else:
-                st.success("✅ La vista auditada no presenta incidencias detectables con estas reglas.")
+                st.success("La vista auditada no presenta incidencias detectables con estas reglas.")
 
             # ---------- resumen por control ----------
             resumen_reglas = []
@@ -11553,7 +11641,7 @@ def render_facturacion_industrial(
 
                 csv_issues = issues_df.drop(columns=["_prioridad"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
                 st.download_button(
-                    "📥 Descargar plan de corrección CSV",
+                    "Descargar plan de corrección CSV",
                     data=csv_issues,
                     file_name=f"{table}_plan_correccion_calidad.csv",
                     mime="text/csv",
@@ -11564,7 +11652,7 @@ def render_facturacion_industrial(
                 st.success("No hay registros pendientes de corrección según los controles activos.")
 
             # ---------- duplicados ----------
-            with st.expander("🧩 Análisis de posibles duplicados", expanded=bool(m_duplicado.any())):
+            with st.expander("Análisis de posibles duplicados", expanded=bool(m_duplicado.any())):
                 if not m_duplicado.any():
                     st.success("No se detectaron duplicados con la combinación fecha + paciente + obra social + procedimiento + importe.")
                 else:
@@ -11715,7 +11803,7 @@ def render_facturacion_industrial(
 
         csv = tabla_detalle.to_csv(index=False).encode("utf-8-sig")
         st.download_button(
-            "📥 Descargar vista filtrada en CSV",
+            "Descargar vista filtrada en CSV",
             data=csv,
             file_name=f"{table}_vista_filtrada.csv",
             mime="text/csv",
@@ -11726,7 +11814,7 @@ def render_facturacion_industrial(
     # 5. ASISTENTE IA DEL MÓDULO
     # ---------------------------------------------------------
     st.divider()
-    with st.expander("🤖 Asistente IA de facturación", expanded=False):
+    with st.expander("Asistente IA de facturación", expanded=False):
         pregunta = st.text_input(
             "Consultá sobre los registros filtrados",
             placeholder="Ej.: ¿Qué obra social concentra más deuda vencida?",
@@ -12969,7 +13057,7 @@ def render_convenios_pro() -> None:
         st.write("")
         st.write("")
         guardar_sheet = st.button(
-            "💾 GUARDAR EN SHEET",
+            "GUARDAR EN SHEET",
             type="primary",
             use_container_width=True,
             key="convenios_guardar_sheet",
@@ -12978,7 +13066,7 @@ def render_convenios_pro() -> None:
     with col_actualizar:
         st.write("")
         st.write("")
-        if st.button("🔄 Actualizar", use_container_width=True, key="convenios_actualizar"):
+        if st.button("Actualizar", use_container_width=True, key="convenios_actualizar"):
             st.cache_data.clear()
             st.rerun()
 
@@ -13116,7 +13204,7 @@ def render_convenios_pro() -> None:
                         f"{fila['Prácticas']} prácticas · cobertura {fila['Cobertura %']:.1f}%"
                     )
 
-        with st.expander("📶 Diagnóstico de fuentes", expanded=False):
+        with st.expander("Diagnóstico de fuentes", expanded=False):
             st.dataframe(estados_fuente, use_container_width=True, hide_index=True)
 
     if convenios_section == "Buscador universal":
@@ -13185,7 +13273,7 @@ def render_convenios_pro() -> None:
 
             csv = vista.to_csv(index=False).encode("utf-8-sig")
             st.download_button(
-                "📥 Descargar resultados",
+                "Descargar resultados",
                 data=csv,
                 file_name="convenios_busqueda.csv",
                 mime="text/csv",
@@ -13518,7 +13606,7 @@ def render_convenios_pro() -> None:
         e1, e2 = st.columns(2)
         with e1:
             st.download_button(
-                "📗 Descargar Excel corporativo",
+                "Descargar Excel corporativo",
                 data=excel_bytes,
                 file_name=f"convenios_vitae_{date.today().isoformat()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -13528,7 +13616,7 @@ def render_convenios_pro() -> None:
         with e2:
             csv_bytes = _convenios_formatear_tabla(practicas).to_csv(index=False).encode("utf-8-sig")
             st.download_button(
-                "📄 Descargar nomenclador CSV",
+                "Descargar nomenclador CSV",
                 data=csv_bytes,
                 file_name=f"convenios_vitae_{date.today().isoformat()}.csv",
                 mime="text/csv",
@@ -14431,7 +14519,7 @@ def render_deuda_total_pro(
     with hero_right:
         st.write("")
         st.write("")
-        if st.button("🔄 Actualizar", key="dt_refresh", use_container_width=True):
+        if st.button("Actualizar", key="dt_refresh", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
         st.caption(f"Corte del sistema: {today.strftime('%d/%m/%Y')}")
@@ -14739,7 +14827,7 @@ def render_deuda_total_pro(
                 installment_now = st.number_input("Cuota actual", min_value=0, step=1, key="dt_new_installment")
                 installments = st.number_input("Cuotas totales", min_value=0, step=1, key="dt_new_installments")
             notes = st.text_area("Observaciones", key="dt_new_notes")
-            submit_new = st.form_submit_button("💾 Guardar obligación", type="primary", use_container_width=True)
+            submit_new = st.form_submit_button("Guardar obligación", type="primary", use_container_width=True)
 
         if submit_new:
             if not creditor.strip() and not concept.strip():
@@ -14832,7 +14920,7 @@ def render_deuda_total_pro(
                 payment_notes = st.text_input("Referencia / comprobante", key="dt_quick_pay_notes")
                 confirm_payment = st.checkbox("Confirmo que el pago fue realizado", key="dt_quick_payment_confirm")
                 if st.button(
-                    "✅ Aplicar pago",
+                    "Aplicar pago",
                     type="primary",
                     disabled=not confirm_payment,
                     key="dt_quick_payment_button",
@@ -14902,7 +14990,7 @@ def render_deuda_total_pro(
             )
             confirm_cut = st.checkbox("Confirmo la creación del nuevo corte", key="dt_confirm_cut")
             if st.button(
-                "📆 Generar corte mensual",
+                "Generar corte mensual",
                 type="primary",
                 disabled=not confirm_cut,
                 key="dt_generate_cut",
@@ -15033,7 +15121,7 @@ def render_deuda_total_pro(
             )
             confirm_save = st.checkbox("Confirmo guardar estos cambios", key="dt_confirm_editor_save")
             if st.button(
-                "💾 Guardar cambios en Google Sheets",
+                "Guardar cambios en Google Sheets",
                 type="primary",
                 disabled=not confirm_save,
                 key="dt_save_editor",
@@ -15120,7 +15208,7 @@ def render_deuda_total_pro(
                 )
                 confirm_import = st.checkbox("Confirmo que revisé la vista previa", key="dt_confirm_import")
                 if st.button(
-                    "💾 Guardar migración en Google Sheets",
+                    "Guardar migración en Google Sheets",
                     type="primary",
                     disabled=not confirm_import,
                     key="dt_save_import",
@@ -15275,7 +15363,7 @@ def render_deuda_total_pro(
             ["Último corte", "Todo el histórico"],
             key="dt_ai_scope",
         )
-        if st.button("🧠 Analizar deuda", type="primary", key="dt_ai_button", use_container_width=True):
+        if st.button("Analizar deuda", type="primary", key="dt_ai_button", use_container_width=True):
             if not question.strip():
                 st.warning("Escribí una pregunta.")
             elif data.empty:
@@ -15316,7 +15404,7 @@ def render_deuda_total_pro(
             e1, e2, e3 = st.columns(3)
             with e1:
                 st.download_button(
-                    "⬇️ CSV completo",
+                    "CSV completo",
                     data=export_data.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"deuda_total_historico_{today.strftime('%Y%m%d')}.csv",
                     mime="text/csv",
@@ -15325,7 +15413,7 @@ def render_deuda_total_pro(
                 )
             with e2:
                 st.download_button(
-                    "⬇️ CSV último corte",
+                    "CSV último corte",
                     data=latest_export.to_csv(index=False).encode("utf-8-sig"),
                     file_name=f"deuda_total_{latest_period.strftime('%Y_%m')}.csv",
                     mime="text/csv",
@@ -15342,7 +15430,7 @@ def render_deuda_total_pro(
                     ).agg(Saldo_ARS=("_saldo_ars", "sum"), Saldo_USD=("_saldo_usd", "sum"))
                     summary.to_excel(writer, sheet_name="Resumen", index=False)
                 st.download_button(
-                    "⬇️ Excel ejecutivo",
+                    "Excel ejecutivo",
                     data=buffer.getvalue(),
                     file_name=f"deuda_total_ejecutivo_{today.strftime('%Y%m%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -18253,7 +18341,7 @@ def render_planes_pagos_prestamos_pro(
     with hero_right:
         st.write("")
         st.write("")
-        if st.button("🔄 Actualizar", key=f"pp_refresh_{table}", use_container_width=True):
+        if st.button("Actualizar", key=f"pp_refresh_{table}", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
         st.caption(f"Actualizado: {today.strftime('%d/%m/%Y')}")
@@ -18271,7 +18359,7 @@ def render_planes_pagos_prestamos_pro(
             )
         with repair_right:
             if st.button(
-                "🛠️ Guardar reparación",
+                "Guardar reparación",
                 type="primary",
                 use_container_width=True,
                 key=f"pp_save_auto_repair_{table}",
@@ -18651,7 +18739,7 @@ def render_planes_pagos_prestamos_pro(
                     "Sección", ["Deudas asumidas mes a mes", "Adelanto de cuotas", "Préstamos"], key=f"pp_new_section_{table}"
                 )
             notes = st.text_area("Observaciones", key=f"pp_new_notes_{table}")
-            create_plan = st.form_submit_button("💾 Crear cronograma y guardar", type="primary", use_container_width=True)
+            create_plan = st.form_submit_button("Crear cronograma y guardar", type="primary", use_container_width=True)
 
         if create_plan:
             if not creditor.strip() or not identifier.strip():
@@ -18754,7 +18842,7 @@ def render_planes_pagos_prestamos_pro(
                 reference = st.text_input("Comprobante / referencia", key=f"pp_payment_reference_{table}")
             confirm = st.checkbox("Confirmo que el pago fue realizado", key=f"pp_payment_confirm_{table}")
             if st.button(
-                "✅ Aplicar pago",
+                "Aplicar pago",
                 type="primary",
                 disabled=not confirm,
                 use_container_width=True,
@@ -18910,7 +18998,7 @@ def render_planes_pagos_prestamos_pro(
                         )
 
                         if not validations.empty:
-                            with st.expander("🔎 Control contra totales declarados", expanded=False):
+                            with st.expander("Control contra totales declarados", expanded=False):
                                 st.dataframe(
                                     validations,
                                     use_container_width=True,
@@ -18932,7 +19020,7 @@ def render_planes_pagos_prestamos_pro(
                             key=f"pp_import_confirm_{table}",
                         )
                         if st.button(
-                            "💾 Guardar Excel en Google Sheets",
+                            "Guardar Excel en Google Sheets",
                             type="primary",
                             disabled=not confirm_import,
                             use_container_width=True,
@@ -19008,7 +19096,7 @@ def render_planes_pagos_prestamos_pro(
             )
             confirm_edit = st.checkbox("Confirmo guardar la edición", key=f"pp_edit_confirm_{table}")
             if st.button(
-                "💾 Guardar cambios",
+                "Guardar cambios",
                 type="primary",
                 disabled=not confirm_edit,
                 use_container_width=True,
@@ -19067,7 +19155,7 @@ def render_planes_pagos_prestamos_pro(
             height=110,
             key=f"pp_ai_question_{table}",
         )
-        if st.button("🧠 Analizar", type="primary", key=f"pp_ai_button_{table}"):
+        if st.button("Analizar", type="primary", key=f"pp_ai_button_{table}"):
             if not question.strip():
                 st.warning("Escribí una pregunta.")
             elif data.empty:
@@ -19102,7 +19190,7 @@ def render_planes_pagos_prestamos_pro(
             e1, e2 = st.columns(2)
             with e1:
                 st.download_button(
-                    "📗 Descargar Excel completo",
+                    "Descargar Excel completo",
                     data=excel_bytes,
                     file_name=f"planes_pagos_prestamos_{date.today().isoformat()}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -19111,7 +19199,7 @@ def render_planes_pagos_prestamos_pro(
                 )
             with e2:
                 st.download_button(
-                    "📄 Descargar CSV normalizado",
+                    "Descargar CSV normalizado",
                     data=csv_bytes,
                     file_name=f"planes_pagos_prestamos_{date.today().isoformat()}.csv",
                     mime="text/csv",
@@ -20047,7 +20135,7 @@ def render_gine_vitae_pro(
     with hero_right:
         st.write("")
         st.write("")
-        if st.button("🔄 Actualizar", key=f"gv_refresh_{table}", use_container_width=True):
+        if st.button("Actualizar", key=f"gv_refresh_{table}", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
         st.caption(f"Corte: {today.strftime('%d/%m/%Y')}")
@@ -20321,7 +20409,7 @@ def render_gine_vitae_pro(
                 },
             )
             confirm_ops = st.checkbox("Confirmo guardar la actualización operativa", key=f"gv_ops_confirm_{table}")
-            if st.button("💾 Guardar operación", type="primary", use_container_width=True, disabled=not confirm_ops, key=f"gv_ops_save_{table}"):
+            if st.button("Guardar operación", type="primary", use_container_width=True, disabled=not confirm_ops, key=f"gv_ops_save_{table}"):
                 try:
                     updated = patients.copy().set_index("id_registro")
                     edit_index = edited_operational.copy().set_index("id_registro")
@@ -20561,7 +20649,7 @@ def render_gine_vitae_pro(
                 },
             )
             confirm_edit = st.checkbox("Confirmo guardar el editor completo", key=f"gv_full_confirm_{table}")
-            if st.button("💾 Guardar tabla de pacientes", type="primary", use_container_width=True, disabled=not confirm_edit, key=f"gv_full_save_{table}"):
+            if st.button("Guardar tabla de pacientes", type="primary", use_container_width=True, disabled=not confirm_edit, key=f"gv_full_save_{table}"):
                 try:
                     destination = _gv_prepare_patients(edited)
                     new_summary = _gv_rebuild_summary(summary, cash, destination)
@@ -20602,7 +20690,7 @@ def render_gine_vitae_pro(
                 },
             )
             confirm_cash_edit = st.checkbox("Confirmo guardar el editor de caja", key=f"gv_cash_edit_confirm_{table}")
-            if st.button("💾 Guardar caja", type="primary", use_container_width=True, disabled=not confirm_cash_edit, key=f"gv_cash_edit_save_{table}"):
+            if st.button("Guardar caja", type="primary", use_container_width=True, disabled=not confirm_cash_edit, key=f"gv_cash_edit_save_{table}"):
                 try:
                     new_cash = _gv_prepare_cash(edited_cash)
                     new_summary = _gv_rebuild_summary(summary, new_cash, patients)
@@ -20729,7 +20817,7 @@ def render_gine_vitae_pro(
                             key=f"gv_import_confirm_{table}",
                         )
                         if st.button(
-                            "💾 Guardar planilla en Google Sheets",
+                            "Guardar planilla en Google Sheets",
                             type="primary",
                             use_container_width=True,
                             disabled=not confirm_import,
@@ -20818,7 +20906,7 @@ def render_gine_vitae_pro(
                 height=120,
                 key=f"gv_ai_question_{table}",
             )
-            if st.button("🧠 Analizar", type="primary", use_container_width=True, key=f"gv_ai_button_{table}"):
+            if st.button("Analizar", type="primary", use_container_width=True, key=f"gv_ai_button_{table}"):
                 if not question.strip():
                     st.warning("Escribí una pregunta.")
                 elif data.empty:
@@ -20843,7 +20931,7 @@ def render_gine_vitae_pro(
             st.markdown("### Exportación ejecutiva")
             excel_bytes = _gv_export_excel(patients, cash, summary, raw_long)
             st.download_button(
-                "📗 Descargar Excel completo",
+                "Descargar Excel completo",
                 data=excel_bytes,
                 file_name=f"gine_vitae_{date.today().isoformat()}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -20851,7 +20939,7 @@ def render_gine_vitae_pro(
                 key=f"gv_export_xlsx_{table}",
             )
             st.download_button(
-                "📄 Descargar pacientes CSV",
+                "Descargar pacientes CSV",
                 data=_gv_patients_for_sheet(patients).to_csv(index=False).encode("utf-8-sig"),
                 file_name=f"gine_vitae_pacientes_{date.today().isoformat()}.csv",
                 mime="text/csv",
@@ -20980,7 +21068,7 @@ def render_caja_pro_panel(df: pd.DataFrame, module_name: str, df_total: pd.DataF
     st.markdown("### Posición actual")
     c1,c2=st.columns(2)
     c1.metric("🇦🇷 CAJA ARS · SALDO",ars(a["saldo"]),help="Ingresos ARS menos egresos ARS del historial hasta hoy.")
-    c2.metric("💵 CAJA USD · SALDO",usd(u["saldo"]),help="Ingresos USD menos egresos USD del historial hasta hoy. No se mezcla con ARS.")
+    c2.metric("CAJA USD · SALDO",usd(u["saldo"]),help="Ingresos USD menos egresos USD del historial hasta hoy. No se mezcla con ARS.")
     r1,r2,r3,r4=st.columns(4)
     r1.metric("Ingresos ARS",ars(a["ingresos"])); r2.metric("Egresos ARS",ars(a["egresos"]))
     r3.metric("Ingresos USD",usd(u["ingresos"])); r4.metric("Egresos USD",usd(u["egresos"]))
@@ -21049,8 +21137,7 @@ def render_facturacion_pro(
     # Se resuelve antes de get_df("convenios") porque esa hoja maestra no es necesaria.
     if table == "convenios" or "convenio" in str(module_name).lower():
         render_header()
-        st.header(module_name)
-        st.caption(cfg.get("descripcion", ""))
+        encabezado_modulo(module_name, cfg)
         render_convenios_pro()
         return
 
@@ -21068,8 +21155,7 @@ def render_facturacion_pro(
         df_base = pd.DataFrame()
     if not embebido:
         render_header()
-        st.header(module_name)
-        st.caption(cfg.get("descripcion", ""))
+        encabezado_modulo(module_name, cfg)
 
     # DEUDAS IMPOSITIVAS VM / VMR: lector especializado de Google Sheets e
     # importador Excel con selección de hojas, cuadros laterales, celdas
@@ -21165,11 +21251,11 @@ def render_facturacion_pro(
     # funciones pero renderiza únicamente la sección activa.
     workspace_options = [
         "Panel PRO",
+        "Editar tabla",
         "Cargar",
         "Importar",
-        "Editar tabla",
-        "Columnas",
         "Exportar",
+        "Columnas",
     ]
     if workspace in workspace_options:
         active_workspace = workspace
@@ -21397,7 +21483,7 @@ def render_facturacion_pro(
         # No reutiliza el formulario genérico: Tipo + Moneda + Importe determinan
         # de forma inequívoca qué columna se persiste (ingreso o egreso).
         elif table == "caja_vmr":
-            st.markdown("### 💵 Caja VMR · Movimiento ARS / USD")
+            st.markdown("### Caja VMR · Movimiento ARS / USD")
             # Tipo y moneda DEBEN estar fuera del form. Dentro de st.form Streamlit no
             # rerunea al cambiar el segmented_control, por eso podía quedar visible
             # "Importe (ARS)" / "Guardar ingreso en ARS" aunque se eligiera Egreso + USD.
@@ -21656,7 +21742,7 @@ def render_facturacion_pro(
             delete_col_ui, save_col_ui = st.columns([1.15, 1])
             with delete_col_ui:
                 delete_pressed = st.button(
-                    f"🗑️ Eliminar seleccionadas ({selected_delete})",
+                    f"Eliminar seleccionadas ({selected_delete})",
                     key=f"eliminar_editor_{table}_{st.session_state[editor_rev_key]}",
                     disabled=selected_delete == 0,
                     use_container_width=True,
@@ -21953,7 +22039,7 @@ def _render_cuenta_corriente_pro_legacy(df, table=""):
     d["_es_cobrar"] = d["_tipo"].str.lower().str.contains("cobrar", na=False)
 
     # 4. Panel y filtros.
-    st.markdown(f"## 💳 Cuenta Corriente {empresa} · Panel PRO")
+    st.markdown(f"## Cuenta Corriente {empresa} · Panel PRO")
     st.caption(
         "Saldos, pagos, vencimientos, entidades y dólares en un solo lugar."
     )
@@ -22189,7 +22275,7 @@ def _render_cuenta_corriente_pro_legacy(df, table=""):
         st.dataframe(detalle, use_container_width=True, hide_index=True)
 
         st.download_button(
-            "⬇️ Descargar detalle filtrado",
+            "Descargar detalle filtrado",
             data=detalle.to_csv(index=False).encode("utf-8-sig"),
             file_name=f"cuenta_corriente_{empresa.lower()}.csv",
             mime="text/csv",
@@ -23003,7 +23089,7 @@ def render_cuenta_corriente_vmr_pro(df, table="cuenta_corriente_vmr"):
         dl1, dl2 = st.columns(2)
         with dl1:
             st.download_button(
-                "⬇️ Descargar detalle CSV",
+                "Descargar detalle CSV",
                 data=csv_bytes,
                 file_name=f"cuenta_corriente_{empresa.lower()}_filtrada.csv",
                 mime="text/csv",
@@ -23012,7 +23098,7 @@ def render_cuenta_corriente_vmr_pro(df, table="cuenta_corriente_vmr"):
             )
         with dl2:
             st.download_button(
-                "⬇️ Descargar informe Excel",
+                "Descargar informe Excel",
                 data=excel_buffer.getvalue(),
                 file_name=f"cuenta_corriente_{empresa.lower()}_informe.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -23044,7 +23130,7 @@ def total_mod(nombre, dfs):
 def render_analisis_global_vitae(dfs):
     ANIO_ANALISIS = 2026
     st.divider()
-    st.markdown(f"## 📊 Análisis Global VITAE {ANIO_ANALISIS}")
+    st.markdown(f"## Análisis Global VITAE {ANIO_ANALISIS}")
     rows = []
     for module_name, cfg in MODULES.items():
         df = dfs.get(module_name, pd.DataFrame()).copy()
@@ -23144,7 +23230,7 @@ def render_analisis_global_vitae(dfs):
             "Resultado"
         ]
     ].sum()
-    st.markdown("### 📅 Resumen mensual 2026")
+    st.markdown("### Resumen mensual 2026")
     fig = px.bar(
         mensual,
         x="Mes",
@@ -23164,7 +23250,7 @@ def render_analisis_global_vitae(dfs):
         key="global_mensual_2026"
     )
     mensual["Acumulado"] = mensual["Resultado"].cumsum()
-    st.markdown("### 📈 Evolución acumulada")
+    st.markdown("### Evolución acumulada")
     fig2 = px.line(
         mensual,
         x="Mes",
@@ -23309,8 +23395,7 @@ def render_resumen_empresa(titulo, empresa, dfs):
 def render_configuracion() -> None:
     st.session_state["vitae_current_module"] = "Configuración"
     render_header()
-    st.header("Configuración")
-    st.caption("Centro de administración, seguridad y control de acceso de Vitae.")
+    encabezado_modulo("Configuración", descripcion="Usuarios, permisos y ajustes del sistema.")
 
     if not _auth_is_admin():
         st.warning("La gestión de usuarios y permisos requiere perfil Administrador.")
@@ -23332,7 +23417,7 @@ def render_configuracion() -> None:
         st.markdown("### Sincronización Google Sheets")
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("⬆️ Subir datos actuales a Google Sheets", use_container_width=True, key="cfg_sync_up"):
+            if st.button("Subir datos actuales a Google Sheets", use_container_width=True, key="cfg_sync_up"):
                 try:
                     result = sync_all_to_sheets()
                     st.success("Sincronización ejecutada.")
@@ -23342,7 +23427,7 @@ def render_configuracion() -> None:
                     st.error("No se pudo subir a Google Sheets.")
                     _vitae_exception_detail(e)
         with col2:
-            if st.button("⬇️ Leer datos desde Google Sheets", use_container_width=True, key="cfg_sync_down"):
+            if st.button("Leer datos desde Google Sheets", use_container_width=True, key="cfg_sync_down"):
                 try:
                     restore_all_from_sheets()
                     _auth_load_users(force=True)
@@ -24169,7 +24254,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        💰 Disponible
+                        Disponible
 
                     </div>
 
@@ -24193,7 +24278,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        📈 Facturado del mes
+                        Facturado del mes
 
                     </div>
 
@@ -24209,7 +24294,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        ✅ Cobrado del mes
+                        Cobrado del mes
 
                     </div>
 
@@ -24241,7 +24326,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        📤 Egresos del mes
+                        Egresos del mes
 
                     </div>
 
@@ -24257,7 +24342,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        📊 Resultado del mes
+                        Resultado del mes
 
                     </div>
 
@@ -24273,7 +24358,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        👥 Pacientes del mes
+                        Pacientes del mes
 
                     </div>
 
@@ -24289,7 +24374,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        🎯 Cobranza
+                        Cobranza
 
                     </div>
 
@@ -24305,7 +24390,7 @@ def render_resumen_empresas_pro(
 
                     <div class="metrica-label">
 
-                        ⚠️ Vencidos / críticos
+                        Vencidos / críticos
 
                     </div>
 
@@ -24793,7 +24878,7 @@ def render_resumen_empresas_pro(
 
             <div class="empresas-title">
 
-                🏥 Resumen Ejecutivo por Empresa
+                Resumen Ejecutivo por Empresa
 
             </div>
 
@@ -24957,7 +25042,7 @@ def render_briefing_automatico_vitae(
             _vitae_exception_detail(exc, context="director_ia:briefing")
             briefing = _director_briefing_local(dfs=dfs)
 
-    st.markdown("## 🧠 Informe automático de Vitae")
+    st.markdown("## Informe automático de Vitae")
 
     with st.container(border=True):
 
@@ -25045,7 +25130,7 @@ def render_briefing_automatico_vitae(
 
             with st.expander(
 
-                "🔍 Ver módulos incluidos en el análisis"
+                "Ver módulos incluidos en el análisis"
 
             ):
 
@@ -25068,7 +25153,7 @@ def render_briefing_automatico_vitae(
 
             with st.expander(
 
-                "🛠️ Ver errores técnicos detectados"
+                "Ver errores técnicos detectados"
 
             ):
 
