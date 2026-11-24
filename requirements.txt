@@ -1,19 +1,18 @@
+# Interfaz
 streamlit==1.60.0
 
-starlette==0.47.3
-
+# Datos y gráficos
 pandas>=2.3.0
-
+numpy
 plotly>=5.22.0
 
+# Exportación a Excel
 openpyxl>=3.1.5
-
 xlsxwriter>=3.2.0
 
+# Google Sheets (base de datos)
 gspread
-
 google-auth
 
-openai>=1.0.0
-
+# Inteligencia artificial
 google-genai

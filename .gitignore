@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secretos y datos locales (NUNCA subir)
+.streamlit/secrets.toml
+.env
+.vitae_users.json
+*.db
+*.sqlite
+
+# Sistema / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

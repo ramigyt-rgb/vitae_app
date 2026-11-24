@@ -4,7 +4,7 @@ Agenda Quirófano ULTRA PRO para VITAE.
 
 Integración recomendada desde views.py:
 
-    from agenda_quirofano_ultra_pro import render_agenda_quirofano_ultra_pro
+    from vitae.modulos.quirofano import render_agenda_quirofano_ultra_pro
 
     if table == "agenda_quirofano":
         render_agenda_quirofano_ultra_pro(

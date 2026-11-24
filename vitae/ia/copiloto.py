@@ -35,20 +35,20 @@ try:
 except Exception:  # pragma: no cover - SDK viejo
     genai_types = None
 
-from config import GEMINI_API_KEY, GEMINI_MODEL
-from modules import MODULES
+from vitae.core.config import GEMINI_API_KEY, GEMINI_MODEL
+from vitae.core.tablas import MODULES
 
 # IMPORTANTE:
 # database.py sí tiene get_df(), pero no necesariamente add_balance_columns().
 # Se importan por separado para que la ausencia de una función opcional
 # NO inutilice la conexión completa a Google Sheets.
 try:
-    from database import get_df
+    from vitae.core.database import get_df
 except Exception:  # pragma: no cover
     get_df = None
 
 try:
-    from database import add_balance_columns
+    from vitae.core.database import add_balance_columns
 except Exception:  # pragma: no cover
     add_balance_columns = None
 

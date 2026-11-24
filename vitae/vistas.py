@@ -15,13 +15,13 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from config import APP_TITLE
-from modules import MODULES
-from database import *
-from helpers import *
-from farmacia_pro import render_farmacia_pro
-from importers import render_importer
-import agenda_quirofano_ultra_pro as _agenda_quirofano_modulo
+from vitae.core.config import APP_TITLE, BASE_DIR, LOGO_PATH
+from vitae.core.tablas import MODULES
+from vitae.core.database import *
+from vitae.core.helpers import *
+from vitae.modulos.farmacia import render_farmacia_pro
+from vitae.core.importadores import render_importer
+import vitae.modulos.quirofano as _agenda_quirofano_modulo
 
 # =========================================================
 # DESIGN SYSTEM + TELEMETRÍA LOCAL
@@ -51,7 +51,7 @@ _VITAE_DEBUG_ENV = str(os.getenv("VITAE_DEBUG", "")).strip().lower() in {
 # aplicación conserva el resto de sus funciones y usa resúmenes locales sobre
 # los datos reales cuando existe información suficiente.
 try:
-    import assistant as _vitae_assistant
+    import vitae.ia.copiloto as _vitae_assistant
     _VITAE_ASSISTANT_IMPORT_ERROR = ""
 except Exception as _assistant_import_exc:
     _vitae_assistant = None
@@ -148,7 +148,7 @@ def _director_briefing_local(dfs: dict[str, pd.DataFrame] | None = None, **kwarg
 
 
 try:
-    from director_ia import (
+    from vitae.ia.director import (
         generar_resumen_ejecutivo,
         generar_briefing_automatico,
     )
@@ -174,7 +174,7 @@ import time
 import uuid
 
 _VITAE_USERS_TABLE = "usuarios_vitae"
-_VITAE_USERS_LOCAL_FILE = Path(__file__).resolve().parent / ".vitae_users.json"
+_VITAE_USERS_LOCAL_FILE = BASE_DIR / ".vitae_users.json"
 _VITAE_USER_COLUMNS = [
     "id", "usuario", "nombre", "email", "rol", "activo", "empresas",
     "permisos", "password_hash", "password_salt", "creado_en",
@@ -4212,7 +4212,7 @@ def render_dashboard() -> None:
             unsafe_allow_html=True,
         )
     with top_right:
-        logo_path = Path("logo_vitae.png")
+        logo_path = LOGO_PATH
         if logo_path.exists():
             st.image(str(logo_path), use_container_width=True)
         if st.button("Actualizar", key="dg_refresh", use_container_width=True):
@@ -7924,7 +7924,7 @@ def _instalar_parche_fecha_centro_facturacion() -> None:
     el mismo módulo ``facturacion_ultra_pro``.
     """
     try:
-        import facturacion_ultra_pro as _fx_ultra
+        import vitae.modulos.facturacion as _fx_ultra
     except Exception:
         # La app puede funcionar sin el módulo Ultra Pro; no romper imports.
         return
