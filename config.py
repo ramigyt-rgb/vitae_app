@@ -25,6 +25,7 @@ GEMINI_MODEL = _secret("GEMINI_MODEL", "gemini-3.5-flash-lite")
 
 APP_TITLE = "Sistema de Gestión"
 DB_PATH = Path("vitae_gestion.db")
+LOGO_PATH = Path("logo_vitae.png")
 SHEET_ID = _secret("GOOGLE_SHEET_ID", "").replace('"', "")
 DATE_FMT = "%Y-%m-%d"
 TECH_COLUMNS = ["id", "created_at", "updated_at"]
