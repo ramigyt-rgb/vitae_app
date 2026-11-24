@@ -4662,20 +4662,27 @@ def _first_money_col(df):
         if c in df.columns:
             return c
     return None
-def render_tabla_limpia_panel(filtered: pd.DataFrame) -> None:
+def render_tabla_limpia_panel(filtered: pd.DataFrame, quitar_columnas: tuple[str, ...] = ()) -> None:
+    """Registros del período elegido en los filtros, del más reciente al más viejo."""
+    modulo = str(st.session_state.get("vitae_current_module", "") or "")
+    periodo = st.session_state.get(f"periodo_texto_{modulo}", "del período")
     st.divider()
-    st.markdown("### Tabla limpia")
+    st.markdown(f"### Registros {periodo}")
+    st.caption(f"{len(filtered):,} registros".replace(",", ".") + " · usá los filtros de arriba para cambiar el mes.")
+    if filtered.empty:
+        st.info("No hay registros para el mes y los filtros elegidos.")
+        return
     tabla = filtered.copy()
     tabla = tabla.drop(
-        columns=["id", "created_at", "updated_at", "responsable", "observaciones"],
+        columns=["id", "created_at", "updated_at", "responsable", "observaciones", *quitar_columnas],
         errors="ignore"
     )
-    if "mes" in tabla.columns:
-        orden = parse_mes(tabla["mes"])
+    fecha_col = first_available_date_col(tabla, modulo)
+    if fecha_col and fecha_col in tabla.columns:
+        orden = leer_fechas_ar(tabla[fecha_col])
         tabla = tabla.assign(_orden=orden)
-        tabla = tabla.sort_values("_orden", ascending=False, na_position="last")
-        tabla["mes"] = tabla["_orden"].dt.strftime("%d-%m-%Y")
-        tabla["mes"] = tabla["mes"].fillna("")
+        tabla = tabla.sort_values("_orden", ascending=False, na_position="last", kind="mergesort")
+        tabla[fecha_col] = tabla["_orden"].dt.strftime("%d/%m/%Y").fillna(tabla[fecha_col].astype(str))
         tabla = tabla.drop(columns=["_orden"], errors="ignore")
     st.dataframe(
 
@@ -21375,6 +21382,7 @@ def render_facturacion_pro(
                         df_total=df_panel,
                         table_name=table,
                     )
+                    render_tabla_limpia_panel(filtered)
                 elif table in ["banco_galicia_vm", "banco_macro_vmr"]:
                     # Banco VM / VMR usa un centro bancario integral. Se entrega
                     # también el historial completo para reconstruir saldo inicial,
@@ -21384,6 +21392,7 @@ def render_facturacion_pro(
                         module_name=module_name,
                         df_total=df_panel,
                     )
+                    render_tabla_limpia_panel(filtered)
                 else:
                     if table == "cuenta_corriente_vm":
                         filtered = filtered.drop(columns=["importe_usd", "pagado_usd"], errors="ignore")

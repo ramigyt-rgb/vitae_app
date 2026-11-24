@@ -828,6 +828,8 @@ _COLOR_ESTADO = {
 }
 
 _MESES_CORTOS = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+_MESES_LARGOS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto",
+                 "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
 
 def _fmt_money0(value: float | int | None) -> str:
@@ -895,6 +897,9 @@ def _encabezado(module_name: str, company: str, key: str) -> None:
 
 
 def _rango_periodo(periodo: str, hoy: pd.Timestamp) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    if re.fullmatch(r"\d{4}-\d{2}", str(periodo)):
+        mes = pd.Period(periodo, freq="M")
+        return mes.start_time.normalize(), mes.end_time.normalize()
     inicio_mes = hoy.replace(day=1)
     if periodo == "Mes actual":
         return inicio_mes, inicio_mes + pd.offsets.MonthEnd(0)
@@ -933,7 +938,13 @@ def _panel_filtros(data: pd.DataFrame, key: str) -> tuple[pd.DataFrame, str]:
     caja = st.expander(titulo, icon=":material/filter_list:", expanded=False) if movil else st.container(border=True)
     with caja:
         c1, c2, c3, c4 = st.columns([1.0, 1.4, 1.0, 1.4])
-        periodo = c1.selectbox("Período", _PERIODOS, index=_PERIODOS.index("Año actual"), key=f"{key}_f_periodo")
+        # Períodos rápidos + cada mes que tiene registros (del más reciente al más viejo).
+        meses_datos = [str(m) for m in sorted(data["_fecha_base"].dropna().dt.to_period("M").unique(), reverse=True)]
+        opciones_periodo = _PERIODOS[:-1] + meses_datos + _PERIODOS[-1:]
+        periodo = c1.selectbox(
+            "Período", opciones_periodo, index=opciones_periodo.index("Año actual"), key=f"{key}_f_periodo",
+            format_func=lambda o: o if o in _PERIODOS else _MESES_LARGOS[pd.Period(o, freq="M").month - 1] + f" {pd.Period(o, freq='M').year}",
+        )
         obras = c2.multiselect("Obra social", _opciones(data["_obra_social"]), placeholder="Todas", key=f"{key}_f_os")
         estados = c3.multiselect("Estado", _ESTADOS, placeholder="Todos", key=f"{key}_f_estado")
         medicos = c4.multiselect("Médico", _opciones(data["_medico"]), placeholder="Todos", key=f"{key}_f_med")
@@ -1297,6 +1308,16 @@ def _seccion_calidad(f: pd.DataFrame, cols: dict[str, str | None], key: str) -> 
         st.dataframe(mapa, use_container_width=True, hide_index=True)
 
 
+def _registros_del_periodo(f: pd.DataFrame, detalle: str) -> None:
+    """Los registros que corresponden al período y filtros elegidos."""
+    st.divider()
+    _subtitulo("Registros del período", detalle)
+    tabla = _detalle_registros(f)
+    if es_movil():
+        tabla = tabla[["Mes", "Paciente / afiliado", "Obra social", "Facturado", "Estado"]]
+    _tabla_montos(tabla, ["Facturado", "Cobrado", "Pendiente"], height=min(42 + 35 * len(tabla), 460))
+
+
 def _seccion_exportar(
     f: pd.DataFrame,
     metrics: dict[str, float],
@@ -1427,6 +1448,7 @@ def render_facturacion_ultra_pro(
 
     if seccion == ":material/insights: Resumen":
         _seccion_resumen(filtrado, metrics, module_name, key)
+        _registros_del_periodo(filtrado, detalle)
     elif seccion == ":material/payments: Cobranza":
         _seccion_cobranza(filtrado, metrics, key)
     elif seccion == ":material/stethoscope: Producción":
