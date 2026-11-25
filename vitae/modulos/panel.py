@@ -20,6 +20,7 @@ import pandas as pd
 import streamlit as st
 
 from vitae.modulos import caja as cj
+from vitae.modulos import cuenta_corriente as ccm
 from vitae.modulos import gine_formularios as gf
 from vitae.modulos import pagos_pendientes as pp
 from vitae.modulos.pagos_pendientes import _sin_acentos, _texto, nombre_mes, numero, pesos
@@ -216,16 +217,13 @@ def planes(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
 
 
 def cuenta_corriente(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
+    """Saldos de proveedores con el mismo cálculo del módulo Cuenta corriente
+    (pesos y dólares por separado; lee también el formato anterior)."""
     if _vacio(df):
         return {"hay": False}
-    estado = _txt(df, "estado").map(_sin_acentos)
-    saldo = (_num(df, "importe") - _num(df, "pagado")).clip(lower=0)
-    saldo = saldo.where(~estado.isin({"pagado", "pagada", "anulado", "anulada", "cancelado", "cancelada"}), 0.0)
-    a_cobrar = _txt(df, "tipo").map(_sin_acentos).str.contains("cobrar", na=False)
-    venc = _fecha(df, "vencimiento")
-    vencido = saldo.gt(0) & venc.notna() & venc.lt(hoy)
-    return {"hay": True, "a_pagar": float(saldo[~a_cobrar].sum()), "a_cobrar": float(saldo[a_cobrar].sum()),
-            "pagar_vencido": float(saldo[~a_cobrar & vencido].sum())}
+    t = ccm.totales(ccm.normalizar(df), hoy)
+    return {"hay": True, "a_pagar": t["ARS"], "a_pagar_usd": t["USD"], "a_cobrar": t["ARS_cobrar"],
+            "pagar_vencido": t["ARS_vencido"], "facturas": t["ARS_n"] + t["USD_n"]}
 
 
 def deuda_total(df: pd.DataFrame | None, enriquecer: Callable | None) -> dict[str, Any]:
@@ -554,7 +552,9 @@ def html_tarjetas(m: dict[str, Any]) -> str:
           if pl.get("hay") else _sin_datos("Planes de pago y préstamos", pl))
     for e, cc in m["cc"].items():
         c += (_linea(f"Cuenta corriente {e}", f"A pagar {pesos(cc['a_pagar'], 0)}",
-                     sub_v=f"A cobrar {pesos(cc['a_cobrar'], 0)}")
+                     sub_k=_plural(cc.get("facturas", 0), "factura") + " con saldo",
+                     sub_v=" · ".join(x for x in (ccm.usd(cc['a_pagar_usd'], 0) if cc.get("a_pagar_usd") else "",
+                                                   f"A cobrar {pesos(cc['a_cobrar'], 0)}" if cc.get("a_cobrar") else "") if x))
               if cc.get("hay") else _sin_datos(f"Cuenta corriente {e}", cc))
     dt = m["deuda_total"]
     c += (_linea("Deuda total (último corte)", pesos(dt["ars"], 0), sub_k=dt["corte"],
@@ -626,6 +626,7 @@ def excel_resumen(m: dict[str, Any]) -> bytes:
     for e, c in m["cc"].items():
         if c.get("hay"):
             filas.append(("Obligaciones", f"Cuenta corriente {e} a pagar", round(c["a_pagar"], 2)))
+            filas.append(("Obligaciones", f"Cuenta corriente {e} a pagar (USD)", round(c.get("a_pagar_usd", 0.0), 2)))
             filas.append(("Obligaciones", f"Cuenta corriente {e} a cobrar", round(c["a_cobrar"], 2)))
     if m["deuda_total"].get("hay"):
         filas.append(("Obligaciones", f"Deuda total ARS ({m['deuda_total']['corte']})", round(m["deuda_total"]["ars"], 2)))
