@@ -1,7 +1,9 @@
 """Asistente Vitae: «Luz», un chat de IA estilo Messenger en todas las pantallas.
 
-Una ventanita fija abajo a la derecha, como el chat de Facebook de antes:
-se minimiza a una barrita y se vuelve a abrir tocándola. Los mensajes van en
+Minimizada es una burbujita redonda con el logo de Vitae (como los «chat
+heads» de Messenger); al tocarla se abre una ventanita flotante con esquinas
+redondeadas. Burbuja y ventana se pueden arrastrar adonde le quede cómodo a
+cada uno, y la posición se recuerda en ese navegador. Los mensajes van en
 globitos (los tuyos a la derecha, los de Luz a la izquierda), con «En línea»
 y «escribiendo…» mientras busca la respuesta. Luz contesta corto y cálido,
 como alguien del equipo, y consulta los datos con el motor de herramientas
@@ -26,10 +28,12 @@ ABIERTO = "asis_abierto"
 PENDIENTE = "asistente_vitae_pendiente"
 MAX_MENSAJES = 40
 
+# Respuestas rápidas (chips arriba del cuadro de texto): etiqueta → pregunta.
 SUGERENCIAS = [
-    "¿Qué requiere mi atención hoy?",
-    "¿Cuánto se facturó este mes?",
-    "¿Qué impuestos están vencidos?",
+    ("📌 Hoy", "¿Qué requiere mi atención hoy?"),
+    ("💰 Facturación", "¿Cuánto se facturó este mes?"),
+    ("🧾 Vencidos", "¿Qué impuestos están vencidos?"),
+    ("🏦 Cajas", "¿Cuánto hay hoy en las cajas?"),
 ]
 
 Responder = Callable[[str, str, list[dict[str, str]], "set[str] | None"], str]
@@ -199,50 +203,34 @@ def texto_a_html(texto: str) -> str:
     return "".join(partes)
 
 
-_ICONO: str | None = None
+def _inicial(nombre: str | None) -> str:
+    n = str(nombre or "").strip()
+    return html.escape(n[:1].upper()) if n else "Yo"
 
 
-def icono() -> str:
-    """La «V» del logo de Vitae, incrustada (data URI); vacío si no está el archivo."""
-    global _ICONO
-    if _ICONO is None:
-        try:
-            import base64
-
-            from vitae.core.config import LOGO_PATH
-
-            ruta = LOGO_PATH.parent / "logo_vitae_icono.png"
-            _ICONO = "data:image/png;base64," + base64.b64encode(ruta.read_bytes()).decode("ascii")
-        except Exception:
-            _ICONO = ""
-    return _ICONO
-
-
-def _avatar(clase: str) -> str:
-    img = icono()
-    contenido = f'<img src="{img}" alt="Vitae">' if img else "V"
-    return f'<div class="{clase}">{contenido}</div>'
-
-
-def _globito(m: dict[str, str]) -> str:
+def _globito(m: dict[str, str], inicial: str = "Yo") -> str:
     yo = m.get("rol") == "user"
-    hora = f'<span class="asis-hora">{html.escape(m.get("hora", ""))}</span>' if m.get("hora") else ""
-    burbuja = f'<div class="asis-burbuja">{texto_a_html(m.get("texto", ""))}{hora}</div>'
+    hora = html.escape(m.get("hora", ""))
+    burbuja = f'<div class="asis-burbuja">{texto_a_html(m.get("texto", ""))}</div>'
     if yo:
-        return f'<div class="asis-fila asis-yo">{burbuja}</div>'
-    return f'<div class="asis-fila asis-ella">{_avatar("asis-mini")}{burbuja}</div>'
+        meta = f'<div class="asis-meta">{hora} <span class="asis-visto">✓✓</span></div>' if hora else ""
+        return (f'<div class="asis-fila asis-yo"><div class="asis-col">{burbuja}{meta}</div>'
+                f'<div class="asis-yo-mini">{inicial}</div></div>')
+    meta = f'<div class="asis-meta">{hora}</div>' if hora else ""
+    return f'<div class="asis-fila asis-ella"><div class="asis-mini"></div><div class="asis-col">{burbuja}{meta}</div></div>'
 
 
-def html_conversacion(lista: list[dict[str, str]], *, escribiendo: bool = False, saludo: str = "") -> str:
+def html_conversacion(lista: list[dict[str, str]], *, escribiendo: bool = False, saludo: str = "",
+                      inicial: str = "Yo") -> str:
     """Los globitos, en una caja que siempre muestra lo último."""
     filas = []
     if saludo:
         filas.append(_globito({"rol": "assistant", "texto": saludo}))
-    filas += [_globito(m) for m in lista]
+    filas += [_globito(m, inicial) for m in lista]
     if escribiendo:
-        filas.append(f'<div class="asis-fila asis-ella">{_avatar("asis-mini")}'
-                     '<div class="asis-burbuja asis-escribiendo"><span></span><span></span><span></span></div></div>'
-                     f'<div class="asis-estado">{NOMBRE} está escribiendo…</div>')
+        filas.append('<div class="asis-fila asis-ella"><div class="asis-mini"></div><div class="asis-col">'
+                     '<div class="asis-burbuja asis-escribiendo"><span></span><span></span><span></span></div>'
+                     f'<div class="asis-meta">{NOMBRE} está escribiendo…</div></div></div>')
     # column-reverse: el scroll arranca abajo, como en un chat
     return f'<div class="asis-mensajes"><div class="asis-pila">{"".join(filas)}</div></div>'
 
@@ -254,50 +242,53 @@ def _saludo(nombre_usuario: str | None) -> str:
 
 
 # ---------------------------------------------------------------- estilos
-# El chat queda a 200 px del borde derecho: en la esquina, Streamlit Cloud
-# dibuja «Manage app» (sólo para el dueño de la app) y lo taparía.
+# Posición por defecto: abajo a la derecha, por encima del «Manage app» de
+# Streamlit Cloud (que sólo ve el dueño de la app). Después, cada uno la mueve.
 
 _CSS = """<style>
-.st-key-asis_chat_cerrado{position:fixed;right:200px;bottom:0;z-index:999990;width:240px!important;gap:0}
-.st-key-asis_chat_cerrado button{width:100%;justify-content:flex-start;border-radius:12px 12px 0 0!important;
-  background:#8C2853!important;border:none!important;padding:.6rem 1rem!important;
-  box-shadow:0 -4px 18px rgba(94,26,57,.28)!important}
-.st-key-asis_chat_cerrado button p{color:#fff!important;font-weight:650!important;font-size:.95rem!important}
-.st-key-asis_chat_cerrado button:hover{background:#6F1F42!important}
-.st-key-asis_chat_abierto{position:fixed;right:200px;bottom:0;z-index:999990;width:325px!important;gap:0!important;
-  background:#fff;border-radius:14px 14px 0 0;box-shadow:0 8px 34px rgba(30,10,20,.30);overflow:hidden;
-  border:1px solid #E7DDE2;border-bottom:none}
+.st-key-asis_chat_cerrado,.st-key-asis_chat_abierto{position:fixed;right:22px;bottom:64px;z-index:999990;gap:0!important}
+.st-key-asis_chat_cerrado *,.st-key-asis_chat_abierto *{box-sizing:border-box}
+.st-key-asis_chat_cerrado{width:62px!important;height:62px}
+.st-key-asis_chat_cerrado:after{content:"";position:absolute;right:3px;bottom:3px;width:14px;height:14px;border-radius:50%;
+  background:#31C46B;border:2px solid #fff;pointer-events:none}
+.st-key-asis_chat_cerrado button{width:62px!important;height:62px!important;min-height:0!important;padding:0!important;
+  border-radius:50%!important;border:3px solid #8C2853!important;background-color:#fff!important;
+  box-shadow:0 8px 24px rgba(94,26,57,.35)!important;cursor:grab;touch-action:none;transition:transform .15s}
+.st-key-asis_chat_cerrado button:hover{transform:scale(1.07)}
+.st-key-asis_chat_cerrado button p{display:none}
+.st-key-asis_chat_abierto{width:330px!important;background:#fff;border-radius:20px;overflow:hidden;
+  box-shadow:0 14px 44px rgba(30,10,20,.28);border:1px solid #ECE3E7}
 .st-key-asis_chat_abierto>div{width:100%}
-.st-key-asis_chat_abierto *,.st-key-asis_chat_cerrado *{box-sizing:border-box}
-.st-key-asis_cabecera{background:linear-gradient(135deg,#8C2853,#6F1F42);padding:.45rem .5rem .45rem .7rem;gap:.25rem!important;
-  min-height:50px}
-.st-key-asis_cabecera button{background:transparent!important;border:none!important;color:#fff!important;
-  min-height:0!important;padding:.15rem .45rem!important;box-shadow:none!important}
-.st-key-asis_cabecera button p{color:#fff!important;font-size:1.05rem!important;font-weight:700!important}
-.st-key-asis_cabecera button:hover{background:rgba(255,255,255,.16)!important}
-.asis-quien{display:flex;align-items:center;gap:.55rem;margin:0}
-.asis-avatar{position:relative;width:32px;height:32px;border-radius:50%;background:#fff;color:#8C2853;
-  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1rem;flex:none}
-.asis-avatar:after{content:"";position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;
-  background:#31C46B;border:2px solid #7A2248}
-.asis-nombre{color:#fff;font-weight:700;font-size:.95rem;line-height:1.1}
-.asis-online{color:#F3DCE6;font-size:.72rem;line-height:1.2}
-.asis-mensajes{height:270px;overflow-y:auto;display:flex;flex-direction:column-reverse;padding:.7rem .7rem .4rem;
-  background:#FBF8F9}
-.asis-pila{display:flex;flex-direction:column;gap:.35rem}
+.st-key-asis_cabecera{background:linear-gradient(135deg,#8C2853,#6F1F42);padding:.55rem .55rem .55rem .8rem;
+  gap:.3rem!important;cursor:grab;touch-action:none;user-select:none}
+.st-key-asis_cabecera button{background:transparent!important;border:1.5px solid rgba(255,255,255,.75)!important;
+  border-radius:50%!important;width:28px;height:28px;min-height:0!important;padding:0!important;box-shadow:none!important}
+.st-key-asis_cabecera button p{color:#fff!important;font-size:.9rem!important;font-weight:700!important;line-height:1}
+.st-key-asis_cabecera button:hover{background:rgba(255,255,255,.18)!important}
+.asis-quien{display:flex;align-items:center;gap:.6rem;margin:0}
+.asis-avatar{position:relative;width:38px;height:38px;border-radius:50%;flex:none;border:2px solid rgba(255,255,255,.9)}
+.asis-nombre{color:#fff;font-weight:700;font-size:1.02rem;line-height:1.1}
+.asis-online{color:#F3DCE6;font-size:.72rem;line-height:1.3;display:flex;align-items:center;gap:.3rem}
+.asis-online:before{content:"";width:7px;height:7px;border-radius:50%;background:#31C46B;display:inline-block}
+.asis-mensajes{height:290px;overflow-y:auto;display:flex;flex-direction:column-reverse;padding:.75rem .65rem .5rem;
+  background:#F7F3F5}
+.asis-pila{display:flex;flex-direction:column;gap:.55rem}
 .asis-fila{display:flex;align-items:flex-end;gap:.4rem}
 .asis-yo{justify-content:flex-end}
-.asis-mini{width:26px;height:26px;border-radius:50%;background:#fff;color:#8C2853;font-size:.7rem;font-weight:800;
-  display:flex;align-items:center;justify-content:center;flex:none;border:1px solid #E7DDE2;overflow:hidden}
-.asis-avatar img,.asis-mini img{width:100%;height:100%;object-fit:contain;border-radius:50%}
-.asis-burbuja{max-width:80%;padding:.4rem .65rem;border-radius:16px;font-size:.84rem;line-height:1.38;
-  word-wrap:break-word;overflow-wrap:anywhere}
+.asis-col{display:flex;flex-direction:column;max-width:78%;min-width:0}
+.asis-yo .asis-col{align-items:flex-end}
+.asis-mini{width:28px;height:28px;border-radius:50%;flex:none;border:1px solid #E7DDE2;margin-bottom:1.05rem}
+.asis-yo-mini{width:28px;height:28px;border-radius:50%;flex:none;background:#E9D3DD;color:#6F1F42;font-size:.72rem;
+  font-weight:800;display:flex;align-items:center;justify-content:center;margin-bottom:1.05rem}
+.asis-burbuja{padding:.5rem .75rem;border-radius:14px;font-size:.84rem;line-height:1.4;word-wrap:break-word;
+  overflow-wrap:anywhere;max-width:100%}
 .asis-burbuja p{margin:0 0 .3rem}.asis-burbuja p:last-of-type{margin-bottom:0}
 .asis-burbuja ul,.asis-burbuja ol{margin:.15rem 0 .3rem 1.05rem;padding:0}.asis-burbuja li{margin:0}
 .asis-burbuja code{font-size:.8rem;background:rgba(0,0,0,.06);padding:0 .2rem;border-radius:4px}
-.asis-yo .asis-burbuja{background:#8C2853;color:#fff;border-bottom-right-radius:5px}
-.asis-ella .asis-burbuja{background:#ECE6E9;color:#2B2226;border-bottom-left-radius:5px}
-.asis-hora{display:block;text-align:right;font-size:.63rem;opacity:.6;margin-top:.1rem}
+.asis-yo .asis-burbuja{background:#8C2853;color:#fff;border-bottom-right-radius:4px}
+.asis-ella .asis-burbuja{background:#E9E4E7;color:#2B2226;border-bottom-left-radius:4px}
+.asis-meta{font-size:.64rem;color:#9A8D93;margin:.18rem .2rem 0}
+.asis-visto{color:#8C2853;letter-spacing:-2px}
 .asis-tabla{overflow-x:auto;margin:.2rem 0}
 .asis-tabla table{border-collapse:collapse;font-size:.76rem}
 .asis-tabla th,.asis-tabla td{border-bottom:1px solid rgba(0,0,0,.1);padding:.15rem .4rem;text-align:left;white-space:nowrap}
@@ -305,32 +296,131 @@ _CSS = """<style>
 .asis-escribiendo span{width:7px;height:7px;border-radius:50%;background:#9A8D93;animation:asis-pt 1.2s infinite ease-in-out}
 .asis-escribiendo span:nth-child(2){animation-delay:.15s}.asis-escribiendo span:nth-child(3){animation-delay:.3s}
 @keyframes asis-pt{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-4px);opacity:1}}
-.asis-estado{font-size:.7rem;color:#8A7F85;margin-left:2rem}
-.st-key-asis_sugerencias{padding:.1rem .6rem .35rem;background:#FBF8F9;gap:.3rem!important;flex-wrap:wrap}
-.st-key-asis_sugerencias button{border-radius:999px!important;border:1px solid #D9B8C7!important;background:#fff!important;
-  min-height:0!important;padding:.2rem .65rem!important}
-.st-key-asis_sugerencias button p{font-size:.76rem!important;color:#8C2853!important}
-.st-key-asis_chat_abierto [data-testid="stForm"]{padding:.45rem .55rem .55rem;border-top:1px solid #EFE6EA;border-radius:0}
-.st-key-asis_escribir{gap:.35rem!important}
-.st-key-asis_escribir input{border-radius:999px!important;font-size:.88rem!important}
-.st-key-asis_escribir [data-testid="stTextInputRootElement"]{border-radius:999px!important}
-.st-key-asis_escribir button{border-radius:50%!important;width:38px;height:38px;min-height:0!important;padding:0!important;
-  background:#8C2853!important;border:none!important}
-.st-key-asis_escribir button p{color:#fff!important;font-size:1rem!important}
-section.main .block-container,[data-testid="stMainBlockContainer"]{padding-bottom:4.5rem}
+.st-key-asis_pie{background:#fff;padding:.5rem .6rem .6rem;gap:.45rem!important;border-top:1px solid #EFE6EA}
+.st-key-asis_sugerencias{gap:.35rem!important;flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none}
+.st-key-asis_sugerencias::-webkit-scrollbar{display:none}
+.st-key-asis_sugerencias button{border-radius:10px!important;border:1px solid #E4D7DD!important;background:#FBF8F9!important;
+  min-height:0!important;padding:.22rem .6rem!important;white-space:nowrap;box-shadow:none!important}
+.st-key-asis_sugerencias button:hover{border-color:#8C2853!important}
+.st-key-asis_sugerencias button p{font-size:.74rem!important;color:#4A3B42!important;font-weight:600!important}
+.st-key-asis_chat_abierto [data-testid="stForm"]{padding:0;border:none;border-radius:0}
+.st-key-asis_escribir{background:#F1ECEF;border-radius:14px;padding:.2rem .25rem .2rem .2rem;gap:.1rem!important}
+.st-key-asis_escribir input{background:transparent!important;font-size:.88rem!important}
+.st-key-asis_escribir [data-testid="stTextInputRootElement"],.st-key-asis_escribir [data-baseweb="input"],
+.st-key-asis_escribir [data-baseweb="base-input"]{background:transparent!important;border:none!important}
+.st-key-asis_escribir button{border:none!important;background:transparent!important;width:34px;height:34px;
+  min-height:0!important;padding:0!important;box-shadow:none!important}
+.st-key-asis_escribir button p{color:#8C2853!important;font-size:1.15rem!important}
+.st-key-asis_js{position:absolute!important;width:0!important;height:0!important;overflow:hidden}
 @media (max-width: 640px){
-  .st-key-asis_chat_abierto{left:0;right:0;width:auto!important;border-radius:14px 14px 0 0}
-  .st-key-asis_chat_abierto .asis-mensajes{height:52vh}
-  .st-key-asis_chat_cerrado{right:auto;left:12px;width:200px!important}
+  html body .st-key-asis_chat_abierto{left:8px!important;right:8px!important;bottom:8px!important;top:auto!important;
+    width:auto!important}
+  .st-key-asis_chat_abierto .asis-mensajes{height:48vh}
 }
 </style>"""
 
 
 def _css() -> str:
     logo = logo_icono()
-    foto = (f'.asis-avatar,.asis-mini{{background:#fff url("{logo}") center/78% no-repeat!important;'
-            'border:1px solid #EADDE3}' if logo else "")
+    if not logo:
+        return _CSS
+    foto = (f'.asis-avatar,.asis-mini{{background:#fff url("{logo}") center/74% no-repeat}}'
+            f'.st-key-asis_chat_cerrado button{{background-image:url("{logo}")!important;'
+            'background-size:66%!important;background-position:center!important;background-repeat:no-repeat!important}')
     return _CSS.replace("</style>", foto + "\n</style>")
+
+
+# ---------------------------------------------------------------- arrastrar
+# Streamlit no ejecuta JavaScript en st.markdown: un componente mínimo agrega
+# (una sola vez) un script a la página que permite arrastrar la burbuja (toda)
+# y la ventana (desde la cabecera). La posición se guarda en el navegador.
+
+_JS_ARRASTRE = r"""
+(function () {
+  var w = window, d = document;
+  if (w.__luzArrastre) return;
+  w.__luzArrastre = true;
+  var CLAVE = "vitae_luz_posicion";
+  var pos = {r: 22, b: 64};
+  try {
+    var g = JSON.parse(w.localStorage.getItem(CLAVE) || "null");
+    if (g && isFinite(g.r) && isFinite(g.b)) pos = g;
+  } catch (e) {}
+  var estilo = d.getElementById("luz-posicion");
+  if (!estilo) { estilo = d.createElement("style"); estilo.id = "luz-posicion"; d.head.appendChild(estilo); }
+  function aplicar() {
+    var r = Math.round(pos.r), b = Math.round(pos.b);
+    estilo.textContent =
+      ".st-key-asis_chat_cerrado{right:clamp(6px," + r + "px,calc(100vw - 68px))!important;" +
+      "bottom:clamp(6px," + b + "px,calc(100vh - 68px))!important}" +
+      ".st-key-asis_chat_abierto{right:clamp(6px," + r + "px,max(6px,calc(100vw - 336px)))!important;" +
+      "bottom:clamp(6px," + b + "px,max(6px,calc(100vh - 500px)))!important}";
+  }
+  aplicar();
+  function asa(t) {
+    if (!t || !t.closest) return null;
+    var burbuja = t.closest(".st-key-asis_chat_cerrado");
+    if (burbuja) return burbuja;
+    var cab = t.closest(".st-key-asis_cabecera");
+    if (cab && !t.closest("button")) return cab.closest(".st-key-asis_chat_abierto");
+    return null;
+  }
+  var arrastre = null, movio = false, frenarClick = false;
+  d.addEventListener("pointerdown", function (e) {
+    if (e.button > 0) return;
+    var el = asa(e.target);
+    if (!el) return;
+    var rc = el.getBoundingClientRect();
+    arrastre = {x: e.clientX, y: e.clientY, r: w.innerWidth - rc.right, b: w.innerHeight - rc.bottom};
+    movio = false;
+  }, true);
+  d.addEventListener("pointermove", function (e) {
+    if (!arrastre) return;
+    var dx = e.clientX - arrastre.x, dy = e.clientY - arrastre.y;
+    if (!movio && Math.abs(dx) + Math.abs(dy) < 6) return;
+    movio = true;
+    e.preventDefault();
+    pos = {r: arrastre.r - dx, b: arrastre.b - dy};
+    aplicar();
+  }, true);
+  function soltar() {
+    if (!arrastre) return;
+    if (movio) {
+      frenarClick = true;
+      setTimeout(function () { frenarClick = false; }, 400);
+      try { w.localStorage.setItem(CLAVE, JSON.stringify(pos)); } catch (e) {}
+    }
+    arrastre = null;
+  }
+  d.addEventListener("pointerup", soltar, true);
+  d.addEventListener("pointercancel", soltar, true);
+  // Si se arrastró, el «click» al soltar no abre ni cierra el chat.
+  w.addEventListener("click", function (e) {
+    if (frenarClick) { e.stopPropagation(); e.preventDefault(); frenarClick = false; }
+  }, true);
+})();
+"""
+
+
+def codigo_arrastre() -> str:
+    """HTML del componente: inyecta el script en la página de la app (no en el iframe)."""
+    import json
+
+    return ("<script>(function(){var p=window.parent;try{if(p.__luzArrastre)return;"
+            "var s=p.document.createElement('script');s.textContent=" + json.dumps(_JS_ARRASTRE) +
+            ";p.document.head.appendChild(s);}catch(e){}})();</script>")
+
+
+def _arrastre() -> None:
+    try:
+        import streamlit.components.v1 as components
+    except Exception:  # sin componentes (pruebas): el chat funciona igual, sin arrastrar
+        return
+    try:
+        with st.container(key="asis_js"):
+            components.html(codigo_arrastre(), height=0)
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------- ventana
@@ -353,12 +443,12 @@ def _boton(label: str, *, key: str, **k: Any) -> bool:
 def _cabecera(modulo_actual: str) -> None:
     with _fila("asis_cabecera"):
         st.markdown(
-            f'<div class="asis-quien">{_avatar("asis-avatar")}<div>'
-            f'<div class="asis-nombre">{NOMBRE} · Asistente Vitae</div>'
+            '<div class="asis-quien"><div class="asis-avatar"></div><div>'
+            f'<div class="asis-nombre">{NOMBRE}</div>'
             f'<div class="asis-online">En línea · {html.escape(str(modulo_actual))}</div></div></div>',
             unsafe_allow_html=True,
         )
-        _boton("✎", key="asis_nueva", help="Empezar una conversación nueva", on_click=_limpiar)
+        _boton("✎", key="asis_nueva", help="Conversación nueva", on_click=_limpiar)
         _boton("–", key="asis_minimizar", help="Minimizar", on_click=_minimizar)
 
 
@@ -366,32 +456,33 @@ def _conversacion(modulo_actual: str, permitidos: set[str] | None, responder_fn:
                   nombre_usuario: str | None) -> None:
     lista = mensajes()
     saludo = _saludo(nombre_usuario)
+    inicial = _inicial(nombre_usuario)
     caja = st.empty()
-    caja.markdown(html_conversacion(lista, saludo=saludo), unsafe_allow_html=True)
-    lugar_sug = st.empty()
-    if not lista:
-        with lugar_sug.container(key="asis_sugerencias", horizontal=True):
-            for i, sug in enumerate(SUGERENCIAS):
-                _boton(sug, key=f"asistente_sug_{i}", on_click=_sugerir, args=(sug,))
-    with st.form("asistente_vitae_form", clear_on_submit=True, border=False):
-        with _fila("asis_escribir"):
-            texto = st.text_input(f"Mensaje para {NOMBRE}", key="asistente_vitae_texto",
-                                  placeholder=f"Escribile a {NOMBRE}…", label_visibility="collapsed")
-            enviar = st.form_submit_button("➤", help="Enviar")
+    caja.markdown(html_conversacion(lista, saludo=saludo, inicial=inicial), unsafe_allow_html=True)
+    with st.container(key="asis_pie"):
+        with _fila("asis_sugerencias"):
+            for i, (etiqueta, pregunta_sug) in enumerate(SUGERENCIAS):
+                _boton(etiqueta, key=f"asistente_sug_{i}", on_click=_sugerir, args=(pregunta_sug,),
+                       help=pregunta_sug)
+        with st.form("asistente_vitae_form", clear_on_submit=True, border=False):
+            with _fila("asis_escribir"):
+                texto = st.text_input(f"Mensaje para {NOMBRE}", key="asistente_vitae_texto",
+                                      placeholder="Escribí tu mensaje…", label_visibility="collapsed")
+                enviar = st.form_submit_button("➤", help="Enviar")
     pregunta = (texto or "").strip() if enviar else ""
     pregunta = pregunta or st.session_state.pop(PENDIENTE, None)
     if not pregunta:
         return
     historial = _historial_para_motor(lista)
     _agregar("user", pregunta)
-    lugar_sug.empty()
-    caja.markdown(html_conversacion(mensajes(), escribiendo=True, saludo=saludo), unsafe_allow_html=True)
+    caja.markdown(html_conversacion(mensajes(), escribiendo=True, saludo=saludo, inicial=inicial),
+                  unsafe_allow_html=True)
     try:
         respuesta = responder_fn(pregunta, modulo_actual, historial, permitidos)
     except Exception as exc:
         respuesta = _error_humano(exc)
     _agregar("assistant", respuesta or "Mmm, no me salió nada para eso. ¿Me lo preguntás de otra forma?")
-    caja.markdown(html_conversacion(mensajes(), saludo=saludo), unsafe_allow_html=True)
+    caja.markdown(html_conversacion(mensajes(), saludo=saludo, inicial=inicial), unsafe_allow_html=True)
 
 
 def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Responder,
@@ -399,8 +490,7 @@ def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Resp
     st.markdown(_css(), unsafe_allow_html=True)
     if not st.session_state.get(ABIERTO, False) and not st.session_state.get(PENDIENTE):
         with st.container(key="asis_chat_cerrado"):
-            _boton(f"💬  {NOMBRE} · Asistente Vitae", key="asis_abrir", on_click=_abrir,
-                   help=f"Abrir el chat con {NOMBRE}")
+            _boton(NOMBRE, key="asis_abrir", on_click=_abrir, help=f"Chatear con {NOMBRE}")
         return
     st.session_state[ABIERTO] = True
     with st.container(key="asis_chat_abierto"):
@@ -419,7 +509,8 @@ def chat_flotante(
     responder_fn: Responder | None = None,
     nombre_usuario: str | None = None,
 ) -> None:
-    """Chat de Luz abajo a la derecha: minimizable, en globitos, en todas las pantallas."""
+    """Luz: burbuja flotante que se abre en una ventanita; las dos se pueden arrastrar."""
+    _arrastre()
     _ventana_fragmento(modulo_actual, permitidos, responder_fn or responder, nombre_usuario)
 
 
