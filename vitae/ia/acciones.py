@@ -557,10 +557,261 @@ def _ejecutar_facturacion_nueva(accion: dict[str, Any], leer: Callable[[str], pd
     return f"Listo ✅ Cargué en {accion['modulo']}: {accion['resumen']}."
 
 
+# ---------------------------------------------------------------------------
+# Caja VMR / VM: cargar movimientos (varios en una tarjeta) y corregir / borrar
+# ---------------------------------------------------------------------------
+CAJAS = {"VMR": ("Caja VMR", "caja_vmr"), "VM": ("Caja VM", "caja_vm")}
+MEDIOS = ["Efectivo", "Transferencia", "Tarjeta", "Cheque", "Otro"]
+
+
+def _caja_de(texto: str) -> str | None:
+    from vitae.ia.experta_caja import caja_de
+
+    return caja_de(texto)
+
+
+def _preparar_caja(raw: pd.DataFrame, caja: str) -> pd.DataFrame:
+    from vitae.modulos import caja as cj
+
+    return cj.preparar(raw, dolar_por_texto=CAJAS[caja][1] == "caja_vmr")
+
+
+def _pesos_caja(valor: float, moneda: str) -> str:
+    from vitae.modulos import caja as cj
+
+    return cj.dinero(valor, moneda)
+
+
+def movimiento_caja_datos(raw: pd.DataFrame, caja: str, *, tipo: str, importe: Any, descripcion: str = "",
+                          fecha: str = "", moneda: str = "ARS", rubro: str = "", quien: str = "",
+                          medio: str = "Efectivo", observaciones: str = "", hoy: date | None = None) -> dict[str, Any]:
+    """Valida y arma UN movimiento de caja (no guarda)."""
+    from vitae.modulos import caja as cj
+    from vitae.modulos.pagos_pendientes import numero
+
+    c = _caja_de(caja)
+    if c is None:
+        return {"ok": False, "error": "Decime si es la Caja VMR o la Caja VM."}
+    t = _norm(tipo)
+    clase = ("inicial" if t.startswith("saldo") or "inicial" in t else
+             "entrada" if t.startswith(("entr", "ingr", "cobr")) else
+             "salida" if t.startswith(("sal", "egr", "gast", "pag")) else "")
+    if not clase:
+        return {"ok": False, "error": "Decime si es una entrada, una salida o el saldo inicial."}
+    monto = numero(importe)
+    if monto is None or (clase != "inicial" and monto <= 0):
+        return {"ok": False, "faltan": ["importe"]}
+    if clase != "inicial" and not _texto(descripcion):
+        return {"ok": False, "faltan": ["descripción"]}
+    hoy = hoy or date.today()
+    f = leer_fecha(fecha or "hoy", hoy)
+    if pd.isna(f):
+        return {"ok": False, "error": f"No entendí la fecha «{fecha}»."}
+    if clase == "inicial":
+        f = f.replace(day=1)
+    moneda = "USD" if _norm(moneda) in {"usd", "dolar", "dolares", "us$", "u$s"} else "ARS"
+    d = _preparar_caja(raw, c)
+    frec = cj.frecuentes(d, 200)
+    if clase == "inicial":
+        concepto, rubro_ok, quien_ok = "SALDO INICIAL", cj.GENERAL, ""
+    else:
+        modelo = next((x for x in frec if _norm(x["concepto"]) == _norm(descripcion)), None)
+        concepto = modelo["concepto"] if modelo else _texto(descripcion).upper()
+        rubro_ok = cj.normalizar_rubro(rubro) or (modelo["rubro"] if modelo else cj._rubro_inferido(concepto))
+        quienes = list(d["_quien"]) if len(d) else []
+        quien_ok = _como_esta_cargado(_texto(quien).upper(), quienes) if _texto(quien) else (
+            modelo["quien"] if modelo else "")
+    medio_ok = next((m for m in MEDIOS if _norm(m) == _norm(medio)), "Efectivo")
+    item = {"fecha": f.strftime("%Y-%m-%d"), "concepto": concepto, "entrada": round(monto, 2) if clase != "salida" else 0.0,
+            "salida": round(monto, 2) if clase == "salida" else 0.0, "moneda": moneda, "rubro": rubro_ok,
+            "quien": quien_ok, "medio": medio_ok, "observaciones": _texto(observaciones), "inicial": clase == "inicial",
+            "clase": clase}
+    avisos = []
+    if len(d) and clase != "inicial":
+        mismo = d[(d["_fecha"] == f) & (d["_concepto"].map(_norm) == _norm(concepto))
+                  & ((d["_entrada"] - item["entrada"]).abs() < 0.01) & ((d["_salida"] - item["salida"]).abs() < 0.01)]
+        if len(mismo):
+            avisos.append(f"Ya hay un movimiento igual el {f.day}/{f.month} ({concepto}).")
+    if clase == "inicial" and len(d):
+        mes = str(pd.Period(f, freq="M"))
+        ya = d[(d["_mes"] == mes) & d["_inicial"] & (d["_moneda"] == moneda)]
+        if len(ya):
+            avisos.append(f"Ese mes ya tiene un saldo inicial cargado ({_pesos_caja(float((ya['_entrada'] - ya['_salida']).sum()), moneda)}).")
+    return {"ok": True, "caja": c, "item": item, "avisos": avisos}
+
+
+def _linea_item(it: dict[str, Any]) -> list[str]:
+    f = pd.Timestamp(it["fecha"])
+    if it.get("inicial"):
+        return ["Saldo inicial", f"{f.month:02d}/{f.year} · {_pesos_caja(it['entrada'], it['moneda'])}"]
+    signo = "+" if it["entrada"] else "−"
+    monto = it["entrada"] or it["salida"]
+    extra = " · ".join(x for x in (it["rubro"] if it["rubro"] != "General" else "", it["quien"], it["medio"]
+                                   if it["medio"] != "Efectivo" else "") if x)
+    return [("Entrada" if it["entrada"] else "Salida") + f" {f.day}/{f.month}",
+            f"{it['concepto']} · {signo}{_pesos_caja(monto, it['moneda'])}" + (f" ({extra})" if extra else "")]
+
+
+def armar_accion_caja(raw: pd.DataFrame, caja: str, items: list[dict[str, Any]], avisos: list[str]) -> dict[str, Any]:
+    from vitae.modulos import caja as cj
+
+    nombre, tabla = CAJAS[caja]
+    d = _preparar_caja(raw, caja)
+    filas = [_linea_item(it) for it in items]
+    # Saldo después, por moneda tocada
+    for moneda in sorted({it["moneda"] for it in items}):
+        hoy = pd.Timestamp.today().normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+        lb = cj.libro(d, moneda, hasta=hoy)
+        antes = float(lb["saldo"].iloc[-1]) if not lb.empty else 0.0
+        mov = sum(it["entrada"] - it["salida"] for it in items if it["moneda"] == moneda and not it["inicial"]
+                  and pd.Timestamp(it["fecha"]) <= hoy)
+        despues = antes + mov
+        filas.append([f"Saldo {'en dólares' if moneda == 'USD' else 'en pesos'}",
+                      f"{_pesos_caja(antes, moneda)} → {_pesos_caja(despues, moneda)}"])
+        if despues < -0.005:
+            avisos = avisos + [f"Con esto la caja en {'dólares' if moneda == 'USD' else 'pesos'} queda en negativo."]
+    n = len(items)
+    return {"tipo": "caja_movimientos", "modulo": nombre, "tabla": tabla, "caja": caja, "icono": "💵",
+            "titulo": f"Cargar en {nombre}" + (f" ({n} movimientos)" if n > 1 else ""), "items": items,
+            "filas": filas, "avisos": list(dict.fromkeys(avisos)),
+            "resumen": "; ".join(f"{l[0]}: {l[1]}" for l in filas[:n]), "estado": "pendiente"}
+
+
+def _ejecutar_caja_movimientos(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
+                               guardar: Callable[[str, pd.DataFrame], Any]) -> str:
+    from vitae.modulos import caja as cj
+
+    raw = leer(accion["tabla"])
+    raw = raw.copy().reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+    for it in accion["items"]:
+        raw = cj.fila_nueva(raw, fecha=it["fecha"], concepto=it["concepto"], entrada=it["entrada"],
+                            salida=it["salida"], moneda=it["moneda"], rubro=it["rubro"], quien=it["quien"],
+                            medio=it["medio"], observaciones=it["observaciones"], inicial=it["inicial"])
+    guardar(accion["tabla"], raw)
+    n = len(accion["items"])
+    return (f"Listo ✅ Cargué {n} movimiento{'s' if n > 1 else ''} en {accion['modulo']}. "
+            + accion["filas"][-1][0] + ": " + accion["filas"][-1][1].split("→")[-1].strip() + ".")
+
+
+def correccion_caja_datos(raw: pd.DataFrame, caja: str, *, fecha: str = "", descripcion: str = "", importe: str = "",
+                          cambios: dict[str, Any] | None = None, borrar: bool = False,
+                          hoy: date | None = None) -> dict[str, Any]:
+    from vitae.modulos import caja as cj
+    from vitae.modulos.pagos_pendientes import numero
+
+    c = _caja_de(caja)
+    if c is None:
+        return {"ok": False, "error": "Decime si es la Caja VMR o la Caja VM."}
+    cambios = {k: v for k, v in (cambios or {}).items() if _texto(v)}
+    if not cambios and not borrar:
+        return {"ok": False, "error": "No me dijiste qué cambiar."}
+    if not (_texto(fecha) or _texto(descripcion) or _texto(importe)):
+        return {"ok": False, "error": "Decime qué movimiento es (fecha, descripción o importe)."}
+    raw = raw.reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+    d = _preparar_caja(raw, c)
+    x = d
+    if _texto(fecha):
+        f = leer_fecha(fecha, hoy)
+        if pd.notna(f):
+            x = x[x["_fecha"] == f]
+    if _texto(descripcion):
+        v = _norm(descripcion)
+        n = x["_concepto"].map(_norm)
+        x = x[n.eq(v)] if n.eq(v).any() else x[n.str.contains(re.escape(v), na=False)]
+    if _texto(importe):
+        m = numero(importe) or 0.0
+        x = x[((x["_entrada"] - m).abs() < 0.01) | ((x["_salida"] - m).abs() < 0.01)]
+    if x.empty:
+        return {"ok": False, "error": "No encontré ese movimiento."}
+    if len(x) > 1:
+        return {"ok": False, "varias": int(len(x)), "candidatas": [
+            {"fecha": r["_fecha"].strftime("%d/%m/%Y") if pd.notna(r["_fecha"]) else "sin fecha",
+             "descripcion": r["_concepto"], "entrada": r["_entrada"], "salida": r["_salida"], "moneda": r["_moneda"]}
+            for _, r in x.head(8).iterrows()]}
+    idx = int(x.index[0])
+    fila = x.iloc[0]
+    mes = fila["_mes"]
+    original = cj.tabla_editable(d, mes).loc[[idx]]
+    editada = original.copy()
+    detalle = []
+    etiquetas = {"fecha": "Fecha", "descripcion": "Descripción", "entrada": "Entrada", "salida": "Salida",
+                 "moneda": "Moneda", "rubro": "Rubro", "quien": "Quién", "medio": "Medio",
+                 "observaciones": "Observaciones"}
+    for campo, valor in cambios.items():
+        antes = original.at[idx, campo]
+        if campo == "fecha":
+            nf = leer_fecha(valor, hoy)
+            if pd.isna(nf):
+                return {"ok": False, "error": f"No entendí la fecha «{valor}»."}
+            nuevo, mostrar = nf.date(), f"{nf.day}/{nf.month}/{nf.year}"
+            antes_t = f"{antes.day}/{antes.month}/{antes.year}" if _texto(antes) else ""
+        elif campo in ("entrada", "salida"):
+            n_ = numero(valor)
+            if n_ is None:
+                return {"ok": False, "error": f"No entendí el importe «{valor}»."}
+            nuevo, mostrar, antes_t = float(n_), _pesos_caja(n_, fila["_moneda"]), (
+                _pesos_caja(antes, fila["_moneda"]) if antes else "")
+        elif campo == "moneda":
+            nuevo = "USD" if _norm(valor) in {"usd", "dolar", "dolares"} else "ARS"
+            mostrar, antes_t = nuevo, _texto(antes)
+        elif campo == "rubro":
+            nuevo = cj.normalizar_rubro(valor) or cj.GENERAL
+            mostrar, antes_t = nuevo, _texto(antes)
+        elif campo == "descripcion":
+            nuevo = _texto(valor).upper()
+            mostrar, antes_t = nuevo, _texto(antes)
+        else:
+            nuevo = _texto(valor)
+            mostrar, antes_t = nuevo, _texto(antes)
+        editada.at[idx, campo] = nuevo
+        detalle.append([etiquetas.get(campo, campo), antes_t, mostrar])
+    nombre, tabla = CAJAS[c]
+    filas = [["Movimiento", f"{fila['_fecha'].day}/{fila['_fecha'].month} · {fila['_concepto']} · "
+                            + _pesos_caja(fila["_entrada"] or fila["_salida"], fila["_moneda"])
+              if pd.notna(fila["_fecha"]) else fila["_concepto"]]]
+    if borrar:
+        filas.append(["", "Se borra este movimiento"])
+    return {"ok": True, "accion": {
+        "tipo": "caja_correccion", "modulo": nombre, "tabla": tabla, "icono": "💵",
+        "titulo": ("Borrar de " if borrar else "Corregir en ") + nombre, "pos": idx,
+        "huella": _huella(raw.iloc[idx]), "mes": mes, "cambios_crudos": {k: (str(v) if k == "fecha" else v)
+                                                                       for k, v in editada.loc[idx].items()},
+        "borrar": bool(borrar), "filas": filas, "cambios": detalle, "avisos": [],
+        "resumen": filas[0][1] + (" (se borra)" if borrar else ": " + ", ".join(f"{a} → {c_}" for a, _, c_ in detalle)),
+        "estado": "pendiente"}}
+
+
+def _ejecutar_caja_correccion(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
+                              guardar: Callable[[str, pd.DataFrame], Any]) -> str:
+    from vitae.modulos import caja as cj
+
+    raw = leer(accion["tabla"])
+    raw = raw.copy().reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+    pos = accion["pos"]
+    if not (pos < len(raw) and _huella(raw.iloc[pos]) == accion["huella"]):
+        iguales = [i for i in range(len(raw)) if _huella(raw.iloc[i]) == accion["huella"]]
+        if len(iguales) != 1:
+            raise RuntimeError("Ese movimiento cambió en la planilla mientras tanto. Pedímelo de nuevo.")
+        pos = iguales[0]
+    caja = next(k for k, (_, t) in CAJAS.items() if t == accion["tabla"])
+    d = _preparar_caja(raw, caja)
+    original = cj.tabla_editable(d, d.at[pos, "_mes"]).loc[[pos]]
+    editada = original.copy()
+    for k, v in accion["cambios_crudos"].items():
+        if k == "fecha":
+            v = pd.Timestamp(v).date() if _texto(v) else None
+        editada.at[pos, k] = v
+    nuevo, _ = cj.aplicar_edicion(raw, original, editada, borrar=[pos] if accion["borrar"] else None)
+    guardar(accion["tabla"], nuevo)
+    return f"Listo ✅ {'Borré' if accion['borrar'] else 'Corregí'} en {accion['modulo']}: {accion['resumen']}."
+
+
 EJECUTORES: dict[str, Callable[..., str]] = {
     "agendar_cirugia": _ejecutar_agendar_cirugia,
     "facturacion_cambio": _ejecutar_facturacion_cambio,
     "facturacion_nueva": _ejecutar_facturacion_nueva,
+    "caja_movimientos": _ejecutar_caja_movimientos,
+    "caja_correccion": _ejecutar_caja_correccion,
 }
 
 
@@ -597,6 +848,14 @@ INSTRUCCIONES_GENERALES = """ACCIONES (podés HACER cosas, siempre con confirmac
 INSTRUCCIONES_CIRUGIA = """- Agenda de Quirófano: proponer_cirugia programa una cirugía. Obligatorios: paciente, fecha, hora, médico y
   procedimiento. Si no lo dicen: 60 minutos y el quirófano que más se usa."""
 
+INSTRUCCIONES_CAJA = """- Caja VMR / VM: proponer_movimiento_caja carga una entrada, una salida o el saldo inicial del mes. Si te
+  dictan varios movimientos, llamala una vez por cada uno: se juntan en una sola tarjeta para confirmar todo junto.
+  Obligatorios: caja (VMR o VM), tipo, importe y descripción (salvo el saldo inicial). Fecha por defecto: hoy.
+  Moneda ARS salvo que digan dólares. El rubro y quién se completan solos si el movimiento ya se usó antes
+  (mirá caja_frecuentes para escribir la descripción igual que siempre).
+- proponer_correccion_caja corrige o borra un movimiento ya cargado (se busca por fecha, descripción o importe;
+  si hay varios, preguntá cuál)."""
+
 INSTRUCCIONES = INSTRUCCIONES_GENERALES + "\n" + INSTRUCCIONES_CIRUGIA
 
 
@@ -607,6 +866,8 @@ def instrucciones(herramientas_ofrecidas: list[Callable[..., str]]) -> str:
         texto += "\n" + INSTRUCCIONES_CIRUGIA
     if nombres & {"proponer_cambio_facturacion", "proponer_nueva_facturacion"}:
         texto += "\n" + INSTRUCCIONES_FACTURACION
+    if nombres & {"proponer_movimiento_caja", "proponer_correccion_caja"}:
+        texto += "\n" + INSTRUCCIONES_CAJA
     return texto
 
 
@@ -712,6 +973,74 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
                 "estado": estado, "observaciones": observaciones}, hoy=hoy))
 
         out += [proponer_cambio_facturacion, proponer_nueva_facturacion]
+
+    cajas_ok = [c for c, (nombre, _) in CAJAS.items() if nombre in disponibles]
+    if cajas_ok:
+        def _raw_caja(caja: str) -> tuple[str | None, pd.DataFrame]:
+            c = _caja_de(caja)
+            if c not in cajas_ok:
+                return None, pd.DataFrame()
+            try:
+                return c, datos.df(CAJAS[c][0])
+            except Exception:
+                return c, pd.DataFrame()
+
+        def proponer_movimiento_caja(caja: str, tipo: str, importe: str, descripcion: str = "", fecha: str = "",
+                                     moneda: str = "ARS", rubro: str = "", quien: str = "", medio: str = "Efectivo",
+                                     observaciones: str = "") -> str:
+            """Prepara un movimiento de caja (NO lo guarda: el usuario confirma en el chat). Varios llamados se
+            juntan en una sola tarjeta. caja: VMR o VM. tipo: entrada, salida o saldo inicial. importe: número.
+            fecha: AAAA-MM-DD (vacío = hoy). moneda: ARS o USD. rubro: General, Alquileres o Caja gastos
+            comunes. quien: responsable. medio: Efectivo, Transferencia, Tarjeta, Cheque u Otro."""
+            try:
+                datos.consultas.append(f"proponer_movimiento_caja({caja}, {tipo}, {importe})")
+            except Exception:
+                pass
+            c, raw = _raw_caja(caja)
+            if c is None:
+                return _json({"resultado": "no se armó", "error": "Decime Caja VMR o Caja VM (con acceso del usuario)."})
+            r = movimiento_caja_datos(raw, c, tipo=tipo, importe=importe, descripcion=descripcion, fecha=fecha,
+                                      moneda=moneda, rubro=rubro, quien=quien, medio=medio,
+                                      observaciones=observaciones, hoy=hoy)
+            if not r["ok"]:
+                return _json({"resultado": "no se armó", **{k: v for k, v in r.items() if k != "ok"}})
+            previa = next((a for a in acciones if a.get("tipo") == "caja_movimientos" and a.get("caja") == c), None)
+            items = (previa["items"] if previa else []) + [r["item"]]
+            avisos = (previa["avisos"] if previa else []) + r["avisos"]
+            avisos = [a for a in avisos if "negativo" not in a]
+            accion = armar_accion_caja(raw, c, items, avisos)
+            acciones[:] = [a for a in acciones if a is not previa] + [accion]
+            return _json({"resultado": "agregado a la tarjeta, todavía NO está guardado",
+                          "movimientos_en_la_tarjeta": len(items), "movimiento": _linea_item(r["item"]),
+                          "avisos": accion["avisos"]})
+
+        def proponer_correccion_caja(caja: str, fecha: str = "", descripcion: str = "", importe: str = "",
+                                     set_fecha: str = "", set_descripcion: str = "", set_entrada: str = "",
+                                     set_salida: str = "", set_moneda: str = "", set_rubro: str = "",
+                                     set_quien: str = "", set_medio: str = "", set_observaciones: str = "",
+                                     borrar: bool = False) -> str:
+            """Prepara la corrección (o el borrado, borrar=true) de un movimiento de caja ya cargado (NO lo guarda).
+            Se busca por fecha (AAAA-MM-DD), descripción o importe; si hay varios devuelve los candidatos.
+            Lo que cambia va en los set_*."""
+            try:
+                datos.consultas.append(f"proponer_correccion_caja({caja}, {descripcion or importe})")
+            except Exception:
+                pass
+            c, raw = _raw_caja(caja)
+            if c is None:
+                return _json({"resultado": "no se armó", "error": "Decime Caja VMR o Caja VM (con acceso del usuario)."})
+            r = correccion_caja_datos(raw, c, fecha=fecha, descripcion=descripcion, importe=importe, borrar=borrar,
+                                      cambios={"fecha": set_fecha, "descripcion": set_descripcion,
+                                               "entrada": set_entrada, "salida": set_salida, "moneda": set_moneda,
+                                               "rubro": set_rubro, "quien": set_quien, "medio": set_medio,
+                                               "observaciones": set_observaciones}, hoy=hoy)
+            if not r["ok"]:
+                return _json({"resultado": "no se armó", **{k: v for k, v in r.items() if k != "ok"}})
+            acciones[:] = [a for a in acciones if a.get("tipo") != "caja_correccion"] + [r["accion"]]
+            return _json({"resultado": "lista para confirmar (todavía NO está guardada)",
+                          "resumen": r["accion"]["resumen"]})
+
+        out += [proponer_movimiento_caja, proponer_correccion_caja]
     return out
 
 

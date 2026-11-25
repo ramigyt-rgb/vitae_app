@@ -583,6 +583,10 @@ def _conversacion(modulo_actual: str, permitidos: set[str] | None, responder_fn:
     except Exception as exc:
         respuesta = _error_humano(exc)
     propuestas = st.session_state.pop(NUEVAS_ACCIONES, None) or []
+    # Si hay varias propuestas (p. ej. caja VMR y caja VM), se confirman de a una: la última queda arriba y,
+    # al confirmarla o cancelarla, aparece la siguiente.
+    for extra in propuestas[:-1]:
+        _agregar("assistant", f"Además: {extra.get('titulo', 'otra acción')}.", accion=extra)
     _agregar("assistant", respuesta or "Mmm, no me salió nada para eso. ¿Me lo preguntás de otra forma?",
              accion=propuestas[-1] if propuestas else None)
     caja.markdown(html_conversacion(mensajes(), saludo=saludo, inicial=inicial), unsafe_allow_html=True)
