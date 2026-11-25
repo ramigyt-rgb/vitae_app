@@ -436,58 +436,81 @@ def _celda(v: Any) -> str:
     return _sin_acentos(v).replace(".", "").strip() if v is not None and not (isinstance(v, float) and pd.isna(v)) else ""
 
 
+def _es_encabezado(celdas: list[str]) -> dict[str, int] | None:
+    """Columnas de una fila de encabezado (FECHA · PROVEEDOR · COMPROBANTE · MONTO
+    · PAGADO · SALDO · OBSERVACIÓN), o None si la fila no lo es."""
+    def pos(*claves: str, evitar: tuple[str, ...] = ()) -> int | None:
+        for exacto in (True, False):  # primero la coincidencia exacta, después «contiene»
+            for j, c in enumerate(celdas):
+                if not c or any(e in c for e in evitar):
+                    continue
+                if any((c == k or c.startswith(k + " ")) if exacto else k in c for k in claves):
+                    return j
+        return None
+
+    j = {"proveedor": pos("proveedor", "razon social", "acreedor"),
+         "comprobante": pos("comprobante", "factura", "nro", "numero", "n°"),
+         "monto": pos("monto", "importe", "total factura")}
+    if None in j.values() or len(set(j.values())) < 3:
+        return None
+    j["fecha"] = pos("fecha", evitar=("pago", "vto", "venc"))
+    j["pagado"] = pos("pagado", "abonado", "pago", evitar=("fecha",))
+    j["saldo"] = pos("saldo", "pendiente", "debe")
+    j["observacion"] = pos("observ", "obs", "nota", "fecha pago", "fecha de pago")
+    return j
+
+
+def _es_cero(v: Any) -> bool:
+    return isinstance(v, str) and re.fullmatch(r"\s*(us)?\$?\s*-+\s*", v.lower()) is not None
+
+
 def leer_planilla(hojas: dict[str, pd.DataFrame]) -> pd.DataFrame:
     """Busca en cada hoja las tablas FECHA · PROVEEDOR · COMPROBANTE · MONTO · PAGADO
     · SALDO · OBSERVACIÓN. Una tabla con «USD» / «EN USD» justo arriba (o en el
-    nombre de la hoja) es en dólares."""
+    nombre de la hoja) es en dólares.
+
+    Cada tabla sigue hasta el próximo encabezado: las filas TOTAL, vacías o de
+    subtotales viejos se saltean (no cortan la lectura). En ``attrs["tablas"]``
+    queda qué se encontró, para mostrarlo."""
     filas: list[dict[str, Any]] = []
+    tablas: list[dict[str, Any]] = []
     for nombre_hoja, m in hojas.items():
         if m is None or m.empty:
             continue
         ocultas = set(m.attrs.get("ocultas", set()))
         mat = m.reset_index(drop=True)
         mat.columns = range(mat.shape[1])
-        n = len(mat)
-        i = 0
-        while i < n:
-            celdas = [_celda(v) for v in mat.iloc[i].tolist()]
-            def pos(*claves: str) -> int | None:
-                for j, c in enumerate(celdas):
-                    if any(c == k or c.startswith(k) for k in claves):
-                        return j
-                return None
-            j_prov, j_comp = pos("proveedor"), pos("comprobante", "factura", "nro")
-            j_monto = pos("monto", "importe")
-            if j_prov is None or j_comp is None or j_monto is None:
-                i += 1
-                continue
-            j_fecha, j_pag, j_obs = pos("fecha"), pos("pagado", "pago"), pos("observ")
-            arriba = [_celda(v) for k in range(max(0, i - 3), i) for v in mat.iloc[k].tolist()]
+        textos_filas = [[_celda(v) for v in mat.iloc[r].tolist()] for r in range(len(mat))]
+        encabezados = [(r, cols) for r, t in enumerate(textos_filas) if (cols := _es_encabezado(t))]
+        for k, (r0, cols) in enumerate(encabezados):
+            r1 = encabezados[k + 1][0] if k + 1 < len(encabezados) else len(mat)
+            arriba = [c for r in range(max(0, r0 - 3), r0 + 1) for c in textos_filas[r]]
             marca_usd = any(re.fullmatch(r"(en\s+)?(usd|u\$s|us\$|dolares)(\s.*)?", c) for c in arriba)
             moneda = "USD" if marca_usd or re.search(r"\busd\b|dolar", _sin_acentos(nombre_hoja)) else "ARS"
-            i += 1
-            while i < n:
-                valores = mat.iloc[i].tolist()
-                textos = [_celda(v) for v in valores]
-                if any(t.startswith("total") for t in textos):
-                    break
-                if "proveedor" in textos and any(t.startswith("comprobante") for t in textos):
-                    break  # empieza otra tabla
-                prov = _texto(valores[j_prov]).strip() if j_prov < len(valores) else ""
-                comp = _texto(valores[j_comp]).strip() if j_comp < len(valores) else ""
-                monto = numero(valores[j_monto]) or 0.0
-                if not prov and not comp and not monto:
-                    if all(not t for t in textos) and i + 1 < n and all(not _celda(v) for v in mat.iloc[i + 1].tolist()):
-                        break  # dos filas vacías: terminó la tabla
-                    i += 1
+            info = {"hoja": nombre_hoja, "fila": r0 + 1, "moneda": moneda, "visibles": 0, "ocultas": 0}
+            for r in range(r0 + 1, r1):
+                valores = mat.iloc[r].tolist()
+                if any(t.startswith(("total", "subtotal", "proveedores a pagar")) for t in textos_filas[r]):
                     continue
-                f = una_fecha(valores[j_fecha]) if j_fecha is not None else pd.NaT
-                pagado = (numero(valores[j_pag]) or 0.0) if j_pag is not None else 0.0
-                pago, nota = _observacion(valores[j_obs], f.year if pd.notna(f) else None) if j_obs is not None else ("", "")
-                filas.append(fila(f, prov, comp, moneda, monto, pagado, pago, nota, oculta=i in ocultas))
-                i += 1
-            i += 1
-    return normalizar(pd.DataFrame(filas)) if filas else _vacio()
+                v = lambda c: valores[cols[c]] if cols.get(c) is not None and cols[c] < len(valores) else None
+                prov, comp = _texto(v("proveedor")).strip(), _texto(v("comprobante")).strip()
+                monto = numero(v("monto")) or 0.0
+                if not prov or (not comp and not monto):
+                    continue
+                f = una_fecha(v("fecha"))
+                pagado = numero(v("pagado")) or 0.0
+                saldo_raw = v("saldo")
+                saldo = 0.0 if _es_cero(saldo_raw) else numero(saldo_raw)
+                if saldo is not None and pagado <= 0.004 and monto - saldo > 0.004:
+                    pagado = round(monto - saldo, 2)  # pagado vacío pero el saldo ya bajó
+                pago, nota = _observacion(v("observacion"), f.year if pd.notna(f) else None)
+                oculta = r in ocultas
+                info["ocultas" if oculta else "visibles"] += 1
+                filas.append(fila(f, prov, comp, moneda, monto, pagado, pago, nota, oculta=oculta))
+            tablas.append(info)
+    resultado = normalizar(pd.DataFrame(filas)) if filas else _vacio()
+    resultado.attrs["tablas"] = tablas
+    return resultado
 
 
 _CAMPOS_SYNC = [("fecha", "fecha"), ("proveedor", "proveedor"), ("comprobante", "comprobante"), ("monto", "monto"),
@@ -1034,9 +1057,24 @@ def render_cuenta_corriente(
     except Exception as exc:
         _error("No pude leer la planilla.", exc)
         return
+    tablas = importado.attrs.get("tablas", [])
+    if tablas:
+        st.caption("Encontré: " + " · ".join(
+            f"hoja «{t['hoja']}», tabla en la fila {t['fila']} ({'USD' if t['moneda'] == 'USD' else 'pesos'}): "
+            f"{t['visibles']} visibles" + (f", {t['ocultas']} ocultas" if t["ocultas"] else "") for t in tablas))
     if importado.empty:
-        st.warning("No encontré facturas. Revisá que la hoja tenga los encabezados PROVEEDOR, COMPROBANTE y MONTO.")
+        st.warning("No encontré facturas. Revisá que la hoja tenga una fila de encabezados con PROVEEDOR, "
+                   "COMPROBANTE y MONTO (y elegí la hoja correcta arriba).")
         return
+    with st.expander("Ver lo que leí del Excel (filas visibles)"):
+        prev = visibles(importado)
+        st.dataframe(
+            pd.DataFrame({"Fecha": prev["_fecha"].dt.strftime("%d/%m/%Y"), "Proveedor": prev["proveedor"],
+                          "Comprobante": prev["comprobante"], "Moneda": prev["moneda"], "Monto": prev["monto"],
+                          "Pagado": prev["pagado"], "Saldo": prev["saldo"],
+                          "Fecha de pago": prev["_pago"].dt.strftime("%d/%m/%Y"), "Observación": prev["observacion"]}),
+            hide_index=True, use_container_width=True,
+            column_config={c: st.column_config.NumberColumn(c, format="localized") for c in ("Monto", "Pagado", "Saldo")})
     vis = visibles(importado)
     ti = totales(vis, hoy)
     n_ocu = int(importado["oculta"].sum())
