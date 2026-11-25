@@ -249,7 +249,7 @@ def crear_herramientas(datos: _Datos) -> list[Callable[..., str]]:
                     rango = f"{f.min():%d/%m/%Y} a {f.max():%d/%m/%Y}"
             cfg = MODULES.get(nombre, {})
             salida.append({
-                "modulo": nombre, "empresa": cfg.get("empresa", ""), "descripcion": cfg.get("descripcion", ""),
+                "modulo": nombre, "empresa": cfg.get("empresa", ""), "descripcion": " ".join(x for x in (cfg.get("descripcion", ""), cfg.get("notas_ia", "")) if x),
                 "registros": int(len(df)), "columnas": list(df.columns)[:40],
                 "columna_fecha": col_fecha, "rango_fechas": rango,
             })
