@@ -255,8 +255,312 @@ def _ejecutar_agendar_cirugia(accion: dict[str, Any], leer: Callable[[str], pd.D
             f"en {d['sala']} ({d['procedimiento']} con {d['medico']}).")
 
 
+# ---------------------------------------------------------------------------
+# Facturación VMR / VM: modificar filas y cargar facturación nueva
+# ---------------------------------------------------------------------------
+FACTURACION = {"VMR": ("Facturación VMR", "facturacion_vmr"), "VM": ("Facturación VM", "facturacion_vm")}
+# campo → (clave en las columnas que detecta el módulo, nombre de columna por defecto, etiqueta)
+_CAMPOS_FX = {
+    "mes": ("mes", "mes", "Mes"),
+    "paciente": ("paciente", "afiliado", "Paciente / afiliado"),
+    "obra_social": ("obra_social", "obra_social", "Obra social"),
+    "procedimiento": ("procedimiento", "procedimiento", "Procedimiento"),
+    "medico": ("medico", "medico_responsable", "Médico"),
+    "numero_factura": ("numero_factura", "numero_factura", "N° de factura"),
+    "fecha_factura": ("fecha_factura", "fecha_factura", "Fecha de factura"),
+    "vencimiento": ("vencimiento", "vencimiento", "Vencimiento"),
+    "fecha_pago": ("fecha_pago", "fecha_pago", "Fecha de pago"),
+    "importe": ("monto", "valor_pesos", "Importe"),
+    "estado": ("estado", "estado", "Estado"),
+    "observaciones": (None, "observaciones", "Observaciones"),
+}
+_FECHAS_FX = {"fecha_factura", "vencimiento", "fecha_pago"}
+ESTADOS_FACTURACION = ["Pendiente", "Completo", "Parcial", "Vencido", "Anulado"]
+
+
+def _empresa_fx(empresa: str) -> str | None:
+    e = re.sub(r"[^a-z]", "", _norm(empresa))
+    if e in {"vmr", "reproductiva", "medicinareproductiva", "vitaemedicinareproductiva"}:
+        return "VMR"
+    if e in {"vm", "medical", "vitaemedical"}:
+        return "VM"
+    return None
+
+
+def _preparar_fx(df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    import vitae.modulos.facturacion as fx  # por el módulo: vistas.py le ajusta la fecha
+
+    data, cols = fx._prepare_facturacion(df)
+    return fx._ajustar_estado_manual(data), dict(cols or {})
+
+
+def _columna_fx(df: pd.DataFrame, cols: dict[str, Any], campo: str) -> str | None:
+    clave_m, defecto, _ = _CAMPOS_FX[campo]
+    col = cols.get(clave_m) if clave_m else None
+    if col and col in df.columns:
+        return col
+    candidatos = {defecto, campo} | ({"observacion", "notas", "nota"} if campo == "observaciones" else set())
+    return next((c for c in df.columns if _norm(c) in {_norm(x) for x in candidatos}), None)
+
+
+def _estilo_fecha(serie: pd.Series) -> str:
+    vals = [_texto(v) for v in serie if _texto(v)][-200:]
+    iso = sum(bool(re.match(r"\d{4}-\d{2}-\d{2}", v)) for v in vals)
+    return "iso" if vals and iso > len(vals) / 2 else "ar"
+
+
+def _escribir_fecha(valor: Any, serie: pd.Series, hoy: date | None = None) -> tuple[str, pd.Timestamp]:
+    f = leer_fecha(valor, hoy)
+    if pd.isna(f):
+        return "", f
+    return (f.strftime("%Y-%m-%d") if _estilo_fecha(serie) == "iso" else f.strftime("%d/%m/%Y")), f
+
+
+def _escribir_mes(valor: Any, serie: pd.Series, hoy: date | None = None) -> tuple[str, pd.Timestamp]:
+    t = _texto(valor)
+    m = re.fullmatch(r"(\d{4})-(\d{1,2})", t) or None
+    if m:
+        f = pd.Timestamp(int(m[1]), int(m[2]), 1)
+    else:
+        m2 = re.fullmatch(r"(\d{1,2})[/-](\d{4})", t)
+        f = pd.Timestamp(int(m2[2]), int(m2[1]), 1) if m2 else leer_fecha(t, hoy)
+    if pd.isna(f):
+        return "", f
+    f = f.replace(day=1)
+    vals = [_texto(v) for v in serie if _texto(v)][-200:]
+
+    def mayoria(patron: str) -> bool:
+        return bool(vals) and sum(bool(re.fullmatch(patron, v)) for v in vals) > len(vals) / 2
+
+    if mayoria(r"\d{4}-\d{2}"):
+        return f.strftime("%Y-%m"), f
+    if mayoria(r"\d{4}-\d{2}-\d{2}.*"):
+        return f.strftime("%Y-%m-%d"), f
+    if mayoria(r"\d{1,2}/\d{4}"):
+        return f.strftime("%m/%Y"), f
+    return f.strftime("%d/%m/%Y"), f
+
+
+def _escribir_importe(valor: Any, serie: pd.Series) -> tuple[str, float | None]:
+    from vitae.modulos.pagos_pendientes import numero, pesos
+
+    n = numero(valor)
+    if n is None:
+        return "", None
+    vals = [_texto(v) for v in serie if _texto(v)][-200:]
+    if vals and sum("$" in v for v in vals) > len(vals) / 2:
+        return pesos(n).replace("$", "$ "), n
+    if vals and sum(bool(re.search(r",\d{1,2}$", v)) for v in vals) > len(vals) / 2:
+        return f"{n:.2f}".replace(".", ","), n
+    return (f"{n:.0f}" if float(n).is_integer() else f"{n:.2f}"), n
+
+
+def _huella(fila: pd.Series) -> str:
+    return "|".join(_texto(v) for v in fila.tolist())
+
+
+def _valor_nuevo(df: pd.DataFrame, cols: dict[str, Any], campo: str, valor: Any, hoy: date | None) -> tuple[str, str]:
+    """(texto a escribir, texto para mostrar). Error → ("", motivo con «!» adelante)."""
+    col = _columna_fx(df, cols, campo)
+    serie = df[col] if col else pd.Series(dtype=object)
+    if campo in _FECHAS_FX:
+        t, f = _escribir_fecha(valor, serie, hoy)
+        return (t, f"{f.day}/{f.month}/{f.year}") if t else ("", f"!No entendí la fecha «{valor}»")
+    if campo == "mes":
+        t, f = _escribir_mes(valor, serie, hoy)
+        return (t, f"{f.month:02d}/{f.year}") if t else ("", f"!No entendí el mes «{valor}»")
+    if campo == "importe":
+        t, n = _escribir_importe(valor, serie)
+        return (t, "$ " + f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")) if t else (
+            "", f"!No entendí el importe «{valor}»")
+    if campo == "estado":
+        existentes = list(serie) + ESTADOS_FACTURACION
+        e = _como_esta_cargado(_texto(valor), existentes)
+        return e, e
+    if campo in {"obra_social", "procedimiento", "medico", "paciente"}:
+        e = _como_esta_cargado(_texto(valor), list(serie))
+        return e, e
+    return _texto(valor), _texto(valor)
+
+
+def buscar_facturas(data: pd.DataFrame, *, paciente: str = "", numero_factura: str = "", mes: str = "",
+                    obra_social: str = "", procedimiento: str = "") -> pd.DataFrame:
+    x = data
+    for col, valor in (("_paciente", paciente), ("_numero_factura", numero_factura), ("_obra_social", obra_social),
+                       ("_procedimiento", procedimiento)):
+        v = _norm(valor)
+        if v:
+            n = x[col].map(_norm)
+            exacto = n.eq(v)
+            x = x[exacto] if exacto.any() else x[n.str.contains(re.escape(v), na=False)]
+    if _texto(mes):
+        t = _texto(mes)
+        m = re.fullmatch(r"(\d{4})-(\d{1,2})", t) or re.fullmatch(r"(\d{1,2})[/-](\d{4})", t)
+        if m:
+            anio, mm = (int(m[1]), int(m[2])) if len(m[1]) == 4 else (int(m[2]), int(m[1]))
+            x = x[x["_fecha_base"].dt.year.eq(anio) & x["_fecha_base"].dt.month.eq(mm)]
+    return x
+
+
+def _resumen_fila(f: pd.Series) -> dict[str, Any]:
+    fb = f["_fecha_base"]
+    return {"mes": f"{fb.month:02d}/{fb.year}" if pd.notna(fb) else "", "paciente": f["_paciente"],
+            "obra_social": f["_obra_social"], "procedimiento": f["_procedimiento"],
+            "factura": f["_numero_factura"], "importe": round(float(f["_monto"]), 2),
+            "estado": f["_estado_ejecutivo"]}
+
+
+def proponer_cambio_facturacion_datos(df: pd.DataFrame, empresa: str, *, buscar: dict[str, str],
+                                      cambios: dict[str, Any], aplicar_a_todas: bool = False,
+                                      hoy: date | None = None) -> dict[str, Any]:
+    emp = _empresa_fx(empresa)
+    if emp is None:
+        return {"ok": False, "error": "Decime si es VMR o VM."}
+    cambios = {k: v for k, v in cambios.items() if _texto(v)}
+    if not cambios:
+        return {"ok": False, "error": "No me dijiste qué dato cambiar."}
+    if not any(_texto(v) for v in buscar.values()):
+        return {"ok": False, "error": "Decime de qué paciente, factura, mes u obra social se trata."}
+    df = df.reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    data, cols = _preparar_fx(df)
+    hallados = buscar_facturas(data, **buscar)
+    if hallados.empty:
+        return {"ok": False, "error": "No encontré esa facturación.", "buscado": buscar}
+    if len(hallados) > 1 and not aplicar_a_todas:
+        return {"ok": False, "varias": int(len(hallados)),
+                "candidatas": [_resumen_fila(f) for _, f in hallados.head(8).iterrows()]}
+    if len(hallados) > 60:
+        return {"ok": False, "error": f"Son {len(hallados)} filas: es demasiado para un solo cambio. Acotalo."}
+    escribir, mostrar = {}, {}
+    for campo, valor in cambios.items():
+        t, m = _valor_nuevo(df, cols, campo, valor, hoy)
+        if m.startswith("!"):
+            return {"ok": False, "error": m[1:]}
+        escribir[campo], mostrar[campo] = t, m
+    objetivos, filas_tarjeta = [], []
+    for pos, f in hallados.iterrows():
+        objetivos.append({"pos": int(pos), "huella": _huella(df.iloc[int(pos)])})
+    primera = hallados.iloc[0]
+    detalle = []
+    for campo in escribir:
+        col = _columna_fx(df, cols, campo)
+        antes = _texto(df.iloc[int(hallados.index[0])][col]) if col else ""
+        detalle.append([_CAMPOS_FX[campo][2], antes if len(hallados) == 1 else "(varias)", mostrar[campo]])
+    if len(hallados) == 1:
+        r = _resumen_fila(primera)
+        filas_tarjeta = [["Paciente", r["paciente"]], ["Mes", r["mes"]], ["Obra social", r["obra_social"]],
+                         ["Procedimiento", r["procedimiento"]], ["Factura", r["factura"] or "—"]]
+        quien = f"{r['paciente']} ({r['mes']})"
+    else:
+        filas_tarjeta = [["Filas", f"{len(hallados)} facturas"]] + [
+            ["", f"{_resumen_fila(f)['paciente']} · {_resumen_fila(f)['mes']}"] for _, f in hallados.head(5).iterrows()]
+        quien = f"{len(hallados)} facturas"
+    nombre, tabla = FACTURACION[emp]
+    return {"ok": True, "accion": {
+        "tipo": "facturacion_cambio", "modulo": nombre, "tabla": tabla, "titulo": f"Modificar {nombre}",
+        "icono": "🧾", "objetivos": objetivos, "escribir": escribir, "filas": filas_tarjeta, "cambios": detalle,
+        "resumen": f"{quien}: " + ", ".join(f"{d[0]} → {d[2]}" for d in detalle), "avisos": [],
+        "estado": "pendiente"}}
+
+
+def proponer_nueva_facturacion_datos(df: pd.DataFrame, empresa: str, datos_fila: dict[str, Any],
+                                     hoy: date | None = None) -> dict[str, Any]:
+    emp = _empresa_fx(empresa)
+    if emp is None:
+        return {"ok": False, "error": "Decime si es VMR o VM."}
+    datos_fila = {k: v for k, v in datos_fila.items() if _texto(v)}
+    faltan = [_CAMPOS_FX[c][2] for c in ("mes", "paciente", "obra_social", "procedimiento") if c not in datos_fila]
+    if faltan:
+        return {"ok": False, "faltan": faltan}
+    df = df.reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    data, cols = _preparar_fx(df)
+    escribir, filas_tarjeta = {}, []
+    for campo in _CAMPOS_FX:
+        if campo not in datos_fila:
+            continue
+        t, m = _valor_nuevo(df, cols, campo, datos_fila[campo], hoy)
+        if m.startswith("!"):
+            return {"ok": False, "error": m[1:]}
+        escribir[campo] = t
+        filas_tarjeta.append([_CAMPOS_FX[campo][2], m])
+    avisos = []
+    if len(data):
+        mes_t = escribir.get("mes", "")
+        _, fmes = _escribir_mes(datos_fila["mes"], pd.Series(dtype=object), hoy)
+        repetidas = buscar_facturas(data, paciente=escribir.get("paciente", ""),
+                                    procedimiento=escribir.get("procedimiento", ""),
+                                    mes=f"{fmes.year}-{fmes.month:02d}" if pd.notna(fmes) else "")
+        if mes_t and len(repetidas):
+            avisos.append(f"Ya hay {len(repetidas)} fila(s) de {escribir.get('paciente')} con ese procedimiento ese mes.")
+        if escribir.get("numero_factura") and len(buscar_facturas(data, numero_factura=escribir["numero_factura"])):
+            avisos.append(f"El N° de factura {escribir['numero_factura']} ya está cargado en otra fila.")
+    nombre, tabla = FACTURACION[emp]
+    return {"ok": True, "accion": {
+        "tipo": "facturacion_nueva", "modulo": nombre, "tabla": tabla, "titulo": f"Cargar en {nombre}",
+        "icono": "🧾", "escribir": escribir, "filas": filas_tarjeta, "avisos": avisos,
+        "resumen": f"{escribir.get('paciente')} · {escribir.get('procedimiento')} · {escribir.get('mes')}",
+        "estado": "pendiente"}}
+
+
+def _ejecutar_facturacion_cambio(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
+                                 guardar: Callable[[str, pd.DataFrame], Any]) -> str:
+    df = leer(accion["tabla"])
+    df = df.copy().reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    _, cols = _preparar_fx(df)
+    huellas = [_huella(df.iloc[i]) for i in range(len(df))]
+    posiciones = []
+    for obj in accion["objetivos"]:
+        pos = obj["pos"]
+        if pos < len(df) and huellas[pos] == obj["huella"]:
+            posiciones.append(pos)
+            continue
+        iguales = [i for i, h in enumerate(huellas) if h == obj["huella"] and i not in posiciones]
+        if len(iguales) != 1:
+            raise RuntimeError("Esa fila cambió en la planilla mientras tanto. Pedímelo de nuevo.")
+        posiciones.append(iguales[0])
+    for campo, valor in accion["escribir"].items():
+        col = _columna_fx(df, cols, campo) or _CAMPOS_FX[campo][1]
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].astype("object")
+        for pos in posiciones:
+            df.at[pos, col] = valor
+    if "updated_at" in df.columns:
+        df["updated_at"] = df["updated_at"].astype("object")
+        for pos in posiciones:
+            df.at[pos, "updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    guardar(accion["tabla"], df)
+    return f"Listo ✅ Lo cargué en {accion['modulo']}: {accion['resumen']}."
+
+
+def _ejecutar_facturacion_nueva(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
+                                guardar: Callable[[str, pd.DataFrame], Any]) -> str:
+    df = leer(accion["tabla"])
+    df = df.copy().reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame()
+    _, cols = _preparar_fx(df)
+    fila: dict[str, Any] = {c: "" for c in df.columns}
+    for campo, valor in accion["escribir"].items():
+        col = _columna_fx(df, cols, campo) or _CAMPOS_FX[campo][1]
+        if col not in df.columns:
+            df[col] = ""
+            fila[col] = ""
+        fila[col] = valor
+    ahora = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    for c in ("created_at", "updated_at"):
+        if c in df.columns:
+            fila[c] = ahora
+    if "id" in df.columns:
+        ids = pd.to_numeric(df["id"], errors="coerce")
+        fila["id"] = str(int(ids.max()) + 1) if ids.notna().any() else datetime.now().strftime("FX%Y%m%d%H%M%S")
+    df = pd.concat([df, pd.DataFrame([fila], columns=df.columns)], ignore_index=True)
+    guardar(accion["tabla"], df)
+    return f"Listo ✅ Cargué en {accion['modulo']}: {accion['resumen']}."
+
+
 EJECUTORES: dict[str, Callable[..., str]] = {
     "agendar_cirugia": _ejecutar_agendar_cirugia,
+    "facturacion_cambio": _ejecutar_facturacion_cambio,
+    "facturacion_nueva": _ejecutar_facturacion_nueva,
 }
 
 
@@ -271,15 +575,39 @@ def ejecutar(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
 # ---------------------------------------------------------------------------
 # Herramientas para la IA (sólo proponen)
 # ---------------------------------------------------------------------------
-INSTRUCCIONES = """ACCIONES (podés HACER cosas, siempre con confirmación)
-- Podés programar cirugías en la Agenda de Quirófano con proponer_cirugia.
-- Pasá la fecha como AAAA-MM-DD calculándola desde HOY («el jueves», «mañana», «el 3») y la hora como HH:MM.
-- Si falta un dato obligatorio (paciente, fecha, hora, médico, procedimiento), preguntalo en una línea antes de proponer.
-  La duración por defecto es 60 minutos y el quirófano, el que más se usa.
-- proponer_cirugia NO guarda: deja la cirugía lista para que el usuario toque «Confirmar» en la tarjeta del chat.
-  Nunca digas que ya quedó agendada; decí algo como «Te la dejé lista, confirmala abajo 👇».
-- Si la herramienta avisa superposiciones o una fecha pasada, contalo en una frase para que decida.
+INSTRUCCIONES_FACTURACION = """- Facturación VMR / VM: con proponer_cambio_facturacion registrás o corregís datos de una fila existente
+  (N° de factura, fecha de factura, vencimiento, fecha de pago, importe, estado, obra social, procedimiento,
+  médico, observaciones). La fila se busca por paciente, N° de factura, mes (AAAA-MM), obra social o
+  procedimiento. Si hay varias candidatas te las devuelve: preguntá cuál (o, si el usuario lo pidió para
+  todas, usá aplicar_a_todas=true).
+- Un cobro se registra con set_fecha_pago y set_estado «Completo» (o «Parcial» si fue parcial).
+- Con proponer_nueva_facturacion cargás una fila nueva (mes, paciente, obra social y procedimiento son
+  obligatorios; médico, importe, N° de factura, fechas, estado y observaciones, si los dicen).
+- Para que todo quede completo: con facturacion_calidad ves qué falta (N° de factura, vencimientos, fechas de
+  pago…) y ofrecé completarlo con proponer_cambio_facturacion."""
+
+INSTRUCCIONES_GENERALES = """ACCIONES (podés HACER cosas, siempre con confirmación)
+- Las herramientas proponer_* NO guardan: dejan el cambio listo para que el usuario toque «Confirmar» en la
+  tarjeta del chat. Nunca digas que ya quedó hecho; decí algo como «Te lo dejé listo, confirmalo abajo 👇».
+- Pasá las fechas como AAAA-MM-DD calculándolas desde HOY («el jueves», «mañana», «el 3») y las horas como HH:MM.
+- Si falta un dato obligatorio, preguntalo en una línea antes de proponer.
+- Si la herramienta avisa algo (superposiciones, filas repetidas, fechas pasadas), contalo en una frase.
 - Si te piden algo que todavía no sabés hacer, decí que por ahora no podés y que se puede agregar."""
+
+INSTRUCCIONES_CIRUGIA = """- Agenda de Quirófano: proponer_cirugia programa una cirugía. Obligatorios: paciente, fecha, hora, médico y
+  procedimiento. Si no lo dicen: 60 minutos y el quirófano que más se usa."""
+
+INSTRUCCIONES = INSTRUCCIONES_GENERALES + "\n" + INSTRUCCIONES_CIRUGIA
+
+
+def instrucciones(herramientas_ofrecidas: list[Callable[..., str]]) -> str:
+    nombres = {h.__name__ for h in herramientas_ofrecidas}
+    texto = INSTRUCCIONES_GENERALES
+    if "proponer_cirugia" in nombres:
+        texto += "\n" + INSTRUCCIONES_CIRUGIA
+    if nombres & {"proponer_cambio_facturacion", "proponer_nueva_facturacion"}:
+        texto += "\n" + INSTRUCCIONES_FACTURACION
+    return texto
 
 
 def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = None) -> list[Callable[..., str]]:
@@ -315,6 +643,75 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
                           "cirugia": r["accion"]["datos"], "avisos": r["accion"]["avisos"]})
 
         out.append(proponer_cirugia)
+
+    empresas_fx = [e for e, (nombre, _) in FACTURACION.items() if nombre in disponibles]
+    if empresas_fx:
+        def _df_fx(empresa: str) -> tuple[str | None, pd.DataFrame]:
+            emp = _empresa_fx(empresa)
+            if emp not in empresas_fx:
+                return None, pd.DataFrame()
+            try:
+                return emp, datos.df(FACTURACION[emp][0])
+            except Exception:
+                return emp, pd.DataFrame()
+
+        def _anotar(r: dict[str, Any]) -> str:
+            if not r["ok"]:
+                return _json({"resultado": "no se armó", **{k: v for k, v in r.items() if k != "ok"}})
+            acciones[:] = [a for a in acciones if not a.get("tipo", "").startswith("facturacion_")] + [r["accion"]]
+            a = r["accion"]
+            return _json({"resultado": "lista para confirmar (todavía NO está guardada)", "resumen": a["resumen"],
+                          "cambios": a.get("cambios"), "avisos": a.get("avisos")})
+
+        def proponer_cambio_facturacion(empresa: str, paciente: str = "", numero_factura: str = "", mes: str = "",
+                                        obra_social: str = "", procedimiento: str = "", set_numero_factura: str = "",
+                                        set_fecha_factura: str = "", set_vencimiento: str = "",
+                                        set_fecha_pago: str = "", set_importe: str = "", set_estado: str = "",
+                                        set_obra_social: str = "", set_procedimiento: str = "",
+                                        set_medico: str = "", set_mes: str = "", set_observaciones: str = "",
+                                        aplicar_a_todas: bool = False) -> str:
+            """Prepara un cambio en Facturación VMR o VM (NO lo guarda: el usuario confirma en el chat).
+            empresa: VMR o VM. Para encontrar la fila: paciente, numero_factura, mes (AAAA-MM), obra_social,
+            procedimiento. Lo que cambia va en los set_*: fechas en AAAA-MM-DD, importe en número, estado
+            (Pendiente, Completo, Parcial, Vencido, Anulado). Si hay varias filas devuelve las candidatas.
+            aplicar_a_todas=true aplica el cambio a todas las que coinciden (sólo si el usuario lo pidió)."""
+            try:
+                datos.consultas.append(f"proponer_cambio_facturacion({empresa}, {paciente or numero_factura})")
+            except Exception:
+                pass
+            emp, df = _df_fx(empresa)
+            if emp is None:
+                return _json({"resultado": "no se armó", "error": "Decime VMR o VM (con acceso del usuario)."})
+            cambios = {"numero_factura": set_numero_factura, "fecha_factura": set_fecha_factura,
+                       "vencimiento": set_vencimiento, "fecha_pago": set_fecha_pago, "importe": set_importe,
+                       "estado": set_estado, "obra_social": set_obra_social, "procedimiento": set_procedimiento,
+                       "medico": set_medico, "mes": set_mes, "observaciones": set_observaciones}
+            return _anotar(proponer_cambio_facturacion_datos(
+                df, emp, buscar={"paciente": paciente, "numero_factura": numero_factura, "mes": mes,
+                                 "obra_social": obra_social, "procedimiento": procedimiento},
+                cambios=cambios, aplicar_a_todas=aplicar_a_todas, hoy=hoy))
+
+        def proponer_nueva_facturacion(empresa: str, mes: str, paciente: str, obra_social: str, procedimiento: str,
+                                       medico: str = "", importe: str = "", numero_factura: str = "",
+                                       fecha_factura: str = "", vencimiento: str = "", fecha_pago: str = "",
+                                       estado: str = "Pendiente", observaciones: str = "") -> str:
+            """Prepara una fila nueva en Facturación VMR o VM (NO la guarda: el usuario confirma en el chat).
+            mes: AAAA-MM. Fechas: AAAA-MM-DD. importe: número. estado: Pendiente (por defecto), Completo,
+            Parcial, Vencido o Anulado."""
+            try:
+                datos.consultas.append(f"proponer_nueva_facturacion({empresa}, {paciente})")
+            except Exception:
+                pass
+            emp, df = _df_fx(empresa)
+            if emp is None:
+                return _json({"resultado": "no se armó", "error": "Decime VMR o VM (con acceso del usuario)."})
+            return _anotar(proponer_nueva_facturacion_datos(df, emp, {
+                "mes": mes, "paciente": paciente, "obra_social": obra_social, "procedimiento": procedimiento,
+                "medico": medico, "importe": importe, "numero_factura": numero_factura,
+                "fecha_factura": fecha_factura, "vencimiento": vencimiento, "fecha_pago": fecha_pago,
+                "estado": estado, "observaciones": observaciones}, hoy=hoy))
+
+        out += [proponer_cambio_facturacion, proponer_nueva_facturacion]
     return out
 
 
@@ -328,6 +725,18 @@ _ETIQUETAS = [("paciente", "Paciente"), ("fecha", "Fecha"), ("hora_inicio", "Hor
 
 
 def html_tarjeta(accion: dict[str, Any]) -> str:
+    if accion.get("filas") is not None:
+        filas = [f'<div class="asis-acc-k">{html.escape(_texto(k))}</div><div class="asis-acc-v">{html.escape(_texto(v))}</div>'
+                 for k, v in accion["filas"]]
+        for etiqueta, antes, despues in accion.get("cambios") or []:
+            antes_t = (f'<s style="color:#9A8D93;font-weight:400">{html.escape(_texto(antes))}</s> → ' if _texto(antes)
+                       else '<span style="color:#9A8D93;font-weight:400">vacío</span> → ')
+            filas.append(f'<div class="asis-acc-k">{html.escape(etiqueta)}</div>'
+                         f'<div class="asis-acc-v">{antes_t}{html.escape(_texto(despues))}</div>')
+        avisos = "".join(f'<div class="asis-acc-aviso">⚠️ {html.escape(a)}</div>' for a in accion.get("avisos", []))
+        return (f'<div class="asis-acc"><div class="asis-acc-tit">{accion.get("icono", "📝")} '
+                f'{html.escape(accion.get("titulo", "Acción"))}<span>esperando tu confirmación</span></div>'
+                f'<div class="asis-acc-grid">{"".join(filas)}</div>{avisos}</div>')
     d = accion.get("datos", {})
     filas = []
     for campo, etiqueta in _ETIQUETAS:
