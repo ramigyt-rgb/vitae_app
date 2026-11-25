@@ -83,6 +83,32 @@ def _descargar_cache(url: str, vuelta: int) -> tuple[str, str]:
     return descargar(url), datetime.now().strftime("%H:%M")
 
 
+def fecha_iso(valor: Any) -> str:
+    """Fecha del formulario web a AAAA-MM-DD.
+
+    El archivo trae mes/día/año (11/25/2026 = 25 de noviembre). Si el primer
+    número no puede ser un mes (> 12) se toma como día. Las fechas que ya
+    están en AAAA-MM-DD quedan igual.
+    """
+    t = _texto(valor)
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})", t)
+    if m:
+        anio, mes, dia = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    else:
+        m = re.match(r"^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})(?!\d)", t)
+        if not m:
+            return t
+        mes, dia, anio = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if anio < 100:
+            anio += 2000
+        if mes > 12 and dia <= 12:
+            mes, dia = dia, mes
+    try:
+        return datetime(anio, mes, dia).strftime("%Y-%m-%d")
+    except ValueError:
+        return t
+
+
 def _id(fila: dict[str, str]) -> str:
     clave = "|".join(_sin_acentos(fila.get(c, "")) for c in _CAMPOS)
     return hashlib.sha1(clave.encode("utf-8")).hexdigest()[:12]
@@ -110,7 +136,8 @@ def leer_texto(texto: str) -> pd.DataFrame:
                 reg[cabecera[i]] = re.sub(r"\s+", " ", str(valor)).strip()
         if not any(reg[c] for c in ("nombre", "apellido", "telefono", "email")):
             continue
-        reg["id"] = _id(reg)
+        reg["id"] = _id(reg)  # con la fecha tal como viene: no cambia aunque se corrija el formato
+        reg["fecha"] = fecha_iso(reg["fecha"])
         reg["orden"] = n
         registros.append(reg)
     df = pd.DataFrame(registros, columns=_CAMPOS + ["id", "orden"])
@@ -130,6 +157,7 @@ def normalizar_guardado(df: pd.DataFrame | None) -> pd.DataFrame:
     if sin_id.any():
         out.loc[sin_id, "id"] = [_id({c: _texto(f[c]) for c in _CAMPOS}) for _, f in out.loc[sin_id].iterrows()]
     out["estado"] = [(_texto(e) if _texto(e) in ESTADOS else "Nuevo") for e in out["estado"]]
+    out["fecha"] = out["fecha"].map(fecha_iso)
     return out.drop_duplicates("id", keep="first").reset_index(drop=True)
 
 
@@ -171,7 +199,7 @@ def preparar(guardado: pd.DataFrame) -> pd.DataFrame:
     d = normalizar_guardado(guardado)
     if d.empty:
         return d.assign(_fecha=pd.Series(dtype="datetime64[ns]"), _mes="", paciente="", whatsapp="", veces=0)
-    d["_fecha"] = pd.to_datetime(leer_fechas_ar(d["fecha"].map(_texto)).values, errors="coerce")
+    d["_fecha"] = pd.to_datetime(d["fecha"].map(fecha_iso), format="%Y-%m-%d", errors="coerce")
     d["_mes"] = [str(pd.Period(f, freq="M")) if pd.notna(f) else "" for f in d["_fecha"]]
     d["paciente"] = [", ".join(x for x in (_texto(a).upper(), _texto(n).title()) if x) for a, n in zip(d["apellido"], d["nombre"])]
     d["whatsapp"] = d["telefono"].map(whatsapp)
@@ -240,8 +268,14 @@ def render_formularios(
         (mostrar_error or (lambda m, e: st.error(f"{m} {e}")))(msg, exc)
 
     st.markdown(_CSS, unsafe_allow_html=True)
+    corregir_fechas = False
     try:
-        guardado = normalizar_guardado(leer_guardado())
+        crudo = leer_guardado()
+        guardado = normalizar_guardado(crudo)
+        if isinstance(crudo, pd.DataFrame) and "fecha" in crudo.columns and not crudo.empty:
+            antes = crudo.drop_duplicates("id", keep="first")["fecha"].map(_texto).tolist() if "id" in crudo.columns \
+                else crudo["fecha"].map(_texto).tolist()
+            corregir_fechas = antes != guardado["fecha"].map(_texto).tolist()[:len(antes)]
     except Exception as exc:
         _error("No se pudo leer la pestaña de formularios en Google Sheets.", exc)
         guardado = normalizar_guardado(None)
@@ -255,6 +289,11 @@ def render_formularios(
         error_web = exc
 
     datos, nuevos = sincronizar(guardado, web)
+    if corregir_fechas and not nuevos:
+        try:
+            guardar(datos)  # deja las fechas guardadas como AAAA-MM-DD (una sola vez)
+        except Exception:
+            pass
     if nuevos:
         try:
             guardar(datos)
@@ -372,7 +411,7 @@ def render_formularios(
                     st.rerun()
         with b2:
             salida = io.BytesIO()
-            exportar = vista[["fecha", "apellido", "nombre", "edad", "obra_social", "telefono", "email", "estado",
+            exportar = vista.assign(fecha=vista["_fecha"].dt.strftime("%d/%m/%Y").fillna(""))[["fecha", "apellido", "nombre", "edad", "obra_social", "telefono", "email", "estado",
                               "notas"]].rename(columns={"obra_social": "obra social"})
             exportar.columns = [c.capitalize() for c in exportar.columns]
             exportar.to_excel(salida, index=False, sheet_name="Formularios")
