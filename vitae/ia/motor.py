@@ -491,11 +491,16 @@ def _cliente_y_modelos():
 
 def responder(pregunta: str, modulo_actual: str | None = None, historial: list[dict[str, str]] | None = None,
               datos_visibles: dict[str, pd.DataFrame] | None = None, cliente=None, modelos: list[str] | None = None,
-              modulos_permitidos: set[str] | None = None, estilo: str = "analista") -> str:
+              modulos_permitidos: set[str] | None = None, estilo: str = "analista",
+              acciones: list[dict[str, Any]] | None = None) -> str:
     """Responde una pregunta usando herramientas de consulta sobre todos los datos.
 
     ``estilo``: "analista" (respuestas completas, con fuente) o "chat" (Luz:
     corto, cálido y conversado, para el chat flotante de Luz).
+
+    ``acciones``: si se pasa una lista, Luz además puede PROPONER acciones
+    (por ejemplo, programar una cirugía); las propuestas quedan en esa lista y
+    sólo se ejecutan cuando el usuario las confirma (vitae/ia/acciones.py).
 
     ``modulos_permitidos``: si se indica, la IA sólo consulta esos módulos
     (los que el usuario puede abrir en la app).
@@ -506,6 +511,12 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
         cliente, modelos = _cliente_y_modelos()
     datos = _Datos(extra=datos_visibles, permitidos=modulos_permitidos)
     herramientas = crear_herramientas(datos)
+    de_accion: list[Callable[..., str]] = []
+    if acciones is not None:
+        from vitae.ia import acciones as _acciones
+
+        de_accion = _acciones.herramientas(datos, acciones)
+        herramientas = herramientas + de_accion
 
     hoy = pd.Timestamp.today().normalize()
     mes = nombre_mes_es(hoy.to_period("M")) if nombre_mes_es else hoy.strftime("%m/%Y")
@@ -514,7 +525,10 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     )
     conocimiento = leer_conocimiento()
     sistema = (
-        f"{_instrucciones(estilo)}\n\nHOY: {hoy:%d/%m/%Y} (mes actual: {mes}).\n"
+        f"{_instrucciones(estilo)}\n\n"
+        + (f"{_acciones.INSTRUCCIONES}\n\n" if de_accion else "")
+        + f"HOY: {['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'][hoy.weekday()]} "
+          f"{hoy:%d/%m/%Y} (mes actual: {mes}).\n"
         f"PANTALLA ACTUAL DEL USUARIO: {modulo_actual or 'Inicio'}.\n"
         f"MÓDULOS DISPONIBLES: {resumen_modulos}.\n"
         + (f"\nCONOCIMIENTO DE LA EMPRESA (cargado por la dirección):\n{conocimiento[:20000]}\n" if conocimiento else "")

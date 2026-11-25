@@ -1500,6 +1500,20 @@ def _modulos_permitidos_ia() -> set[str] | None:
     return permitidos
 
 
+def _luz_ejecutar_accion(accion: dict[str, Any]) -> str:
+    """Guarda una acción de Luz que el usuario confirmó (lee y escribe en Google Sheets)."""
+    from vitae.ia import acciones as _luz_acciones
+
+    def _guardar(tabla: str, df_nuevo: pd.DataFrame) -> None:
+        sync_df_to_sheet(tabla, df_nuevo)
+        try:
+            _vitae_invalidate_data_cache()
+        except Exception:
+            st.cache_data.clear()
+
+    return _luz_acciones.ejecutar(accion, get_df, _guardar)
+
+
 def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     """Asistente Vitae: «Luz», chat estilo Messenger abajo a la derecha en todas
     las pantallas, minimizable (reemplaza al Copiloto y a las consultas de IA de
@@ -1516,7 +1530,8 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     try:
         usuario = _auth_current_user() or {}
         nombre = str(usuario.get("nombre") or "").strip().split(" ")[0].capitalize() or None
-        chat_flotante(nombre_visible, permitidos=_modulos_permitidos_ia(), nombre_usuario=nombre)
+        chat_flotante(nombre_visible, permitidos=_modulos_permitidos_ia(), nombre_usuario=nombre,
+                      ejecutar_fn=_luz_ejecutar_accion)
     except Exception as exc:  # el asistente nunca tira abajo una pantalla, pero el error se ve
         st.error(f"Asistente Vitae: no se pudo mostrar ({type(exc).__name__}: {exc})"[:300])
 
