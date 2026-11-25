@@ -42,7 +42,7 @@ TABLA_CONOCIMIENTO = "ia_conocimiento"
 # Pestañas que la IA NUNCA lee (datos de acceso de usuarios).
 _TABLAS_PROHIBIDAS = {"usuarios_vitae"}
 # Pestañas adicionales útiles fuera de MODULES.
-_TABLAS_EXTRA = {"Farmacia · movimientos": "farmacia_movimientos"}
+_TABLAS_EXTRA = {"Farmacia · movimientos": "farmacia_movimientos", "Gine Vitae · formularios web": "gine_vitae_formularios"}
 _MAX_FILAS_RESPUESTA = 200
 _MAX_TEXTO_CELDA = 160
 
