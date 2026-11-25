@@ -26,6 +26,8 @@ NOMBRE = "Luz"
 CLAVE = "asistente_vitae_mensajes"
 ABIERTO = "asis_abierto"
 PENDIENTE = "asistente_vitae_pendiente"
+NUEVAS_ACCIONES = "asis_acciones_nuevas"   # propuestas de la última respuesta (vitae/ia/acciones.py)
+REFRESCAR = "asis_refrescar"               # después de una acción: recargar la pantalla de abajo
 MAX_MENSAJES = 40
 
 # Respuestas rápidas (chips arriba del cuadro de texto): etiqueta → pregunta.
@@ -67,8 +69,11 @@ def responder(pregunta: str, modulo_actual: str, historial: list[dict[str, str]]
         try:
             from vitae.ia.motor import responder as motor_responder
 
-            return motor_responder(pregunta, modulo_actual, historial=historial,
-                                   modulos_permitidos=permitidos, estilo="chat")
+            propuestas: list[dict[str, Any]] = []
+            texto = motor_responder(pregunta, modulo_actual, historial=historial,
+                                    modulos_permitidos=permitidos, estilo="chat", acciones=propuestas)
+            st.session_state[NUEVAS_ACCIONES] = propuestas
+            return texto
         except Exception as exc:  # cuota, modelo, red: se informa y se prueba el respaldo
             ultimo = exc
     if permitidos is not None:
@@ -101,10 +106,77 @@ def _hora() -> str:
     return datetime.now().strftime("%H:%M")
 
 
-def _agregar(rol: str, texto: str) -> None:
+def _agregar(rol: str, texto: str, accion: dict[str, Any] | None = None) -> None:
     lista = mensajes()
-    lista.append({"rol": rol, "texto": texto, "hora": _hora()})
+    m: dict[str, Any] = {"rol": rol, "texto": texto, "hora": _hora()}
+    if accion:
+        m["accion"] = accion
+    lista.append(m)
     del lista[:-MAX_MENSAJES]
+
+
+# ---------------------------------------------------------------- acciones
+
+def accion_pendiente() -> tuple[int, dict[str, Any]] | None:
+    for i in range(len(mensajes()) - 1, -1, -1):
+        a = mensajes()[i].get("accion")
+        if a and a.get("estado") == "pendiente":
+            return i, a
+    return None
+
+
+def _descartar_pendientes() -> None:
+    for m in mensajes():
+        if m.get("accion", {}).get("estado") == "pendiente":
+            m["accion"]["estado"] = "descartada"
+
+
+def _confirmar(i: int, ejecutar_fn: Callable[[dict[str, Any]], str] | None, permitidos: set[str] | None) -> None:
+    lista = mensajes()
+    accion = lista[i].get("accion") if i < len(lista) else None
+    if not accion or accion.get("estado") != "pendiente":
+        return
+    if permitidos is not None and accion.get("modulo") not in permitidos:
+        accion["estado"] = "rechazada"
+        _agregar("assistant", f"No tenés permiso para cambiar {accion.get('modulo')}, así que no lo hice.")
+        return
+    if ejecutar_fn is None:
+        accion["estado"] = "error"
+        _agregar("assistant", "Desde acá no puedo guardar cambios. Cargalo desde el módulo, porfa.")
+        return
+    try:
+        texto = ejecutar_fn(accion)
+        accion["estado"] = "hecha"
+        st.session_state[REFRESCAR] = True
+    except Exception as exc:
+        accion["estado"] = "error"
+        texto = f"Uy, no pude guardarlo: {exc}"
+    _agregar("assistant", texto)
+
+
+def _cancelar(i: int) -> None:
+    lista = mensajes()
+    accion = lista[i].get("accion") if i < len(lista) else None
+    if accion and accion.get("estado") == "pendiente":
+        accion["estado"] = "cancelada"
+        _agregar("assistant", "Dale, no cargué nada. Si querés cambiar algún dato, decime y la armo de nuevo.")
+
+
+def _tarjeta_accion(lugar: Any, ejecutar_fn: Callable[[dict[str, Any]], str] | None,
+                    permitidos: set[str] | None) -> None:
+    pend = accion_pendiente()
+    if not pend:
+        lugar.empty()
+        return
+    i, accion = pend
+    from vitae.ia.acciones import html_tarjeta
+
+    with lugar.container(key=f"asis_accion_{i}"):
+        st.markdown(html_tarjeta(accion), unsafe_allow_html=True)
+        with _fila(f"asis_accion_botones_{i}"):
+            _boton("✅ Confirmar", key=f"asis_acc_ok_{i}", type="primary", on_click=_confirmar,
+                   args=(i, ejecutar_fn, permitidos))
+            _boton("Cancelar", key=f"asis_acc_no_{i}", on_click=_cancelar, args=(i,))
 
 
 def _error_humano(exc: Exception) -> str:
@@ -300,6 +372,17 @@ _CSS = """<style>
 .asis-escribiendo span{width:7px;height:7px;border-radius:50%;background:#9A8D93;animation:asis-pt 1.2s infinite ease-in-out}
 .asis-escribiendo span:nth-child(2){animation-delay:.15s}.asis-escribiendo span:nth-child(3){animation-delay:.3s}
 @keyframes asis-pt{0%,60%,100%{transform:translateY(0);opacity:.5}30%{transform:translateY(-4px);opacity:1}}
+.asis-acc{background:#fff;border:1px solid #E4D7DD;border-left:4px solid #8C2853;border-radius:12px;padding:.55rem .7rem;
+  margin:.1rem .6rem .35rem;font-size:.8rem}
+.asis-acc-tit{display:flex;justify-content:space-between;align-items:center;font-weight:700;color:#5E1A39;margin-bottom:.35rem}
+.asis-acc-tit span{font-weight:500;font-size:.68rem;color:#9A8D93}
+.asis-acc-grid{display:grid;grid-template-columns:auto 1fr;gap:.12rem .6rem}
+.asis-acc-k{color:#8A7F85}.asis-acc-v{color:#2B2226;font-weight:600;overflow-wrap:anywhere}
+.asis-acc-aviso{margin-top:.35rem;color:#9A3A1E;background:#FFF3EC;border-radius:8px;padding:.25rem .45rem}
+[class*="st-key-asis_accion_botones"]{padding:0 .6rem .45rem;gap:.4rem!important}
+[class*="st-key-asis_accion_botones"] button{min-height:0!important;padding:.25rem .8rem!important;border-radius:999px!important}
+[class*="st-key-asis_accion_"]{background:#F7F3F5}
+.st-key-asis_chat_abierto:has([class*="st-key-asis_accion_"]) .asis-mensajes{height:165px}
 .st-key-asis_pie{background:#fff;padding:.5rem .6rem .6rem;gap:.45rem!important;border-top:1px solid #EFE6EA}
 .st-key-asis_sugerencias{gap:.35rem!important;flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none}
 .st-key-asis_sugerencias::-webkit-scrollbar{display:none}
@@ -460,12 +543,14 @@ def _cabecera(modulo_actual: str) -> None:
 
 
 def _conversacion(modulo_actual: str, permitidos: set[str] | None, responder_fn: Responder,
-                  nombre_usuario: str | None) -> None:
+                  nombre_usuario: str | None, ejecutar_fn: Callable[[dict[str, Any]], str] | None = None) -> None:
     lista = mensajes()
     saludo = _saludo(nombre_usuario)
     inicial = _inicial(nombre_usuario)
     caja = st.empty()
     caja.markdown(html_conversacion(lista, saludo=saludo, inicial=inicial), unsafe_allow_html=True)
+    lugar_accion = st.empty()
+    _tarjeta_accion(lugar_accion, ejecutar_fn, permitidos)
     with st.container(key="asis_pie"):
         with _fila("asis_sugerencias"):
             for i, (etiqueta, pregunta_sug) in enumerate(SUGERENCIAS):
@@ -481,19 +566,27 @@ def _conversacion(modulo_actual: str, permitidos: set[str] | None, responder_fn:
     if not pregunta:
         return
     historial = _historial_para_motor(lista)
+    _descartar_pendientes()
+    lugar_accion.empty()
     _agregar("user", pregunta)
     caja.markdown(html_conversacion(mensajes(), escribiendo=True, saludo=saludo, inicial=inicial),
                   unsafe_allow_html=True)
+    st.session_state.pop(NUEVAS_ACCIONES, None)
     try:
         respuesta = responder_fn(pregunta, modulo_actual, historial, permitidos)
     except Exception as exc:
         respuesta = _error_humano(exc)
-    _agregar("assistant", respuesta or "Mmm, no me salió nada para eso. ¿Me lo preguntás de otra forma?")
+    propuestas = st.session_state.pop(NUEVAS_ACCIONES, None) or []
+    _agregar("assistant", respuesta or "Mmm, no me salió nada para eso. ¿Me lo preguntás de otra forma?",
+             accion=propuestas[-1] if propuestas else None)
     caja.markdown(html_conversacion(mensajes(), saludo=saludo, inicial=inicial), unsafe_allow_html=True)
+    _tarjeta_accion(lugar_accion, ejecutar_fn, permitidos)
 
 
 def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Responder,
-             nombre_usuario: str | None) -> None:
+             nombre_usuario: str | None, ejecutar_fn: Callable[[dict[str, Any]], str] | None = None) -> None:
+    if st.session_state.pop(REFRESCAR, False):
+        st.rerun()  # Luz cambió datos: se recarga toda la pantalla para verlos
     st.markdown(_css(), unsafe_allow_html=True)
     if not st.session_state.get(ABIERTO, False) and not st.session_state.get(PENDIENTE):
         with st.container(key="asis_chat_cerrado"):
@@ -503,7 +596,7 @@ def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Resp
     st.session_state[ABIERTO] = True
     with st.container(key="asis_chat_abierto"):
         _cabecera(modulo_actual)
-        _conversacion(modulo_actual, permitidos, responder_fn, nombre_usuario)
+        _conversacion(modulo_actual, permitidos, responder_fn, nombre_usuario, ejecutar_fn)
 
 
 _fragmento = getattr(st, "fragment", None)
@@ -516,10 +609,13 @@ def chat_flotante(
     permitidos: set[str] | None = None,
     responder_fn: Responder | None = None,
     nombre_usuario: str | None = None,
+    ejecutar_fn: Callable[[dict[str, Any]], str] | None = None,
 ) -> None:
-    """Luz: burbuja flotante que se abre en una ventanita; las dos se pueden arrastrar."""
+    """Luz: burbuja flotante que se abre en una ventanita; las dos se pueden arrastrar.
+
+    ``ejecutar_fn`` guarda una acción confirmada (por ejemplo, una cirugía en la agenda)."""
     _arrastre()
-    _ventana_fragmento(modulo_actual, permitidos, responder_fn or responder, nombre_usuario)
+    _ventana_fragmento(modulo_actual, permitidos, responder_fn or responder, nombre_usuario, ejecutar_fn)
 
 
 def render_asistente(
