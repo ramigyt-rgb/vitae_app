@@ -140,6 +140,16 @@ def _id() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _id_fijo(fila: pd.Series, posicion: int) -> str:
+    """Identificador estable para filas que no lo tienen en la pestaña: el
+    mismo en cada lectura (si cambiara, el editor perdería lo editado)."""
+    import hashlib
+
+    clave = "|".join(_texto(fila.get(c, "")) for c in ("organismo", "impuesto", "periodo", "fecha_vencimiento",
+                                                      "capital", "intereses", "deuda_total")) + f"|{posicion}"
+    return "DI-" + hashlib.sha1(clave.encode("utf-8")).hexdigest()[:12].upper()
+
+
 def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
     """Una fila por obligación, con sección, período AAAA-MM, importes y saldo.
 
@@ -156,7 +166,11 @@ def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
             d[c] = ""
     for c in _MONTOS:
         d[c] = [numero(v) or 0.0 for v in d[c]]
-    d["id_registro"] = [(_texto(v) or _id()) for v in d["id_registro"]]
+    d["id_registro"] = [(_texto(v) or _id_fijo(f, i)) for i, (v, (_, f)) in enumerate(zip(d["id_registro"], df.iterrows()))]
+    # Si la pestaña tiene identificadores repetidos, se distinguen (si no, editar una fila tocaría otra).
+    repetidos = d["id_registro"].duplicated(keep="first")
+    if repetidos.any():
+        d.loc[repetidos, "id_registro"] = [f"{v}-{i}" for i, v in zip(d.index[repetidos], d.loc[repetidos, "id_registro"])]
     d["organismo"] = d["organismo"].map(_texto)
     d["impuesto"] = d["impuesto"].map(_texto)
     sindical = (d["cuota_sindical"].abs() + d["cuota_solidaridad"].abs() + d["contribucion_convencional"].abs()) > 0
@@ -197,6 +211,59 @@ def para_guardar(d: pd.DataFrame) -> pd.DataFrame:
         out[c] = [f"{float(v):.2f}" for v in out[c]]
     extras = [c for c in out.columns if c not in COLUMNAS and not str(c).startswith("_")]
     return out[COLUMNAS + extras]
+
+
+_COMPONENTES = ("capital", "intereses", "cuota_sindical", "cuota_solidaridad", "contribucion_convencional")
+
+
+def aplicar_edicion(d: pd.DataFrame, original: pd.DataFrame, editada: pd.DataFrame,
+                    cols: list[str]) -> tuple[pd.DataFrame, int]:
+    """Aplica sólo las celdas que cambiaron y borra las filas marcadas.
+
+    La deuda total de una fila se recalcula sólo si cambió alguno de sus
+    componentes (capital, intereses o importes sindicales).
+    """
+    nuevo = d.set_index("id_registro")
+    cambios = 0
+    editables = cols + ["importe_pagado", "marca", "observaciones"]
+
+    def distinto(a: Any, b: Any, monto: bool) -> bool:
+        if monto:
+            return abs(float(numero(a) or 0.0) - float(numero(b) or 0.0)) > 0.004
+        if isinstance(a, (pd.Timestamp, date)) or isinstance(b, (pd.Timestamp, date)) or a is None or b is None:
+            fa = pd.Timestamp(a) if a is not None and not pd.isna(a) else None
+            fb = pd.Timestamp(b) if b is not None and not pd.isna(b) else None
+            return fa != fb
+        return _texto(a) != _texto(b)
+
+    for i, f in editada.iterrows():
+        if i not in nuevo.index or i not in original.index:
+            continue
+        o = original.loc[i]
+        fila_cambio = componente = False
+        for c in editables:
+            monto = c in _MONTOS
+            if not distinto(f[c], o[c], monto):
+                continue
+            v = f[c]
+            if c == "periodo":
+                v = leer_periodo(v) or nuevo.at[i, "periodo"]
+            elif c == "_vto":
+                v = pd.Timestamp(v) if v is not None and not pd.isna(v) else pd.NaT
+            elif monto:
+                v = float(numero(v) or 0.0)
+            else:
+                v = _texto(v)
+            nuevo.at[i, c] = v
+            fila_cambio = True
+            componente = componente or c in _COMPONENTES
+        if componente:
+            nuevo.at[i, "deuda_total"] = sum(float(nuevo.at[i, c]) for c in _COMPONENTES)
+        cambios += int(fila_cambio)
+    borrar = [i for i, v in editada["borrar"].items() if bool(v) and i in nuevo.index]
+    nuevo = nuevo.drop(index=borrar).reset_index()
+    nuevo["fecha_vencimiento"] = nuevo["_vto"]
+    return normalizar(para_guardar(nuevo)), cambios + len(borrar)
 
 
 def vencido(d: pd.DataFrame, hoy: pd.Timestamp | None = None) -> pd.Series:
@@ -620,69 +687,80 @@ def render_deudas(
     if seccion == "Cargar":
         tipo = st.segmented_control("Qué cargar", ["F931 de un período", "Rentas", "Ganancias / IVA / otro", "Sindicato"],
                                     default="F931 de un período", key=f"{k}tipo") or "F931 de un período"
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            per_txt = st.text_input("Período", key=f"{k}per_{rev}",
-                                    placeholder="202611 o nov-26" if tipo != "Rentas" else "nov-26",
-                                    value=str(pd.Period(hoy, freq="M") - 1).replace("-", ""))
+        existentes = sorted(d.loc[d["seccion"] == SINDICATO, "_grupo"].unique()) if not d.empty else []
+        secc = RENTAS
+        if tipo == "Ganancias / IVA / otro":
+            secc = st.segmented_control("Sección", [ANTICIPOS, GANANCIAS, IVA, OTROS], default=ANTICIPOS,
+                                        key=f"{k}secc") or ANTICIPOS
+        # Todo dentro de un formulario: se guarda en un solo paso al tocar «Guardar».
+        with st.form(f"{k}alta_{tipo}_{rev}", border=False):
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                per_txt = st.text_input("Período", key=f"{k}per_{tipo}_{rev}",
+                                        placeholder="202611 o nov-26",
+                                        value=str(pd.Period(hoy, freq="M") - 1).replace("-", ""))
+            with c2:
+                vto = st.date_input("Fecha de vencimiento", value=None, format="DD/MM/YYYY", key=f"{k}vto_{tipo}_{rev}")
+            with c3:
+                marca = st.selectbox("Marca", MARCAS, format_func=lambda m: m or "Sin marca", key=f"{k}marca_alta_{tipo}_{rev}")
+            if tipo == "F931 de un período":
+                st.caption("Completá los importes de cada código; los que queden en 0 no se cargan.")
+                base = pd.DataFrame({"impuesto": CODIGOS_F931, "capital": 0.0, "intereses": 0.0})
+                tabla_f = st.data_editor(base, hide_index=True, use_container_width=True, num_rows="dynamic",
+                                         key=f"{k}f931_{rev}", column_config={
+                                             "impuesto": st.column_config.TextColumn("Impuesto", width="large"),
+                                             "capital": st.column_config.NumberColumn("Capital", min_value=0.0, format="localized"),
+                                             "intereses": st.column_config.NumberColumn("Intereses", min_value=0.0, format="localized")})
+            elif tipo == "Sindicato":
+                s1, s2 = st.columns(2)
+                with s1:
+                    sind = st.selectbox("Sindicato", existentes + ["Otro…"], key=f"{k}sind_{rev}")
+                with s2:
+                    otro = st.text_input("Si es otro, nombre", key=f"{k}sind_otro_{rev}", placeholder="ATSA, FATSA…")
+                a, b, c = st.columns(3)
+                cs = a.number_input("Cuota sindical", min_value=0.0, step=100.0, format="%.2f", key=f"{k}cs_{rev}")
+                so = b.number_input("Solidaridad / Extra", min_value=0.0, step=100.0, format="%.2f", key=f"{k}so_{rev}")
+                cc = c.number_input("Contribución convencional", min_value=0.0, step=100.0, format="%.2f", key=f"{k}cc_{rev}")
+            else:
+                impuesto = st.text_input("Impuesto", value=IMPUESTO_POR_DEFECTO.get(secc, ""), key=f"{k}imp_{secc}_{rev}",
+                                         placeholder="Si no es el indicado, escribilo")
+                a, b = st.columns(2)
+                cap = a.number_input("Capital", min_value=0.0, step=1000.0, format="%.2f", key=f"{k}cap_{tipo}_{rev}")
+                inte = b.number_input("Intereses", min_value=0.0, step=1000.0, format="%.2f", key=f"{k}int_{tipo}_{rev}")
+            obs = st.text_input("Observaciones (opcional)", key=f"{k}obs_{tipo}_{rev}")
+            enviar = st.form_submit_button("Guardar", type="primary", icon=":material/save:", use_container_width=es_movil())
+        if not enviar:
+            return
         periodo = leer_periodo(per_txt)
-        with c2:
-            vto = st.date_input("Fecha de vencimiento", value=None, format="DD/MM/YYYY", key=f"{k}vto_{rev}")
-        with c3:
-            marca = st.selectbox("Marca", MARCAS, format_func=lambda m: m or "Sin marca", key=f"{k}marca_alta_{rev}")
-        if per_txt and not periodo:
-            st.warning("No entiendo el período. Escribilo como 202611 o nov-26.")
         nuevas: list[dict[str, Any]] = []
         if tipo == "F931 de un período":
-            st.caption("Completá los importes de cada código; los que queden en 0 no se cargan.")
-            base = pd.DataFrame({"impuesto": CODIGOS_F931, "capital": 0.0, "intereses": 0.0})
-            tabla_f = st.data_editor(base, hide_index=True, use_container_width=True, num_rows="dynamic",
-                                     key=f"{k}f931_{rev}", column_config={
-                                         "impuesto": st.column_config.TextColumn("Impuesto", width="large"),
-                                         "capital": st.column_config.NumberColumn("Capital", min_value=0.0, format="localized"),
-                                         "intereses": st.column_config.NumberColumn("Intereses", min_value=0.0, format="localized")})
             for _, f in tabla_f.iterrows():
-                cap, inte = float(numero(f["capital"]) or 0), float(numero(f["intereses"]) or 0)
-                if cap + inte > 0.004 and _texto(f["impuesto"]):
+                cap_f, int_f = float(numero(f["capital"]) or 0), float(numero(f["intereses"]) or 0)
+                if cap_f + int_f > 0.004 and _texto(f["impuesto"]):
                     nuevas.append({"seccion": F931, "organismo": "F931", "impuesto": _texto(f["impuesto"]),
-                                   "capital": cap, "intereses": inte})
+                                   "capital": cap_f, "intereses": int_f})
         elif tipo == "Sindicato":
-            existentes = sorted(d.loc[d["seccion"] == SINDICATO, "_grupo"].unique()) if not d.empty else []
-            s1, s2 = st.columns([1, 1])
-            with s1:
-                sind = st.selectbox("Sindicato", existentes + ["Otro…"], key=f"{k}sind") if existentes else "Otro…"
-            with s2:
-                otro = st.text_input("Nombre", key=f"{k}sind_otro_{rev}", disabled=sind != "Otro…", placeholder="ATSA, FATSA…")
-            a, b, c = st.columns(3)
-            cs = a.number_input("Cuota sindical", min_value=0.0, step=100.0, format="%.2f", key=f"{k}cs_{rev}")
-            so = b.number_input("Solidaridad / Extra", min_value=0.0, step=100.0, format="%.2f", key=f"{k}so_{rev}")
-            cc = c.number_input("Contribución convencional", min_value=0.0, step=100.0, format="%.2f", key=f"{k}cc_{rev}")
-            organismo = (otro.strip().upper() if sind == "Otro…" else sind)
+            organismo = otro.strip().upper() if (sind == "Otro…" or otro.strip()) else sind
             if cs + so + cc > 0.004 and organismo:
                 nuevas.append({"seccion": SINDICATO, "organismo": organismo,
                                "impuesto": " + ".join(t for v, t in ((cs, "Cuota sindical"), (so, "Solidaridad"),
                                                                      (cc, "Contribución convencional")) if v),
                                "cuota_sindical": cs, "cuota_solidaridad": so, "contribucion_convencional": cc})
         else:
-            secc = RENTAS if tipo == "Rentas" else st.selectbox("Sección", [ANTICIPOS, GANANCIAS, IVA, OTROS], key=f"{k}secc")
-            impuesto = st.text_input("Impuesto", value=IMPUESTO_POR_DEFECTO.get(secc, ""), key=f"{k}imp_{secc}_{rev}")
-            a, b = st.columns(2)
-            cap = a.number_input("Capital", min_value=0.0, step=1000.0, format="%.2f", key=f"{k}cap_{rev}")
-            inte = b.number_input("Intereses", min_value=0.0, step=1000.0, format="%.2f", key=f"{k}int_{rev}")
             if cap + inte > 0.004 and impuesto.strip():
                 organismo = {RENTAS: "RENTAS", ANTICIPOS: "ANTICIPO GANANCIAS"}.get(secc, secc.upper())
                 nuevas.append({"seccion": secc, "organismo": organismo, "impuesto": impuesto.strip(),
                                "capital": cap, "intereses": inte})
-        obs = st.text_input("Observaciones (opcional)", key=f"{k}obs_{rev}")
-        total_nuevo = sum(n.get("capital", 0) + n.get("intereses", 0) + n.get("cuota_sindical", 0)
-                          + n.get("cuota_solidaridad", 0) + n.get("contribucion_convencional", 0) for n in nuevas)
-        listo = bool(nuevas) and bool(periodo)
-        if st.button(f"Guardar {len(nuevas)} deuda(s) · {pesos(total_nuevo)}" if nuevas else "Guardar", type="primary",
-                     disabled=not listo, key=f"{k}alta_ok", icon=":material/save:", use_container_width=es_movil()):
-            for n in nuevas:
-                n.update({"id_registro": _id(), "periodo": periodo, "marca": marca, "observaciones": obs.strip(),
-                          "fecha_vencimiento": vto.isoformat() if vto else ""})
-            _guardar(pd.concat([d, normalizar(pd.DataFrame(nuevas))], ignore_index=True), f"{len(nuevas)} deuda(s) cargadas")
+        if not periodo:
+            st.error("No entiendo el período. Escribilo como 202611 o nov-26.")
+            return
+        if not nuevas:
+            st.error("Completá al menos un importe (y el nombre del sindicato o del impuesto).")
+            return
+        for n in nuevas:
+            n.update({"id_registro": _id(), "periodo": periodo, "marca": marca, "observaciones": obs.strip(),
+                      "fecha_vencimiento": vto.isoformat() if vto else ""})
+        _guardar(pd.concat([d, normalizar(pd.DataFrame(nuevas))], ignore_index=True), f"{len(nuevas)} deuda(s) cargadas")
         return
 
     # ---- Editar ------------------------------------------------------------
@@ -724,38 +802,24 @@ def render_deudas(
             "marca": st.column_config.SelectboxColumn("Marca", options=MARCAS),
             "observaciones": st.column_config.TextColumn("Observaciones"),
         }
-        editada = st.data_editor(tabla_e, hide_index=True, use_container_width=True, num_rows="fixed",
-                                 height=min(80 + 36 * len(tabla_e), 680), column_config=cfg, key=f"{k}editor_{bloque}_{rev}")
-        borrar = [i for i, v in editada["borrar"].items() if bool(v)]
-        b1, b2 = st.columns(2)
-        ok = b1.button("Guardar cambios" + (f" y borrar {len(borrar)}" if borrar else ""), type="primary",
-                       key=f"{k}ed_ok", icon=":material/save:", use_container_width=True)
-        if b2.button("Descartar cambios", key=f"{k}ed_no", use_container_width=True):
+        # Dentro de un formulario: lo editado se envía junto con «Guardar» en un
+        # solo paso (sin recargas intermedias que pierdan la edición).
+        with st.form(f"{k}form_{bloque}_{rev}", border=False):
+            editada = st.data_editor(tabla_e, hide_index=True, use_container_width=True, num_rows="fixed",
+                                     height=min(80 + 36 * len(tabla_e), 680), column_config=cfg,
+                                     key=f"{k}editor_{bloque}_{rev}")
+            b1, b2 = st.columns(2)
+            ok = b1.form_submit_button("Guardar cambios", type="primary", icon=":material/save:", use_container_width=True)
+            no = b2.form_submit_button("Descartar cambios", use_container_width=True)
+        if no:
             st.session_state[rev_key] = rev + 1
             st.rerun()
         if ok:
-            nuevo = d.set_index("id_registro")
-            for i, f in editada.iterrows():
-                if i not in nuevo.index:
-                    continue
-                for c in cols + ["importe_pagado", "marca", "observaciones"]:
-                    v = f[c]
-                    if c == "periodo":
-                        v = leer_periodo(v) or nuevo.at[i, "periodo"]
-                    elif c == "_vto":
-                        v = pd.Timestamp(v) if v is not None and not pd.isna(v) else pd.NaT
-                    elif c in _MONTOS:
-                        v = float(numero(v) or 0.0)
-                    else:
-                        v = _texto(v)
-                    nuevo.at[i, c] = v
-                # La deuda total se recalcula con los componentes editados.
-                nuevo.at[i, "deuda_total"] = sum(float(nuevo.at[i, c]) for c in
-                                                 ("capital", "intereses", "cuota_sindical", "cuota_solidaridad",
-                                                  "contribucion_convencional"))
-            nuevo = nuevo.drop(index=[b for b in borrar if b in nuevo.index]).reset_index()
-            nuevo["fecha_vencimiento"] = nuevo["_vto"]
-            _guardar(normalizar(para_guardar(nuevo)), "Cambios guardados")
+            nuevo, n = aplicar_edicion(d, tabla_e, editada, cols)
+            if n == 0:
+                st.info("No hay cambios para guardar.")
+            else:
+                _guardar(nuevo, f"{n} cambio(s) guardados")
         return
 
     # ---- Importar ----------------------------------------------------------

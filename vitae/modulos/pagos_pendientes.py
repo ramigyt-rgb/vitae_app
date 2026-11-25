@@ -217,6 +217,15 @@ def _id_nuevo() -> str:
     return uuid.uuid4().hex[:12]
 
 
+def _id_fijo(fila: pd.Series, posicion: int) -> str:
+    """Identificador estable para filas sin id en la pestaña (igual en cada lectura)."""
+    import hashlib
+
+    clave = "|".join(_texto(fila.get(c, "")) for c in ("mes", "fecha", "categoria", "concepto", "proveedor",
+                                                      "periodo", "importe")) + f"|{posicion}"
+    return "PP-" + hashlib.sha1(clave.encode("utf-8")).hexdigest()[:12]
+
+
 # ---------------------------------------------------------------------------
 # Datos
 # ---------------------------------------------------------------------------
@@ -240,7 +249,10 @@ def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
         sin_concepto = d["concepto"].map(_texto).eq("")
         d.loc[sin_concepto, "concepto"] = d.loc[sin_concepto, "proveedor"]
 
-    d["id"] = [(_texto(v) or _id_nuevo()) for v in d["id"]]
+    d["id"] = [(_texto(v) or _id_fijo(f, i)) for i, (v, (_, f)) in enumerate(zip(d["id"], df.iterrows()))]
+    repetidos = d["id"].duplicated(keep="first")
+    if repetidos.any():
+        d.loc[repetidos, "id"] = [f"{v}-{i}" for i, v in zip(d.index[repetidos], d.loc[repetidos, "id"])]
     meses = [_normalizar_mes(m) or _mes_de_fecha(f) or (_mes_de_fecha(v) if "vencimiento" in d.columns else "")
              for m, f, v in zip(d["mes"], d["fecha"], d.get("vencimiento", d["fecha"]))]
     d["mes"] = [m or "Sin mes" for m in meses]
@@ -1118,7 +1130,8 @@ def render_pagos_pendientes(
         tabla = pendientes[["id", "categoria", "concepto", "periodo", "saldo", "cubre"]].copy()
         tabla["cubre"] = tabla["cubre"].replace("", SIN_ASIGNAR)
         tabla = tabla.set_index("id")
-        editada = st.data_editor(
+        form_asig = st.form(f"pp2_form_asig_{mes}_{_rev()}", border=False)
+        editada = form_asig.data_editor(
             tabla,
             hide_index=True,
             use_container_width=True,
@@ -1133,10 +1146,12 @@ def render_pagos_pendientes(
             },
             key=f"pp2_asignar_{mes}_{_rev()}",
         )
+        enviar_asig = form_asig.form_submit_button("Guardar asignaciones", type="primary", icon=":material/save:")
         cambios = {fid: ("" if v == SIN_ASIGNAR else v) for fid, v in editada["cubre"].items()
                    if ("" if v == SIN_ASIGNAR else v) != tabla.at[fid, "cubre"].replace(SIN_ASIGNAR, "")}
-        if st.button(f"Guardar asignaciones ({len(cambios)})", type="primary", disabled=not cambios,
-                     key=f"pp2_guardar_asig_{mes}", icon=":material/save:"):
+        if enviar_asig and not cambios:
+            st.info("No hay cambios para guardar.")
+        if enviar_asig and cambios:
             nuevo = datos.copy()
             for fid, caja in cambios.items():
                 nuevo.loc[nuevo["id"] == fid, "cubre"] = caja
@@ -1214,7 +1229,8 @@ def render_pagos_pendientes(
         tabla["cubre"] = tabla["cubre"].replace("", SIN_ASIGNAR)
         tabla.insert(1, "borrar", False)
         tabla = tabla.set_index("id")
-        editada = st.data_editor(
+        form_ed = st.form(f"pp2_form_editor_{mes}_{_rev()}", border=False)
+        editada = form_ed.data_editor(
             tabla,
             hide_index=True,
             use_container_width=True,
@@ -1234,29 +1250,42 @@ def render_pagos_pendientes(
             },
             key=f"pp2_editor_{mes}_{_rev()}",
         )
-        borrar = [i for i, v in editada["borrar"].items() if bool(v)]
-        b1, b2 = st.columns(2)
+        b1, b2 = form_ed.columns(2)
         with b1:
-            guardar_ok = st.button(
-                "Guardar cambios" + (f" y borrar {len(borrar)}" if borrar else ""), type="primary",
-                key=f"pp2_editor_guardar_{mes}", icon=":material/save:", use_container_width=True,
-            )
+            guardar_ok = st.form_submit_button("Guardar cambios", type="primary", icon=":material/save:",
+                                               use_container_width=True)
         with b2:
-            if st.button("Descartar cambios", key=f"pp2_editor_descartar_{mes}", use_container_width=True):
-                _subir_rev()
-                st.rerun()
+            descartar = st.form_submit_button("Descartar cambios", use_container_width=True)
+        if descartar:
+            _subir_rev()
+            st.rerun()
         if guardar_ok:
+            borrar = [i for i, v in editada["borrar"].items() if bool(v)]
             nuevo = datos.set_index("id")
+            cambios = 0
             for fid, f in editada.iterrows():
-                if fid not in nuevo.index:
+                if fid not in nuevo.index or fid not in tabla.index:
                     continue
+                o = tabla.loc[fid]
+                fila_cambio = False
                 for col in ("categoria", "concepto", "periodo", "observaciones"):
-                    nuevo.at[fid, col] = _texto(f[col])
-                nuevo.at[fid, "importe"] = float(numero(f["importe"]) or 0.0)
-                nuevo.at[fid, "pagado"] = float(numero(f["pagado"]) or 0.0)
-                nuevo.at[fid, "cubre"] = "" if f["cubre"] == SIN_ASIGNAR else normalizar_caja(f["cubre"])
-            nuevo = nuevo.drop(index=[b for b in borrar if b in nuevo.index]).reset_index()
-            _guardar(renumerar(normalizar(nuevo), mes), "Cambios guardados")
+                    if _texto(f[col]) != _texto(o[col]):
+                        nuevo.at[fid, col] = _texto(f[col])
+                        fila_cambio = True
+                for col in ("importe", "pagado"):
+                    if abs(float(numero(f[col]) or 0.0) - float(numero(o[col]) or 0.0)) > 0.004:
+                        nuevo.at[fid, col] = float(numero(f[col]) or 0.0)
+                        fila_cambio = True
+                if _texto(f["cubre"]) != _texto(o["cubre"]):
+                    nuevo.at[fid, "cubre"] = "" if f["cubre"] == SIN_ASIGNAR else normalizar_caja(f["cubre"])
+                    fila_cambio = True
+                cambios += int(fila_cambio)
+            borrar = [b for b in borrar if b in nuevo.index]
+            if not cambios and not borrar:
+                st.info("No hay cambios para guardar.")
+                return
+            nuevo = nuevo.drop(index=borrar).reset_index()
+            _guardar(renumerar(normalizar(nuevo), mes), f"{cambios + len(borrar)} cambio(s) guardados")
         return
 
     # ---- Nuevo mes ---------------------------------------------------------
