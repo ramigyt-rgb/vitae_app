@@ -637,10 +637,12 @@ def _auth_set_session(user_row: pd.Series | dict[str, Any]) -> None:
     st.session_state["vitae_auth_at"] = _auth_now()
     st.session_state["vitae_auth_failures"] = 0
     st.session_state.pop("vitae_auth_lock_until", None)
+    st.session_state.pop("vitae_current_module", None)  # cada sesión arranca sin pantalla previa
 
 
 def _auth_logout() -> None:
-    for key in ["vitae_auth_user", "vitae_auth_at", "vitae_auth_failures", "vitae_auth_lock_until"]:
+    for key in ["vitae_auth_user", "vitae_auth_at", "vitae_auth_failures", "vitae_auth_lock_until",
+                "vitae_current_module"]:
         st.session_state.pop(key, None)
 
 
@@ -760,7 +762,7 @@ def render_vitae_login() -> None:
                     st.error("Usuario o contraseña incorrectos, o cuenta desactivada.")
 
 
-def _auth_require_login_and_permission() -> None:
+def _auth_require_login_and_permission(verificar_pantalla: bool = True) -> None:
     user = _auth_current_user()
     if not user:
         render_vitae_login()
@@ -780,6 +782,8 @@ def _auth_require_login_and_permission() -> None:
     fresh.pop("password_hash", None)
     fresh.pop("password_salt", None)
     st.session_state["vitae_auth_user"] = fresh
+    if not verificar_pantalla:
+        return
     permission, company = _auth_permission_for_current_screen()
     if not _auth_can_access(permission, company, fresh):
         _render_vitae_app_shell()
@@ -827,8 +831,14 @@ def _auth_validate_new_password(password: str) -> str | None:
 
 
 def require_vitae_login() -> None:
-    """Puerta de entrada global: llamar desde app.py antes de crear la navegación."""
-    _auth_require_login_and_permission()
+    """Puerta de entrada global: llamar desde app.py antes de crear la navegación.
+
+    Sólo verifica la sesión. El permiso de cada pantalla lo controla la propia
+    pantalla al abrirse (render_header), cuando ya se sabe cuál es: acá todavía
+    no, y mirar la última pantalla abierta dejaba afuera, sin menú, a un
+    usuario sin permiso para esa pantalla anterior.
+    """
+    _auth_require_login_and_permission(verificar_pantalla=False)
 
 
 def _auth_user_safe_table(users: pd.DataFrame) -> pd.DataFrame:
