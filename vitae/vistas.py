@@ -24,6 +24,7 @@ from vitae.core.tablas import MODULES
 from vitae.core.database import *
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
+from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, render_formularios
 from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
 from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
 from vitae.core.importadores import render_importer
@@ -452,7 +453,7 @@ _SECCION_ICONOS = [
     ("director ia", "auto_awesome"), (r"\bia\b", "auto_awesome"), ("columnas", "tune"), ("registros", "table_view"),
     ("exportar", "download"), ("importar", "upload_file"), ("migrar", "upload_file"),
     ("nuevo mes", "calendar_add_on"), ("qué caja paga", "account_balance_wallet"),
-    ("cargar movimiento", "add_circle"),
+    ("cargar movimiento", "add_circle"), ("formularios", "assignment_ind"),
     ("cargar", "add_circle"), ("nueva", "add_circle"), ("registrar", "add_circle"),
     ("editar", "edit_note"), ("gestionar", "edit_note"), ("gestión", "edit_note"),
     ("a pagar", "payments"), ("liquidación", "receipt_long"), ("control de datos", "verified"),
@@ -20044,7 +20045,7 @@ def render_gine_vitae_pro(
     # Encabezado común arriba (título y descripción). «Actualizar» está en el menú lateral.
     gine_section = _vitae_lazy_selector(
         "Vista Gine Vitae",
-        ["Centro ejecutivo", "Planes y pacientes", "Operación", "Caja",
+        ["Centro ejecutivo", "Planes y pacientes", "Formularios", "Operación", "Caja",
          "Gestión", "Importar Excel", "Vista original", "IA y exportación"],
         key=f"{table}_gine_active_section",
         nombres={
@@ -20056,6 +20057,15 @@ def render_gine_vitae_pro(
             "IA y exportación": "IA y exportar",
         },
     )
+
+    # Formularios: inscripciones del formulario web, sincronizadas solas.
+    if gine_section == "Formularios":
+        render_formularios(
+            leer_guardado=lambda: get_df(_GINE_FORMULARIOS_TABLA),
+            guardar=lambda df_nuevo: sync_df_to_sheet(_GINE_FORMULARIOS_TABLA, df_nuevo),
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context="gine_formularios"),
+        )
+        return
 
     if gine_section == "Centro ejecutivo":
         if data.empty:
