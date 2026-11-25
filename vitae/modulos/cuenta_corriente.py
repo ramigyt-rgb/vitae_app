@@ -97,8 +97,11 @@ def una_fecha(valor: Any, anio: int | None = None) -> pd.Timestamp:
     m = re.fullmatch(r"(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})", t)
     if m:
         a = int(m[3]) + (2000 if len(m[3]) == 2 else 0)
+        dia, mes = int(m[1]), int(m[2])
+        if mes > 12 and dia <= 12:  # vino como mes/día/año
+            dia, mes = mes, dia
         try:
-            return pd.Timestamp(a, int(m[2]), int(m[1]))
+            return pd.Timestamp(a, mes, dia)
         except ValueError:
             return pd.NaT
     m = re.fullmatch(r"(\d{1,2})[\s/.-]*([a-z]{3})[a-z]*\.?(?:[\s/.-]*(\d{2,4}))?", _sin_acentos(t))
@@ -115,8 +118,33 @@ def _fechas(serie: pd.Series) -> pd.Series:
     return pd.Series([una_fecha(v) for v in serie], index=serie.index, dtype="datetime64[ns]")
 
 
+_ERRORES_EXCEL = ("#ref", "#value", "#valor", "#n/a", "#div/0", "#name", "#nombre", "#num", "#null", "#nulo", "#error",
+                  "#spill", "#calc", "#¡")
+
+
+def es_error(v: Any) -> bool:
+    return isinstance(v, str) and v.strip().lower().startswith(_ERRORES_EXCEL)
+
+
+def importe_celda(v: Any) -> float | None:
+    """Importe de una celda: número, «$ 1.150.795,69», «1,150,795.69», «$ -» (= 0).
+    Los errores de Excel/Sheets (#REF!, #VALUE!…) no son importes."""
+    if v is None or isinstance(v, bool):
+        return None
+    if isinstance(v, str):
+        t = v.strip()
+        if not t or es_error(t):
+            return None
+        if re.fullmatch(r"\(?\s*(us)?\$?\s*-+\s*\)?", t.lower()):
+            return 0.0
+        limpio = re.sub(r"[^\d.,()-]", "", t)
+        if re.fullmatch(r"\(?-?\d{1,3}(,\d{3})+\)?", limpio):  # 1,150,795 (miles con coma, sin decimales)
+            return numero(limpio.replace(",", ""))
+    return numero(v)
+
+
 def _monto(serie: pd.Series) -> pd.Series:
-    return pd.Series([numero(v) or 0.0 for v in serie], index=serie.index, dtype="float64")
+    return pd.Series([importe_celda(v) or 0.0 for v in serie], index=serie.index, dtype="float64")
 
 
 def _moneda(valor: Any) -> str:
@@ -194,10 +222,16 @@ def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
     d["saldo"] = (d["monto"] - d["pagado"]).clip(lower=0).round(2)
     d["_fecha"] = _fechas(col("fecha", "fecha_factura", "mes"))
     d["_pago"] = _fechas(col("fecha_pago"))
+    obs_crudas = col("observacion", "observaciones", "nota", "notas")
+    obs_fecha = pd.Series([una_fecha(v, f.year if pd.notna(f) else None) if re.fullmatch(
+        r"\s*\d{1,2}[/.-]\d{1,2}([/.-]\d{2,4})?\s*|\s*\d{4}-\d{2}-\d{2}.*|\s*\d{1,2}[\s/.-]*[a-zA-Z]{3,}\.?\s*",
+        _texto(v)) else pd.NaT for v, f in zip(obs_crudas, d["_fecha"])], index=raw.index, dtype="datetime64[ns]")
+    mover = d["_pago"].isna() & obs_fecha.notna()
+    d.loc[mover, "_pago"] = obs_fecha[mover]
     d["_venc"] = _fechas(col("vencimiento", "fecha_vencimiento"))
     tipo = col("tipo").map(_sin_acentos)
     d["tipo"] = ["A cobrar" if "cobrar" in t else "A pagar" for t in tipo]
-    d["observacion"] = col("observacion", "observaciones", "nota", "notas").map(_texto).str.strip()
+    d["observacion"] = obs_crudas.map(_texto).str.strip().where(~mover, "")
     d["oculta"] = col("oculta", "oculto", "archivada").map(
         lambda v: _sin_acentos(v) in {"si", "true", "1", "x", "oculta", "oculto", "verdadero"}).astype(bool)
     d = d[(d["proveedor"].ne("")) | (d["comprobante"].ne("")) | (d["monto"].abs() > 0.004)].copy()
@@ -410,26 +444,128 @@ def leer_archivo(archivo: Any) -> dict[str, pd.DataFrame]:
         from openpyxl import load_workbook
 
         wb = load_workbook(io.BytesIO(datos), data_only=True)
+        wb_f = load_workbook(io.BytesIO(datos), data_only=False)
     except Exception:  # .xls viejo u otro formato: sin datos de visibilidad
         return pd.read_excel(io.BytesIO(datos), sheet_name=None, header=None, dtype=object)
+    libro = _Libro(wb, wb_f)
     hojas: dict[str, pd.DataFrame] = {}
     for ws in wb.worksheets:
         if getattr(ws, "sheet_state", "visible") != "visible":
             continue
-        filas = [list(f) for f in ws.iter_rows(values_only=True)]
-        ancho = max((len(f) for f in filas), default=0)
-        mat = pd.DataFrame([f + [None] * (ancho - len(f)) for f in filas], dtype=object)
-        cols_ocultas = set()
+        alto, ancho = min(ws.max_row or 0, 20000), min(ws.max_column or 0, 60)
+        filas = [[libro.valor(ws.title, r, c) for c in range(1, ancho + 1)] for r in range(1, alto + 1)]
+        mat = pd.DataFrame(filas, dtype=object) if filas else pd.DataFrame()
         for dim in ws.column_dimensions.values():
             if getattr(dim, "hidden", False) and dim.min:
-                cols_ocultas.update(range(int(dim.min) - 1, int(dim.max or dim.min)))
-        for j in cols_ocultas:
-            if j < ancho:
-                mat[j] = None
-        # iter_rows arranca en la fila 1: la fila r de Excel es la posición r - 1.
+                for j in range(int(dim.min) - 1, int(dim.max or dim.min)):
+                    if j < mat.shape[1]:
+                        mat[j] = None
+        # la fila r de Excel es la posición r - 1
         mat.attrs["ocultas"] = {r - 1 for r, dim in ws.row_dimensions.items() if getattr(dim, "hidden", False)}
+        mat.attrs["recalculadas"] = libro.recalculadas.get(ws.title, 0)
         hojas[ws.title] = mat
     return hojas
+
+
+_REF = re.compile(
+    r"(?<![A-Za-z0-9_.\"])(?:(?:'(?P<h1>[^']+)'|(?P<h2>[A-Za-z0-9_.]+))!)?"
+    r"\$?(?P<c1>[A-Za-z]{1,3})\$?(?P<f1>\d+)(?::\$?(?P<c2>[A-Za-z]{1,3})\$?(?P<f2>\d+))?(?![A-Za-z0-9_(])")
+_FUNCIONES = {"SUM": "_sum", "SUMA": "_sum", "ROUND": "_round", "REDONDEAR": "_round", "ABS": "abs",
+              "MAX": "_max", "MIN": "_min", "IFERROR": "_iferror", "SI.ERROR": "_iferror", "SIERROR": "_iferror"}
+
+
+def _col_num(letras: str) -> int:
+    n = 0
+    for ch in letras.upper():
+        n = n * 26 + ord(ch) - 64
+    return n
+
+
+def _plano(xs: Any) -> list[float]:
+    out: list[float] = []
+    for x in xs if isinstance(xs, list) else [xs]:
+        if isinstance(x, list):
+            out += _plano(x)
+        elif isinstance(x, (int, float)):
+            out.append(float(x))
+    return out
+
+
+class _Libro:
+    """Valores de un Excel. Si una celda con fórmula viene sin valor calculado
+    o con error (#REF!, #VALUE!…, típico al copiar entre Excel y Sheets), se
+    calcula acá: referencias a celdas (también de otras hojas), + - * / ^,
+    SUMA/SUM, REDONDEAR/ROUND, ABS, MAX, MIN y SI.ERROR."""
+
+    def __init__(self, wb_valores: Any, wb_formulas: Any):
+        self.v, self.f = wb_valores, wb_formulas
+        self.cache: dict[tuple[str, int, int], Any] = {}
+        self.recalculadas: dict[str, int] = {}
+
+    def valor(self, hoja: str, fila: int, col: int, prof: int = 0) -> Any:
+        clave_c = (hoja, fila, col)
+        if clave_c in self.cache:
+            return self.cache[clave_c]
+        if hoja not in self.v.sheetnames:
+            return None
+        v = self.v[hoja].cell(fila, col).value
+        f = self.f[hoja].cell(fila, col).value if hoja in self.f.sheetnames else None
+        if isinstance(f, str) and f.startswith("=") and (v is None or es_error(v)) and prof < 40:
+            self.cache[clave_c] = None  # corta referencias circulares
+            calc = self._evaluar(f[1:], hoja, prof + 1)
+            if calc is not None:
+                v = calc
+                self.recalculadas[hoja] = self.recalculadas.get(hoja, 0) + 1
+        self.cache[clave_c] = v
+        return v
+
+    def _numero(self, hoja: str, fila: int, col: int, prof: int) -> float:
+        x = self.valor(hoja, fila, col, prof)
+        if isinstance(x, (datetime, date)):
+            return float((pd.Timestamp(x) - pd.Timestamp("1899-12-30")).days)
+        n = importe_celda(x)
+        return float(n) if n is not None else 0.0
+
+    def _evaluar(self, formula: str, hoja: str, prof: int) -> float | None:
+        import ast
+
+        if '"' in formula:
+            return None
+
+        def ref(m: re.Match) -> str:
+            h = m["h1"] or m["h2"] or hoja
+            c1, f1 = _col_num(m["c1"]), int(m["f1"])
+            if not m["c2"]:
+                return repr(self._numero(h, f1, c1, prof))
+            c2, f2 = _col_num(m["c2"]), int(m["f2"])
+            if (abs(f2 - f1) + 1) * (abs(c2 - c1) + 1) > 20000:
+                raise ValueError("rango muy grande")
+            vals = [repr(self._numero(h, r, c, prof)) for r in range(min(f1, f2), max(f1, f2) + 1)
+                    for c in range(min(c1, c2), max(c1, c2) + 1)]
+            return "[" + ",".join(vals) + "]"
+
+        try:
+            expr = formula.strip().lstrip("+")
+            for nombre, py in sorted(_FUNCIONES.items(), key=lambda x: -len(x[0])):
+                expr = re.sub(rf"(?<![A-Za-z_.]){re.escape(nombre)}\s*\(", py + "(", expr, flags=re.IGNORECASE)
+            expr = _REF.sub(ref, expr).replace(";", ",").replace("^", "**")
+            arbol = ast.parse(expr, mode="eval")
+            permitidos = (ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant, ast.List, ast.Call, ast.Name, ast.Load,
+                          ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Pow, ast.USub, ast.UAdd)
+            funciones = {"_sum": lambda *a: sum(_plano(list(a))), "_round": lambda x, n=0: round(float(x), int(n)),
+                         "abs": lambda x: abs(float(x)), "_max": lambda *a: max(_plano(list(a)) or [0.0]),
+                         "_min": lambda *a: min(_plano(list(a)) or [0.0]), "_iferror": lambda x, *a: x}
+            for nodo in ast.walk(arbol):
+                if not isinstance(nodo, permitidos):
+                    return None
+                if isinstance(nodo, ast.Name) and nodo.id not in funciones:
+                    return None
+                if isinstance(nodo, ast.Constant) and not isinstance(nodo.value, (int, float)):
+                    return None
+            r = eval(compile(arbol, "<formula>", "eval"), {"__builtins__": {}}, funciones)  # noqa: S307 (árbol validado)
+            return round(float(r), 6) if isinstance(r, (int, float)) else None
+        except Exception:
+            return None
 
 
 def _celda(v: Any) -> str:
@@ -487,25 +623,33 @@ def leer_planilla(hojas: dict[str, pd.DataFrame]) -> pd.DataFrame:
             arriba = [c for r in range(max(0, r0 - 3), r0 + 1) for c in textos_filas[r]]
             marca_usd = any(re.fullmatch(r"(en\s+)?(usd|u\$s|us\$|dolares)(\s.*)?", c) for c in arriba)
             moneda = "USD" if marca_usd or re.search(r"\busd\b|dolar", _sin_acentos(nombre_hoja)) else "ARS"
-            info = {"hoja": nombre_hoja, "fila": r0 + 1, "moneda": moneda, "visibles": 0, "ocultas": 0}
+            info = {"hoja": nombre_hoja, "fila": r0 + 1, "moneda": moneda, "visibles": 0, "ocultas": 0,
+                    "recalculadas": int(m.attrs.get("recalculadas", 0)), "total_excel": None, "saldo": 0.0}
             for r in range(r0 + 1, r1):
                 valores = mat.iloc[r].tolist()
                 if any(t.startswith(("total", "subtotal", "proveedores a pagar")) for t in textos_filas[r]):
+                    if r not in ocultas and info.get("total_excel") is None and cols.get("saldo") is not None:
+                        tot = importe_celda(valores[cols["saldo"]]) if cols["saldo"] < len(valores) else None
+                        if tot is not None:
+                            info["total_excel"] = tot
                     continue
                 v = lambda c: valores[cols[c]] if cols.get(c) is not None and cols[c] < len(valores) else None
                 prov, comp = _texto(v("proveedor")).strip(), _texto(v("comprobante")).strip()
-                monto = numero(v("monto")) or 0.0
+                monto = importe_celda(v("monto")) or 0.0
                 if not prov or (not comp and not monto):
                     continue
                 f = una_fecha(v("fecha"))
-                pagado = numero(v("pagado")) or 0.0
-                saldo_raw = v("saldo")
-                saldo = 0.0 if _es_cero(saldo_raw) else numero(saldo_raw)
-                if saldo is not None and pagado <= 0.004 and monto - saldo > 0.004:
-                    pagado = round(monto - saldo, 2)  # pagado vacío pero el saldo ya bajó
+                pagado = importe_celda(v("pagado")) or 0.0
+                if cols.get("pagado") is None and cols.get("saldo") is not None:
+                    # Sin columna PAGADO, lo pagado sale del saldo. Si hay PAGADO, el SALDO no se usa:
+                    # es la columna que más se desarma al pegar fórmulas entre Excel y Sheets.
+                    saldo = importe_celda(v("saldo"))
+                    if saldo is not None and monto - saldo > 0.004:
+                        pagado = round(monto - saldo, 2)
                 pago, nota = _observacion(v("observacion"), f.year if pd.notna(f) else None)
                 oculta = r in ocultas
                 info["ocultas" if oculta else "visibles"] += 1
+                info["saldo"] = round(info.get("saldo", 0.0) + max(monto - pagado, 0.0), 2)
                 filas.append(fila(f, prov, comp, moneda, monto, pagado, pago, nota, oculta=oculta))
             tablas.append(info)
     resultado = normalizar(pd.DataFrame(filas)) if filas else _vacio()
@@ -1062,6 +1206,16 @@ def render_cuenta_corriente(
         st.caption("Encontré: " + " · ".join(
             f"hoja «{t['hoja']}», tabla en la fila {t['fila']} ({'USD' if t['moneda'] == 'USD' else 'pesos'}): "
             f"{t['visibles']} visibles" + (f", {t['ocultas']} ocultas" if t["ocultas"] else "") for t in tablas))
+    recalc = {t["hoja"]: t["recalculadas"] for t in tablas if t.get("recalculadas")}
+    if recalc:
+        st.caption("Calculé yo " + " · ".join(f"{n} celdas con fórmulas en «{h}»" for h, n in recalc.items())
+                   + ": venían sin valor o con error (#REF!, #VALUE!), típico al pegar entre Excel y Sheets.")
+    for t in tablas:
+        if t.get("total_excel") is not None and abs(t["total_excel"] - t["saldo"]) > 1:
+            fmt = usd if t["moneda"] == "USD" else pesos
+            st.warning(f"En «{t['hoja']}» ({'USD' if t['moneda'] == 'USD' else 'pesos'}) el TOTAL del Excel dice "
+                       f"{fmt(t['total_excel'])}, pero sumando monto − pagado de cada factura da {fmt(t['saldo'])}. "
+                       "Puede haber fórmulas mezcladas en la columna SALDO del Excel: acá se usa monto − pagado.")
     if importado.empty:
         st.warning("No encontré facturas. Revisá que la hoja tenga una fila de encabezados con PROVEEDOR, "
                    "COMPROBANTE y MONTO (y elegí la hoja correcta arriba).")

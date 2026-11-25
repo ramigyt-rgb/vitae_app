@@ -1500,6 +1500,37 @@ def _modulos_permitidos_ia() -> set[str] | None:
     return permitidos
 
 
+# Luz, la secretaria de Ramiro: mientras se termina de ajustar, sólo la ve él.
+# Se puede cambiar sin tocar el código con el secreto LUZ_USUARIOS
+# (nombres o usuarios separados por coma). Las futuras secretarias por área
+# van a depender de Luz (ella es la jefa) y se habilitan igual.
+LUZ_USUARIOS_POR_DEFECTO = "Ramiro Char"
+
+
+def _auth_ve_luz(user: dict[str, Any] | None = None) -> bool:
+    user = user or _auth_current_user()
+    if not user:
+        return False
+    try:
+        from vitae.core.config import _secret
+
+        lista = str(_secret("LUZ_USUARIOS", "") or "").strip() or LUZ_USUARIOS_POR_DEFECTO
+    except Exception:
+        lista = LUZ_USUARIOS_POR_DEFECTO
+
+    def palabras(texto: Any) -> set[str]:
+        t = unicodedata.normalize("NFKD", str(texto or "").lower())
+        t = "".join(c for c in t if not unicodedata.combining(c))
+        return set(re.findall(r"[a-z0-9]+", t))
+
+    propias = [palabras(user.get("nombre")), palabras(user.get("usuario")), palabras(user.get("email"))]
+    for persona in lista.split(","):
+        buscadas = palabras(persona)
+        if buscadas and any(buscadas <= p for p in propias):
+            return True
+    return False
+
+
 def _luz_ejecutar_accion(accion: dict[str, Any]) -> str:
     """Guarda una acción de Luz que el usuario confirmó (lee y escribe en Google Sheets)."""
     from vitae.ia import acciones as _luz_acciones
@@ -1518,7 +1549,7 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     """Asistente Vitae: «Luz», chat estilo Messenger abajo a la derecha en todas
     las pantallas, minimizable (reemplaza al Copiloto y a las consultas de IA de
     cada módulo)."""
-    if not _auth_usa_copiloto():
+    if not _auth_usa_copiloto() or not _auth_ve_luz():
         return
     actual = str(
         modulo_actual

@@ -187,20 +187,30 @@ def _error_humano(exc: Exception) -> str:
 _LOGO: str | None = None
 
 
-def logo_icono() -> str:
-    """Isotipo de Vitae como data URI (la «foto» de Luz)."""
-    global _LOGO
-    if _LOGO is None:
+_LOGOS: dict[str, str] = {}
+
+
+def logo_icono(tamano: str = "chico") -> str:
+    """Isotipo de Vitae incrustado (data URI), como el logo del inicio de sesión.
+    tamano: «chico» (96 px, cabecera y burbuja) o «mini» (64 px, al lado de cada mensaje)."""
+    if tamano not in _LOGOS:
         try:
             import base64
 
             from vitae.core.config import BASE_DIR
 
-            datos = (BASE_DIR / "static" / "luz_logo_chico.png").read_bytes()
-            _LOGO = "data:image/png;base64," + base64.b64encode(datos).decode("ascii")
+            datos = (BASE_DIR / "static" / f"luz_logo_{tamano}.png").read_bytes()
+            _LOGOS[tamano] = "data:image/png;base64," + base64.b64encode(datos).decode("ascii")
         except Exception:
-            _LOGO = ""
-    return _LOGO
+            _LOGOS[tamano] = ""
+    return _LOGOS[tamano]
+
+
+def foto(clase: str, tamano: str = "chico") -> str:
+    """La foto de Luz: una imagen real (no un fondo de CSS)."""
+    src = logo_icono(tamano)
+    contenido = f'<img src="{src}" alt="Luz">' if src else "L"
+    return f'<div class="{clase}">{contenido}</div>'
 
 
 # ---------------------------------------------------------------- texto → globito
@@ -289,7 +299,7 @@ def _globito(m: dict[str, str], inicial: str = "Yo") -> str:
         return (f'<div class="asis-fila asis-yo"><div class="asis-col">{burbuja}{meta}</div>'
                 f'<div class="asis-yo-mini">{inicial}</div></div>')
     meta = f'<div class="asis-meta">{hora}</div>' if hora else ""
-    return f'<div class="asis-fila asis-ella"><div class="asis-mini"></div><div class="asis-col">{burbuja}{meta}</div></div>'
+    return f'<div class="asis-fila asis-ella">{foto("asis-mini", "mini")}<div class="asis-col">{burbuja}{meta}</div></div>'
 
 
 def html_conversacion(lista: list[dict[str, str]], *, escribiendo: bool = False, saludo: str = "",
@@ -300,7 +310,7 @@ def html_conversacion(lista: list[dict[str, str]], *, escribiendo: bool = False,
         filas.append(_globito({"rol": "assistant", "texto": saludo}))
     filas += [_globito(m, inicial) for m in lista]
     if escribiendo:
-        filas.append('<div class="asis-fila asis-ella"><div class="asis-mini"></div><div class="asis-col">'
+        filas.append(f'<div class="asis-fila asis-ella">{foto("asis-mini", "mini")}<div class="asis-col">'
                      '<div class="asis-burbuja asis-escribiendo"><span></span><span></span><span></span></div>'
                      f'<div class="asis-meta">{NOMBRE} está escribiendo…</div></div></div>')
     # column-reverse: el scroll arranca abajo, como en un chat
@@ -383,6 +393,11 @@ _CSS = """<style>
 [class*="st-key-asis_accion_botones"] button{min-height:0!important;padding:.25rem .8rem!important;border-radius:999px!important}
 [class*="st-key-asis_accion_"]{background:#F7F3F5}
 .st-key-asis_chat_abierto:has([class*="st-key-asis_accion_"]) .asis-mensajes{height:165px}
+.asis-avatar,.asis-mini,.asis-burbuja-logo{background:#fff;overflow:hidden;box-sizing:border-box;padding:4px;
+  display:flex;align-items:center;justify-content:center;color:#8C2853;font-weight:800}
+.asis-mini{padding:3px}.st-key-asis_chat_cerrado .asis-burbuja-logo{padding:2px}
+.asis-avatar img,.asis-mini img,.asis-burbuja-logo img{width:100%;height:100%;object-fit:contain;display:block;
+  margin:0!important;max-width:none!important}
 .st-key-asis_pie{background:#fff;padding:.5rem .6rem .6rem;gap:.45rem!important;border-top:1px solid #EFE6EA}
 .st-key-asis_sugerencias{gap:.35rem!important;flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none}
 .st-key-asis_sugerencias::-webkit-scrollbar{display:none}
@@ -407,17 +422,8 @@ _CSS = """<style>
 </style>"""
 
 
-# El logo se sirve como archivo (static/, con enableStaticServing) y, por las
-# dudas, también va incrustado debajo: si el archivo no carga, se ve igual.
-LOGO_URL = "/app/static/luz_logo.png"
-
-
 def _css() -> str:
-    logo = logo_icono()
-    capas = f'url("{LOGO_URL}")' + (f',url("{logo}")' if logo else "")
-    foto = ('.asis-avatar,.asis-mini,.asis-burbuja-logo{background-color:#fff;background-image:' + capas
-            + ';background-position:center;background-repeat:no-repeat;background-size:86%}')
-    return _CSS.replace("</style>", foto + "\n</style>")
+    return _CSS
 
 
 # ---------------------------------------------------------------- arrastrar
@@ -533,7 +539,7 @@ def _boton(label: str, *, key: str, **k: Any) -> bool:
 def _cabecera(modulo_actual: str) -> None:
     with _fila("asis_cabecera"):
         st.markdown(
-            '<div class="asis-quien"><div class="asis-avatar"></div><div>'
+            f'<div class="asis-quien">{foto("asis-avatar")}<div>'
             f'<div class="asis-nombre">{NOMBRE}</div>'
             f'<div class="asis-online">En línea · {html.escape(str(modulo_actual))}</div></div></div>',
             unsafe_allow_html=True,
@@ -591,7 +597,7 @@ def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Resp
     if not st.session_state.get(ABIERTO, False) and not st.session_state.get(PENDIENTE):
         with st.container(key="asis_chat_cerrado"):
             _boton(NOMBRE, key="asis_abrir", on_click=_abrir, help=f"Chatear con {NOMBRE}")
-            st.markdown('<div class="asis-burbuja-logo"></div>', unsafe_allow_html=True)
+            st.markdown(foto("asis-burbuja-logo"), unsafe_allow_html=True)
         return
     st.session_state[ABIERTO] = True
     with st.container(key="asis_chat_abierto"):
