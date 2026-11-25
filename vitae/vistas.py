@@ -16514,9 +16514,19 @@ def _di_vm_render_export(data: pd.DataFrame, table: str, module_name: str = "") 
     )
 
 
-def _di_leer_excel_planilla(uploaded_file: Any) -> pd.DataFrame:
-    """Lee todas las hojas de una planilla de deudas con el importador de siempre."""
+def _di_hojas_excel(uploaded_file: Any) -> list[str]:
+    """Nombres de las hojas (páginas) del archivo subido."""
+    sheets, _ = _di_vm_read_uploaded(uploaded_file)
+    return [str(n) for n in sheets]
+
+
+def _di_leer_excel_planilla(uploaded_file: Any, hojas: list[str] | None = None) -> pd.DataFrame:
+    """Lee una planilla de deudas con el importador de siempre: las hojas
+    elegidas o, si no se indica, todas."""
     sheets, filename = _di_vm_read_uploaded(uploaded_file)
+    if hojas:
+        elegidas = {str(h) for h in hojas}
+        sheets = {n: m for n, m in sheets.items() if str(n) in elegidas}
     frames = [_di_vm_parse_matrix(matrix, str(name), filename) for name, matrix in sheets.items()]
     frames = [f for f in frames if f is not None and not f.empty]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
@@ -20910,6 +20920,7 @@ def render_facturacion_pro(
             tabla=str(table).lower(),
             guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
             leer_excel=_di_leer_excel_planilla,
+            listar_hojas=_di_hojas_excel,
             selector=_vitae_lazy_selector,
             mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"deudas_impositivas:{table}"),
         )

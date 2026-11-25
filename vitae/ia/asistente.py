@@ -254,15 +254,17 @@ def _saludo(nombre_usuario: str | None) -> str:
 
 
 # ---------------------------------------------------------------- estilos
+# El chat queda a 200 px del borde derecho: en la esquina, Streamlit Cloud
+# dibuja «Manage app» (sólo para el dueño de la app) y lo taparía.
 
 _CSS = """<style>
-.st-key-asis_chat_cerrado{position:fixed;right:24px;bottom:0;z-index:999990;width:240px!important;gap:0}
+.st-key-asis_chat_cerrado{position:fixed;right:200px;bottom:0;z-index:999990;width:240px!important;gap:0}
 .st-key-asis_chat_cerrado button{width:100%;justify-content:flex-start;border-radius:12px 12px 0 0!important;
   background:#8C2853!important;border:none!important;padding:.6rem 1rem!important;
   box-shadow:0 -4px 18px rgba(94,26,57,.28)!important}
 .st-key-asis_chat_cerrado button p{color:#fff!important;font-weight:650!important;font-size:.95rem!important}
 .st-key-asis_chat_cerrado button:hover{background:#6F1F42!important}
-.st-key-asis_chat_abierto{position:fixed;right:24px;bottom:0;z-index:999990;width:325px!important;gap:0!important;
+.st-key-asis_chat_abierto{position:fixed;right:200px;bottom:0;z-index:999990;width:325px!important;gap:0!important;
   background:#fff;border-radius:14px 14px 0 0;box-shadow:0 8px 34px rgba(30,10,20,.30);overflow:hidden;
   border:1px solid #E7DDE2;border-bottom:none}
 .st-key-asis_chat_abierto>div{width:100%}
@@ -319,7 +321,7 @@ section.main .block-container,[data-testid="stMainBlockContainer"]{padding-botto
 @media (max-width: 640px){
   .st-key-asis_chat_abierto{left:0;right:0;width:auto!important;border-radius:14px 14px 0 0}
   .st-key-asis_chat_abierto .asis-mensajes{height:52vh}
-  .st-key-asis_chat_cerrado{right:12px;width:220px!important}
+  .st-key-asis_chat_cerrado{right:auto;left:12px;width:200px!important}
 }
 </style>"""
 

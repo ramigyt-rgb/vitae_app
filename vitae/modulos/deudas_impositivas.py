@@ -704,7 +704,8 @@ def render_deudas(
     *,
     tabla: str,
     guardar: Callable[[pd.DataFrame], Any],
-    leer_excel: Callable[[Any], pd.DataFrame] | None = None,
+    leer_excel: Callable[..., pd.DataFrame] | None = None,
+    listar_hojas: Callable[[Any], list[str]] | None = None,
     selector: Callable[..., str] | None = None,
     mostrar_error: Callable[[str, Exception], None] | None = None,
 ) -> None:
@@ -933,8 +934,24 @@ def render_deudas(
         archivo = st.file_uploader("Archivo", type=["xlsx", "xls", "csv"], key=f"{k}archivo", label_visibility="collapsed")
         if archivo is None or leer_excel is None:
             return
+        hojas: list[str] = []
+        if listar_hojas is not None:
+            try:
+                hojas = list(listar_hojas(archivo))
+            except Exception as exc:
+                _error("No pude abrir el archivo.", exc)
+                return
+        elegidas: list[str] | None = None
+        if len(hojas) > 1:
+            todas = f"Todas las hojas ({len(hojas)})"
+            hoja = st.selectbox("¿Qué hoja (página) del archivo importo?", [*hojas, todas], index=0,
+                                key=f"{k}imp_hoja_{getattr(archivo, 'name', '')}",
+                                help="Elegí la pestaña de la planilla que querés traer.")
+            elegidas = None if hoja == todas else [hoja]
+        elif hojas:
+            st.caption(f"Hoja: {hojas[0]}")
         try:
-            importado = normalizar(leer_excel(archivo))
+            importado = normalizar(leer_excel(archivo, hojas=elegidas) if elegidas else leer_excel(archivo))
         except Exception as exc:
             _error("No pude leer el archivo.", exc)
             return
