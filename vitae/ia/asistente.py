@@ -87,7 +87,7 @@ def render_asistente(
     *,
     permitidos: set[str] | None = None,
     responder_fn: Callable[[str, str, list[dict[str, str]], set[str] | None], str] | None = None,
-    alto: int = 380,
+    alto: int = 320,
 ) -> None:
     """Chat en el menú lateral (en el celular, dentro del menú desplegable)."""
     responder_fn = responder_fn or responder
@@ -95,8 +95,9 @@ def render_asistente(
     with st.sidebar:
         st.markdown(_CSS, unsafe_allow_html=True)
         st.divider()
-        st.markdown('<div class="asis-titulo">✦ Asistente Vitae</div>'
-                    f'<div class="asis-sub">Estás en: {modulo_actual}</div>', unsafe_allow_html=True)
+        st.markdown('<div class="asis-titulo">💬 Asistente Vitae</div>'
+                    f'<div class="asis-sub">Preguntame lo que necesites · estás en {modulo_actual}</div>',
+                    unsafe_allow_html=True)
         caja = st.container(height=alto, border=False)
         with caja:
             if not lista:
@@ -108,7 +109,13 @@ def render_asistente(
                 with st.chat_message("user" if m["rol"] == "user" else "assistant",
                                      avatar=":material/person:" if m["rol"] == "user" else ":material/auto_awesome:"):
                     st.markdown(m["texto"])
-        pregunta = st.chat_input("Escribile al asistente…", key="asistente_vitae_input")
+        # Formulario propio (no st.chat_input): funciona igual en el menú
+        # lateral de la computadora y en el menú desplegable del celular.
+        with st.form("asistente_vitae_form", clear_on_submit=True, border=False):
+            texto = st.text_area("Mensaje para el asistente", key="asistente_vitae_texto", height=78,
+                                 placeholder="Escribile al asistente…", label_visibility="collapsed")
+            enviar = st.form_submit_button("Enviar", type="primary", icon=":material/send:", use_container_width=True)
+        pregunta = (texto or "").strip() if enviar else ""
         pregunta = pregunta or st.session_state.pop("asistente_vitae_pendiente", None)
         if pregunta:
             historial = _historial_para_motor(lista)

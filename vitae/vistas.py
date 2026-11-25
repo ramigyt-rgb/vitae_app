@@ -1513,8 +1513,8 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     nombre_visible = "Panel general" if actual == "Dashboard Global" else actual
     try:
         render_asistente(nombre_visible, permitidos=_modulos_permitidos_ia())
-    except Exception as exc:  # el asistente nunca tira abajo una pantalla
-        st.sidebar.caption(f"Asistente no disponible ({type(exc).__name__}).")
+    except Exception as exc:  # el asistente nunca tira abajo una pantalla, pero el error se ve
+        st.sidebar.error(f"Asistente Vitae: no se pudo mostrar ({type(exc).__name__}: {exc})"[:300])
 
 
 def render_header() -> None:
