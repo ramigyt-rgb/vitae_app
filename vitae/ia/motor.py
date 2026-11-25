@@ -43,6 +43,7 @@ TABLA_CONOCIMIENTO = "ia_conocimiento"
 _TABLAS_PROHIBIDAS = {"usuarios_vitae"}
 # Pestañas adicionales útiles fuera de MODULES.
 _TABLAS_EXTRA = {"Farmacia · movimientos": "farmacia_movimientos", "Gine Vitae · formularios web": "gine_vitae_formularios"}
+_MODULO_DE_EXTRA = {"Farmacia · movimientos": "Farmacia", "Gine Vitae · formularios web": "Gine Vitae"}
 _MAX_FILAS_RESPUESTA = 200
 _MAX_TEXTO_CELDA = 160
 
@@ -98,15 +99,21 @@ def _fechas(serie: pd.Series) -> pd.Series:
 class _Datos:
     """Carga perezosa de todos los módulos (una vez por pregunta)."""
 
-    def __init__(self, extra: dict[str, pd.DataFrame] | None = None):
+    def __init__(self, extra: dict[str, pd.DataFrame] | None = None, permitidos: set[str] | None = None):
         self._cache: dict[str, pd.DataFrame] = {}
         self._extra = extra or {}
+        self._permitidos = permitidos
         self.consultas: list[str] = []
 
     def modulos(self) -> dict[str, str]:
         nombres = {n: c.get("table", "") for n, c in MODULES.items()
                    if c.get("table") and c.get("table") not in _TABLAS_PROHIBIDAS and c.get("table") != "convenios"}
         nombres.update(_TABLAS_EXTRA)
+        if self._permitidos is not None:
+            # Sólo lo que el usuario puede ver en la app (las pestañas extra
+            # siguen el permiso de su módulo).
+            nombres = {n: t for n, t in nombres.items()
+                       if (_MODULO_DE_EXTRA.get(n) or n) in self._permitidos}
         for n in self._extra:
             nombres.setdefault(n, "")
         return nombres
@@ -457,13 +464,18 @@ def _cliente_y_modelos():
 
 
 def responder(pregunta: str, modulo_actual: str | None = None, historial: list[dict[str, str]] | None = None,
-              datos_visibles: dict[str, pd.DataFrame] | None = None, cliente=None, modelos: list[str] | None = None) -> str:
-    """Responde una pregunta usando herramientas de consulta sobre todos los datos."""
+              datos_visibles: dict[str, pd.DataFrame] | None = None, cliente=None, modelos: list[str] | None = None,
+              modulos_permitidos: set[str] | None = None) -> str:
+    """Responde una pregunta usando herramientas de consulta sobre todos los datos.
+
+    ``modulos_permitidos``: si se indica, la IA sólo consulta esos módulos
+    (los que el usuario puede abrir en la app).
+    """
     from google.genai import types
 
     if cliente is None or modelos is None:
         cliente, modelos = _cliente_y_modelos()
-    datos = _Datos(extra=datos_visibles)
+    datos = _Datos(extra=datos_visibles, permitidos=modulos_permitidos)
     herramientas = crear_herramientas(datos)
 
     hoy = pd.Timestamp.today().normalize()

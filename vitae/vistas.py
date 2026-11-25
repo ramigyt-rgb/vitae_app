@@ -25,6 +25,7 @@ from vitae.core.database import *
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
 from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, render_formularios
+from vitae.ia.asistente import render_asistente
 from vitae.modulos.panel import render_panel
 from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
 from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
@@ -1484,8 +1485,22 @@ def _preguntar_copiloto_contextual(pregunta: str, modulo_actual: str) -> Any:
     return preguntar_copiloto(pregunta, **kwargs)
 
 
+def _modulos_permitidos_ia() -> set[str] | None:
+    """Módulos que la IA puede consultar para el usuario actual (None = todos)."""
+    user = _auth_current_user()
+    if not user or _auth_is_admin(user):
+        return None
+    permitidos = set()
+    for nombre, cfg in MODULES.items():
+        empresa = str(cfg.get("empresa", "") or "").strip().upper() or None
+        if _auth_can_access(f"mod::{nombre}", empresa, user) and _auth_secciones_limitadas(nombre, user) is None:
+            permitidos.add(nombre)
+    return permitidos
+
+
 def render_vitae_copilot(modulo_actual: str | None = None) -> None:
-    """Copiloto persistente y discreto: no ocupa el sidebar ni deforma la app."""
+    """Asistente Vitae: un único chat de IA en el menú lateral, en todas las
+    pantallas (reemplaza al Copiloto y a las consultas de IA de cada módulo)."""
     if not _auth_usa_copiloto():
         return
     actual = str(
@@ -1494,99 +1509,11 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
         or "Inicio"
     ).strip()
     st.session_state["vitae_current_module"] = actual
-
-    # Barra mínima: el contenido completo vive dentro de un popover.
-    # Así el Dashboard y los módulos conservan todo su ancho.
-    if es_movil():
-        # En el celular va al menú lateral para no ocupar el ancho de la pantalla.
-        copilot_col = st.sidebar
-    else:
-        _, copilot_col = st.columns([8.6, 1.4])
-    with copilot_col:
-        with st.popover("Copiloto", icon=":material/auto_awesome:", use_container_width=True):
-            st.markdown("### Copiloto Vitae")
-            st.caption(f"Contexto activo · {actual}")
-            st.markdown(
-                "Preguntame sobre esta pantalla o sobre cualquier área de Vitae. "
-                "Mantengo el contexto mientras recorrés la plataforma."
-            )
-
-            q1, q2, q3 = st.columns(3)
-            quick_question = None
-            if q1.button("Explicame", key=f"copilot_help_{actual}", use_container_width=True):
-                quick_question = "Explicame esta pantalla, para qué sirve y qué debería mirar primero."
-            if q2.button("Analizar", key=f"copilot_analyze_{actual}", use_container_width=True):
-                quick_question = "Analizá el módulo en el que estoy y decime qué es lo más importante que debería saber ahora."
-            if q3.button("Prioridades", key=f"copilot_priority_{actual}", use_container_width=True):
-                quick_question = "Según toda la información disponible de Vitae, ¿qué requiere mi atención primero y por qué?"
-
-            history = obtener_historial_copiloto()
-            if history:
-                st.markdown("---")
-                for item in history[-5:]:
-                    pregunta = str(item.get("pregunta", "")).strip()
-                    respuesta = str(item.get("respuesta", "")).strip()
-                    if pregunta:
-                        st.markdown(f"**Vos** · {pregunta}")
-                    if respuesta:
-                        st.markdown(respuesta)
-
-            st.markdown("---")
-            question = st.text_area(
-                "Consulta",
-                key="vitae_copilot_question",
-                placeholder="Preguntame cualquier cosa sobre Vitae…",
-                height=90,
-                label_visibility="collapsed",
-            )
-
-            c_send, c_clear = st.columns([4, 1])
-            send = c_send.button("Enviar", key="vitae_copilot_send", type="primary", use_container_width=True)
-            clear = c_clear.button("↺", key="vitae_copilot_clear", help="Nueva conversación", use_container_width=True)
-
-            if clear:
-                limpiar_historial_copiloto()
-                st.session_state["vitae_copilot_last_answer"] = ""
-                st.session_state["vitae_copilot_last_question"] = ""
-                st.rerun()
-
-            final_question = quick_question or (
-                question.strip()
-                if send and question.strip()
-                else ""
-            )
-
-            if final_question:
-                try:
-                    with st.spinner("Analizando Vitae…"):
-                        answer = _preguntar_copiloto_contextual(
-                            final_question,
-                            modulo_actual=actual,
-                        )
-
-                    st.session_state["vitae_copilot_last_answer"] = str(answer or "").strip()
-                    st.session_state["vitae_copilot_last_question"] = final_question
-
-                except Exception as error:
-                    st.session_state["vitae_copilot_last_answer"] = (
-                        "No pude completar la consulta.\n\n"
-                        f"**Detalle técnico:** `{error}`"
-                    )
-                    st.session_state["vitae_copilot_last_question"] = final_question
-
-            last_question = str(
-                st.session_state.get("vitae_copilot_last_question", "") or ""
-            ).strip()
-            last_answer = str(
-                st.session_state.get("vitae_copilot_last_answer", "") or ""
-            ).strip()
-
-            if last_answer:
-                st.markdown("---")
-                if last_question:
-                    st.markdown(f"**Vos** · {last_question}")
-                st.markdown("**Copiloto Vitae**")
-                st.markdown(last_answer)
+    nombre_visible = "Panel general" if actual == "Dashboard Global" else actual
+    try:
+        render_asistente(nombre_visible, permitidos=_modulos_permitidos_ia())
+    except Exception as exc:  # el asistente nunca tira abajo una pantalla
+        st.sidebar.caption(f"Asistente no disponible ({type(exc).__name__}).")
 
 
 def render_header() -> None:
@@ -4697,36 +4624,8 @@ def render_tabla_limpia_panel(filtered: pd.DataFrame, quitar_columnas: tuple[str
         
     
 
-    st.divider()
-    
-    st.subheader("Asistente IA")
-    
-    pregunta = st.text_input(
-    
-        "Preguntale algo sobre esta tabla",
-    
-        key="pregunta_ia"
-    
-    )
-    
-    if st.button("Consultar IA", key="btn_ia"):
-        if not str(pregunta or "").strip():
-            st.warning("Escribí una pregunta antes de consultar.")
-        else:
-            with st.spinner("Analizando información…"):
-                try:
-                    respuesta = preguntar_ia(
-                        modulo="Tabla",
-                        df=filtered,
-                        pregunta=pregunta,
-                    )
-                    st.success(respuesta)
-                except Exception as exc:
-                    _vitae_render_error(
-                        "La IA no pudo responder. El análisis local y la tabla siguen disponibles.",
-                        exc,
-                        context="ia:tabla_generica",
-                    )
+
+
 def _safe_float(value) -> float:
     try:
         if value is None or value == "":
@@ -11658,37 +11557,6 @@ def render_facturacion_industrial(
     # ---------------------------------------------------------
     # 5. ASISTENTE IA DEL MÓDULO
     # ---------------------------------------------------------
-    st.divider()
-    with st.expander("Asistente IA de facturación", expanded=False):
-        pregunta = st.text_input(
-            "Consultá sobre los registros filtrados",
-            placeholder="Ej.: ¿Qué obra social concentra más deuda vencida?",
-            key=f"{key}_pregunta_ia",
-        )
-        if st.button("Analizar con IA", key=f"{key}_btn_ia"):
-            if not pregunta.strip():
-                st.warning("Escribí una pregunta antes de consultar.")
-            else:
-                columnas_ia = [
-                    c for c in data.columns
-                    if not str(c).startswith("_")
-                ]
-                df_ia = filtrado[columnas_ia].copy()
-                with st.spinner("Analizando la facturación filtrada…"):
-                    try:
-                        respuesta = preguntar_ia(
-                            modulo=module_name,
-                            df=df_ia,
-                            pregunta=pregunta,
-                        )
-                        st.success(respuesta)
-                    except Exception as exc:
-                        _vitae_render_error(
-                            "La IA no pudo responder. La facturación continúa operativa.",
-                            exc,
-                            context=f"ia:facturacion:{table}",
-                        )
-
 
 
 # =========================================================
@@ -12997,7 +12865,7 @@ def render_convenios_pro() -> None:
     convenios_section = _vitae_lazy_selector(
         "Vista de convenios",
         ["Centro de control", "Buscador universal", "Comparador", "Ficha por convenio",
-         "Reglas y directorio", "Auditoría de calidad", "Analista IA", "Exportar"],
+         "Reglas y directorio", "Auditoría de calidad", "Exportar"],
         key="convenios_active_section",
     )
 
@@ -13472,7 +13340,7 @@ def render_convenios_pro() -> None:
         st.markdown("#### Alcance de esta implementación")
         st.success(
             "Lectura multiformato, búsqueda global, comparación por código, control de vigencia, "
-            "auditoría de faltantes, padrón ACLISASA, asistente IA y exportación ejecutiva."
+            "auditoría de faltantes, padrón ACLISASA y exportación ejecutiva."
         )
         st.info(
             "Las planillas originales quedan en modo lectura para evitar que una tabla normalizada "
@@ -14372,7 +14240,7 @@ def render_deuda_total_pro(
     deuda_section = _vitae_lazy_selector(
         "Vista de deuda total",
         ["Centro ejecutivo", "Cargar / pagos", "Gestionar", "Migrar histórico",
-         "Plan de cancelación", "Analista IA", "Exportar"],
+         "Plan de cancelación", "Exportar"],
         key="deuda_total_active_section",
     )
 
@@ -18226,7 +18094,7 @@ def render_planes_pagos_prestamos_pro(
     planes_section = _vitae_lazy_selector(
         "Vista de planes y préstamos",
         ["Centro ejecutivo", "Cronograma", "Cargar / pagar", "Importar Excel",
-         "Gestionar", "Vista original", "Analista IA", "Exportar"],
+         "Gestionar", "Vista original", "Exportar"],
         key=f"{table}_planes_active_section",
     )
 
@@ -19987,7 +19855,7 @@ def render_gine_vitae_pro(
     gine_section = _vitae_lazy_selector(
         "Vista Gine Vitae",
         ["Centro ejecutivo", "Planes y pacientes", "Formularios", "Operación", "Caja",
-         "Gestión", "Importar Excel", "Vista original", "IA y exportación"],
+         "Gestión", "Importar Excel", "Vista original", "Exportar"],
         key=f"{table}_gine_active_section",
         nombres={
             "Centro ejecutivo": "Resumen",
@@ -19995,7 +19863,6 @@ def render_gine_vitae_pro(
             "Operación": "Pendientes",
             "Gestión": "Editar",
             "Vista original": "Planilla original",
-            "IA y exportación": "IA y exportar",
         },
     )
 
@@ -20780,37 +20647,8 @@ def render_gine_vitae_pro(
         else:
             st.info("Todavía no hay una matriz original guardada.")
 
-    if gine_section == "IA y exportación":
-        ai_col, export_col = st.columns([1.3, 1.0])
-        with ai_col:
-            st.markdown("### Analista IA de Gine Vitae")
-            question = st.text_area(
-                "Pregunta",
-                placeholder="Ej.: ¿Qué pacientes requieren acción inmediata? ¿Cuánto se cobró por jornada?",
-                height=120,
-                key=f"gv_ai_question_{table}",
-            )
-            if st.button("Analizar", type="primary", use_container_width=True, key=f"gv_ai_button_{table}"):
-                if not question.strip():
-                    st.warning("Escribí una pregunta.")
-                elif data.empty:
-                    st.warning("No hay pacientes para analizar.")
-                else:
-                    ai_data = data[[
-                        "paciente", "fecha_plan", "efectivo", "mercado_pago", "total_cobrado",
-                        "factura", "autorizado", "entregado", "estado_operativo", "observaciones", "hoja_origen",
-                    ]].copy().head(1500)
-                    ai_data["fecha_plan"] = pd.to_datetime(ai_data["fecha_plan"], errors="coerce").dt.strftime("%Y-%m-%d")
-                    with st.spinner("Analizando pacientes, cobros y pendientes..."):
-                        try:
-                            answer = preguntar_ia(modulo=module_name, df=ai_data, pregunta=question)
-                            st.success(answer)
-                        except Exception as error:
-                            _vitae_render_error(
-                                "No se pudo consultar la IA. Gine Vitae continúa operativo.",
-                                error,
-                                context=f"ia:gine:{table}",
-                            )
+    if gine_section == "Exportar":
+        export_col = st.container()
         with export_col:
             st.markdown("### Exportación ejecutiva")
             excel_bytes = _gv_export_excel(patients, cash, summary, raw_long)
