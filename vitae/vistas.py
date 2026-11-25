@@ -24,6 +24,7 @@ from vitae.core.tablas import MODULES
 from vitae.core.database import *
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
+from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
 from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
 from vitae.core.importadores import render_importer
 import vitae.modulos.quirofano as _agenda_quirofano_modulo
@@ -451,6 +452,7 @@ _SECCION_ICONOS = [
     ("director ia", "auto_awesome"), (r"\bia\b", "auto_awesome"), ("columnas", "tune"), ("registros", "table_view"),
     ("exportar", "download"), ("importar", "upload_file"), ("migrar", "upload_file"),
     ("nuevo mes", "calendar_add_on"), ("qué caja paga", "account_balance_wallet"),
+    ("cargar movimiento", "add_circle"),
     ("cargar", "add_circle"), ("nueva", "add_circle"), ("registrar", "add_circle"),
     ("editar", "edit_note"), ("gestionar", "edit_note"), ("gestión", "edit_note"),
     ("a pagar", "payments"), ("liquidación", "receipt_long"), ("control de datos", "verified"),
@@ -21112,6 +21114,19 @@ def render_facturacion_pro(
         return
 
 
+    # CAJA VM / CAJA VMR: la planilla mensual de efectivo (saldo inicial,
+    # entradas, salidas, saldo, rubros por color, quién y caja en dólares).
+    if str(table).lower() in ("caja_vm", "caja_vmr"):
+        render_caja(
+            df_base.copy(),
+            tabla=str(table).lower(),
+            nombre=module_name,
+            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+            selector=_vitae_lazy_selector,
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"caja:{table}"),
+        )
+        return
+
     # PAGOS PENDIENTES VITAE: planilla mensual por categoría, con la caja que
     # paga cada concepto (VMR, VM o Gine Vitae) y lo disponible de cada una.
     if str(table).lower() == "pagos_pendientes_vitae":
@@ -23143,9 +23158,11 @@ def total_mod(nombre, dfs):
         return 0.0
     # Dashboard: Caja VMR aporta exclusivamente su saldo ARS. Los USD se mantienen
     # como una posición independiente y jamás se suman nominalmente a la liquidez ARS.
-    if str(nombre).strip().lower() == "caja vmr":
+    # Cajas: mismo saldo que muestra el módulo (respeta los SALDO INICIAL
+    # cargados y nunca suma dólares como pesos).
+    if str(nombre).strip().lower() in ("caja vmr", "caja vm"):
         try:
-            return float(_caja_vmr_saldos(df)["ARS"]["saldo"])
+            return float(_caja_saldo_actual(df, "ARS", dolar_por_texto=str(nombre).strip().lower() == "caja vmr"))
         except Exception:
             pass
     # Pagos pendientes: cada planilla mensual repite lo impago del mes anterior;
@@ -23396,7 +23413,7 @@ def render_resumen_empresa(titulo, empresa, dfs):
         # Caja VMR USD se informa aparte: nunca se incorpora nominalmente a Liquidez ARS.
         if str(empresa).upper() == "VMR":
             try:
-                _vmr_usd = _caja_vmr_saldos(dfs.get("Caja VMR", pd.DataFrame()))["USD"]["saldo"]
+                _vmr_usd = _caja_saldo_actual(dfs.get("Caja VMR", pd.DataFrame()), "USD", dolar_por_texto=True)
                 _usd_txt = f"US$ {abs(float(_vmr_usd)):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                 if float(_vmr_usd) < 0:
                     _usd_txt = "-" + _usd_txt
