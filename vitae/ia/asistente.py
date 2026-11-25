@@ -124,7 +124,7 @@ def logo_icono() -> str:
 
             from vitae.core.config import BASE_DIR
 
-            datos = (BASE_DIR / "assets" / "logo_vitae_icono.png").read_bytes()
+            datos = (BASE_DIR / "static" / "luz_logo_chico.png").read_bytes()
             _LOGO = "data:image/png;base64," + base64.b64encode(datos).decode("ascii")
         except Exception:
             _LOGO = ""
@@ -250,12 +250,16 @@ _CSS = """<style>
 .st-key-asis_chat_cerrado *,.st-key-asis_chat_abierto *{box-sizing:border-box}
 .st-key-asis_chat_cerrado{width:62px!important;height:62px}
 .st-key-asis_chat_cerrado:after{content:"";position:absolute;right:3px;bottom:3px;width:14px;height:14px;border-radius:50%;
-  background:#31C46B;border:2px solid #fff;pointer-events:none}
+  background:#31C46B;border:2px solid #fff;pointer-events:none;z-index:5}
 .st-key-asis_chat_cerrado button{width:62px!important;height:62px!important;min-height:0!important;padding:0!important;
   border-radius:50%!important;border:3px solid #8C2853!important;background-color:#fff!important;
   box-shadow:0 8px 24px rgba(94,26,57,.35)!important;cursor:grab;touch-action:none;transition:transform .15s}
 .st-key-asis_chat_cerrado button:hover{transform:scale(1.07)}
 .st-key-asis_chat_cerrado button p{display:none}
+.st-key-asis_chat_cerrado [data-testid="stElementContainer"]:has(.asis-burbuja-logo){position:absolute!important;inset:0!important;
+  margin:0!important;pointer-events:none;z-index:3}
+.st-key-asis_chat_cerrado .asis-burbuja-logo{position:absolute;left:8px;top:8px;width:46px;height:46px;border-radius:50%;
+  pointer-events:none;background-size:100%!important}
 .st-key-asis_chat_abierto{width:330px!important;background:#fff;border-radius:20px;overflow:hidden;
   box-shadow:0 14px 44px rgba(30,10,20,.28);border:1px solid #ECE3E7}
 .st-key-asis_chat_abierto>div{width:100%}
@@ -266,7 +270,7 @@ _CSS = """<style>
 .st-key-asis_cabecera button p{color:#fff!important;font-size:.9rem!important;font-weight:700!important;line-height:1}
 .st-key-asis_cabecera button:hover{background:rgba(255,255,255,.18)!important}
 .asis-quien{display:flex;align-items:center;gap:.6rem;margin:0}
-.asis-avatar{position:relative;width:38px;height:38px;border-radius:50%;flex:none;border:2px solid rgba(255,255,255,.9)}
+.asis-avatar{position:relative;width:40px;height:40px;border-radius:50%;flex:none;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.15)}
 .asis-nombre{color:#fff;font-weight:700;font-size:1.02rem;line-height:1.1}
 .asis-online{color:#F3DCE6;font-size:.72rem;line-height:1.3;display:flex;align-items:center;gap:.3rem}
 .asis-online:before{content:"";width:7px;height:7px;border-radius:50%;background:#31C46B;display:inline-block}
@@ -277,7 +281,7 @@ _CSS = """<style>
 .asis-yo{justify-content:flex-end}
 .asis-col{display:flex;flex-direction:column;max-width:78%;min-width:0}
 .asis-yo .asis-col{align-items:flex-end}
-.asis-mini{width:28px;height:28px;border-radius:50%;flex:none;border:1px solid #E7DDE2;margin-bottom:1.05rem}
+.asis-mini{width:30px;height:30px;border-radius:50%;flex:none;border:1px solid #E7DDE2;margin-bottom:1.05rem}
 .asis-yo-mini{width:28px;height:28px;border-radius:50%;flex:none;background:#E9D3DD;color:#6F1F42;font-size:.72rem;
   font-weight:800;display:flex;align-items:center;justify-content:center;margin-bottom:1.05rem}
 .asis-burbuja{padding:.5rem .75rem;border-radius:14px;font-size:.84rem;line-height:1.4;word-wrap:break-word;
@@ -320,13 +324,16 @@ _CSS = """<style>
 </style>"""
 
 
+# El logo se sirve como archivo (static/, con enableStaticServing) y, por las
+# dudas, también va incrustado debajo: si el archivo no carga, se ve igual.
+LOGO_URL = "/app/static/luz_logo.png"
+
+
 def _css() -> str:
     logo = logo_icono()
-    if not logo:
-        return _CSS
-    foto = (f'.asis-avatar,.asis-mini{{background:#fff url("{logo}") center/74% no-repeat}}'
-            f'.st-key-asis_chat_cerrado button{{background-image:url("{logo}")!important;'
-            'background-size:66%!important;background-position:center!important;background-repeat:no-repeat!important}')
+    capas = f'url("{LOGO_URL}")' + (f',url("{logo}")' if logo else "")
+    foto = ('.asis-avatar,.asis-mini,.asis-burbuja-logo{background-color:#fff;background-image:' + capas
+            + ';background-position:center;background-repeat:no-repeat;background-size:86%}')
     return _CSS.replace("</style>", foto + "\n</style>")
 
 
@@ -491,6 +498,7 @@ def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Resp
     if not st.session_state.get(ABIERTO, False) and not st.session_state.get(PENDIENTE):
         with st.container(key="asis_chat_cerrado"):
             _boton(NOMBRE, key="asis_abrir", on_click=_abrir, help=f"Chatear con {NOMBRE}")
+            st.markdown('<div class="asis-burbuja-logo"></div>', unsafe_allow_html=True)
         return
     st.session_state[ABIERTO] = True
     with st.container(key="asis_chat_abierto"):

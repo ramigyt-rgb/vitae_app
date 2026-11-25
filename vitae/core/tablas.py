@@ -44,7 +44,8 @@ MODULES: Dict[str, Dict[str, Any]] = {
         "tipo": "cuenta_corriente",
         "descripcion": ("Proveedores de VMR: una fila por factura (fecha, proveedor, comprobante) con monto, pagado y "
                         "saldo = lo que falta pagar. «moneda» separa pesos (ARS) de dólares (USD): nunca sumar ARS con "
-                        "USD. «Proveedores a pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó."),
+                        "USD. «Proveedores a pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó. "
+                        "oculta = SI: fila oculta en la planilla (historial)."),
         "fields": [
             ("fecha", "date", True),
             ("proveedor", "text", True),
@@ -57,6 +58,7 @@ MODULES: Dict[str, Dict[str, Any]] = {
             ("vencimiento", "date", False),
             ("tipo", "select", False, ["A pagar", "A cobrar"]),
             ("observacion", "text", False),
+            ("oculta", "text", False),
         ],
     },
 
@@ -157,17 +159,23 @@ MODULES: Dict[str, Dict[str, Any]] = {
         "table": "cuenta_corriente_vm",
         "empresa": "VM",
         "tipo": "cuenta_corriente",
-        "descripcion": "Cuentas por cobrar y pagar de VM.",
+        "descripcion": ("Proveedores de VM: una fila por factura (fecha, proveedor, comprobante) con monto, pagado y "
+                        "saldo = lo que falta pagar. «moneda» separa pesos (ARS) de dólares (USD): nunca sumar ARS con "
+                        "USD. «Proveedores a pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó. "
+                        "oculta = SI: fila oculta en la planilla (historial)."),
         "fields": [
             ("fecha", "date", True),
-            ("persona_entidad", "text", True),
-            ("concepto", "text", True),
-            ("tipo", "select", True, ["A cobrar", "A pagar"]),
-            ("importe", "money", True),
+            ("proveedor", "text", True),
+            ("comprobante", "text", True),
+            ("moneda", "select", True, ["ARS", "USD"]),
+            ("monto", "money", True),
             ("pagado", "money", False),
+            ("saldo", "money", False),
+            ("fecha_pago", "date", False),
             ("vencimiento", "date", False),
-            ("estado", "select", True, ["Pendiente", "Parcial", "Pagado", "Vencido"]),
-            ("observaciones", "textarea", False),
+            ("tipo", "select", False, ["A pagar", "A cobrar"]),
+            ("observacion", "text", False),
+            ("oculta", "text", False),
         ],
     },
     "Facturación VM": {

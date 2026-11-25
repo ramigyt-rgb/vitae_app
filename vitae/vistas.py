@@ -20955,10 +20955,10 @@ def render_facturacion_pro(
         )
         return
 
-    # CUENTA CORRIENTE VMR: la planilla de proveedores (saldo por proveedor en
-    # pesos y en USD, detalle de facturas, pagos) y la sincronización con el
-    # Excel borrador (vitae/modulos/cuenta_corriente.py).
-    if str(table).lower() == "cuenta_corriente_vmr":
+    # CUENTA CORRIENTE VMR / VM: la planilla de proveedores (saldo por proveedor
+    # en pesos y en USD, detalle de facturas visibles, pagos) y la sincronización
+    # con el Excel borrador (vitae/modulos/cuenta_corriente.py).
+    if str(table).lower() in ("cuenta_corriente_vmr", "cuenta_corriente_vm"):
         render_cuenta_corriente(
             df_base.copy(),
             tabla=str(table).lower(),
