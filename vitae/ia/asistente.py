@@ -1,10 +1,10 @@
-"""Asistente Vitae: un único chat de IA en el menú lateral.
+"""Asistente Vitae: un único chat de IA, a mano en todas las pantallas.
 
+Un botón «🤖 Asistente» fijo abajo a la derecha abre el chat en una ventana.
 Reemplaza al Copiloto y a las consultas de IA que había dentro de cada
-módulo. Acompaña al usuario en todas las pantallas (la conversación se
-mantiene al cambiar de módulo), sabe en qué pantalla está y consulta los
-datos con el motor de herramientas (vitae/ia/motor.py), limitado a los
-módulos que el usuario tiene permitidos.
+módulo. La conversación se mantiene al cambiar de módulo, sabe en qué
+pantalla está el usuario y consulta los datos con el motor de herramientas
+(vitae/ia/motor.py), limitado a los módulos que el usuario tiene permitidos.
 """
 from __future__ import annotations
 
@@ -82,57 +82,110 @@ def _sugerir(texto: str) -> None:
     st.session_state["asistente_vitae_pendiente"] = texto
 
 
+_CSS_BOTON = """
+<style>
+.st-key-asistente_flotante{position:fixed;right:24px;bottom:24px;z-index:999990;width:auto!important}
+.st-key-asistente_flotante button{border-radius:999px!important;padding:.55rem 1.15rem!important;
+  background:#8C2853!important;color:#fff!important;border:none!important;
+  box-shadow:0 10px 26px rgba(94,26,57,.32)!important;font-weight:650!important}
+.st-key-asistente_flotante button p{color:#fff!important;font-size:1rem!important}
+.st-key-asistente_flotante button:hover{background:#6F1F42!important;transform:translateY(-1px)}
+@media (max-width: 640px){.st-key-asistente_flotante{right:14px;bottom:14px}}
+</style>
+"""
+
+
+def _chat(modulo_actual: str, permitidos: set[str] | None,
+          responder_fn: Callable[[str, str, list[dict[str, str]], set[str] | None], str], alto: int) -> None:
+    """La conversación: mensajes, sugerencias y cuadro para escribir."""
+    lista = mensajes()
+    st.markdown(_CSS, unsafe_allow_html=True)
+    st.caption(f"Estás en: {modulo_actual} · consulto los datos de Vitae en el momento.")
+    caja = st.container(height=alto, border=True)
+    with caja:
+        if not lista:
+            st.markdown("Hola 👋 Preguntame lo que necesites: facturación, cajas, deudas, pacientes, agenda…")
+            for i, sug in enumerate(SUGERENCIAS):
+                st.button(sug, key=f"asistente_sug_{i}", on_click=_sugerir, args=(sug,), use_container_width=True)
+        for m in lista:
+            with st.chat_message("user" if m["rol"] == "user" else "assistant",
+                                 avatar=":material/person:" if m["rol"] == "user" else "🤖"):
+                st.markdown(m["texto"])
+    # Formulario propio: el mensaje se envía con «Enviar» en un solo paso.
+    with st.form("asistente_vitae_form", clear_on_submit=True, border=False):
+        texto = st.text_area("Mensaje para el asistente", key="asistente_vitae_texto", height=80,
+                             placeholder="Escribí tu pregunta…", label_visibility="collapsed")
+        c1, c2 = st.columns([3, 1])
+        enviar = c1.form_submit_button("Enviar", type="primary", icon=":material/send:", use_container_width=True)
+        nueva = c2.form_submit_button("Nueva", icon=":material/add_comment:", use_container_width=True,
+                                      help="Empezar una conversación nueva")
+    if nueva:
+        _limpiar()
+        st.rerun(scope="fragment") if _en_dialogo() else st.rerun()
+    pregunta = (texto or "").strip() if enviar else ""
+    pregunta = pregunta or st.session_state.pop("asistente_vitae_pendiente", None)
+    if pregunta:
+        historial = _historial_para_motor(lista)
+        lista.append({"rol": "user", "texto": pregunta})
+        with caja:
+            with st.chat_message("user", avatar=":material/person:"):
+                st.markdown(pregunta)
+            with st.chat_message("assistant", avatar="🤖"):
+                with st.spinner("Consultando los datos…"):
+                    try:
+                        respuesta = responder_fn(pregunta, modulo_actual, historial, permitidos)
+                    except Exception as exc:
+                        respuesta = ("No pude responder en este momento "
+                                     f"({type(exc).__name__}). Probá de nuevo en unos segundos.")
+                st.markdown(respuesta)
+        lista.append({"rol": "assistant", "texto": respuesta})
+        del lista[:-MAX_MENSAJES]
+
+
+def _en_dialogo() -> bool:
+    return bool(st.session_state.get("_asistente_en_dialogo"))
+
+
+def _abrir_dialogo(modulo_actual: str, permitidos: set[str] | None,
+                   responder_fn: Callable[[str, str, list[dict[str, str]], set[str] | None], str]) -> None:
+    def contenido() -> None:
+        st.session_state["_asistente_en_dialogo"] = True
+        _chat(modulo_actual, permitidos, responder_fn, 420)
+
+    try:
+        dialogo = st.dialog("🤖 Asistente Vitae", width="large")(contenido)
+    except Exception:  # sin ventanas emergentes: se muestra en la página
+        dialogo = None
+    if callable(dialogo):
+        dialogo()
+    else:
+        with st.container(border=True):
+            st.markdown("#### 🤖 Asistente Vitae")
+            contenido()
+
+
+def boton_asistente(
+    modulo_actual: str,
+    *,
+    permitidos: set[str] | None = None,
+    responder_fn: Callable[[str, str, list[dict[str, str]], set[str] | None], str] | None = None,
+) -> None:
+    """Botón «🤖 Asistente» fijo abajo a la derecha; abre el chat en una ventana."""
+    responder_fn = responder_fn or responder
+    st.session_state["_asistente_en_dialogo"] = False
+    st.markdown(_CSS_BOTON, unsafe_allow_html=True)
+    with st.container(key="asistente_flotante"):
+        abrir = st.button("🤖 Asistente", key="asistente_abrir", help="Asistente Vitae: preguntale lo que necesites")
+    if abrir:
+        _abrir_dialogo(modulo_actual, permitidos, responder_fn)
+
+
 def render_asistente(
     modulo_actual: str,
     *,
     permitidos: set[str] | None = None,
     responder_fn: Callable[[str, str, list[dict[str, str]], set[str] | None], str] | None = None,
-    alto: int = 320,
+    alto: int = 380,
 ) -> None:
-    """Chat en el menú lateral (en el celular, dentro del menú desplegable)."""
-    responder_fn = responder_fn or responder
-    lista = mensajes()
-    with st.sidebar:
-        st.markdown(_CSS, unsafe_allow_html=True)
-        st.divider()
-        st.markdown('<div class="asis-titulo">💬 Asistente Vitae</div>'
-                    f'<div class="asis-sub">Preguntame lo que necesites · estás en {modulo_actual}</div>',
-                    unsafe_allow_html=True)
-        caja = st.container(height=alto, border=False)
-        with caja:
-            if not lista:
-                st.caption("Preguntame lo que necesites sobre Vitae: facturación, cajas, deudas, pacientes, "
-                           "agenda… Consulto los datos al momento.")
-                for i, s in enumerate(SUGERENCIAS):
-                    st.button(s, key=f"asistente_sug_{i}", on_click=_sugerir, args=(s,), use_container_width=True)
-            for m in lista:
-                with st.chat_message("user" if m["rol"] == "user" else "assistant",
-                                     avatar=":material/person:" if m["rol"] == "user" else ":material/auto_awesome:"):
-                    st.markdown(m["texto"])
-        # Formulario propio (no st.chat_input): funciona igual en el menú
-        # lateral de la computadora y en el menú desplegable del celular.
-        with st.form("asistente_vitae_form", clear_on_submit=True, border=False):
-            texto = st.text_area("Mensaje para el asistente", key="asistente_vitae_texto", height=78,
-                                 placeholder="Escribile al asistente…", label_visibility="collapsed")
-            enviar = st.form_submit_button("Enviar", type="primary", icon=":material/send:", use_container_width=True)
-        pregunta = (texto or "").strip() if enviar else ""
-        pregunta = pregunta or st.session_state.pop("asistente_vitae_pendiente", None)
-        if pregunta:
-            historial = _historial_para_motor(lista)
-            lista.append({"rol": "user", "texto": pregunta})
-            with caja:
-                with st.chat_message("user", avatar=":material/person:"):
-                    st.markdown(pregunta)
-                with st.chat_message("assistant", avatar=":material/auto_awesome:"):
-                    with st.spinner("Consultando los datos…"):
-                        try:
-                            texto = responder_fn(pregunta, modulo_actual, historial, permitidos)
-                        except Exception as exc:
-                            texto = ("No pude responder en este momento "
-                                     f"({type(exc).__name__}). Probá de nuevo en unos segundos.")
-                    st.markdown(texto)
-            lista.append({"rol": "assistant", "texto": texto})
-            del lista[:-MAX_MENSAJES]
-        if lista:
-            st.button("Nueva conversación", key="asistente_vitae_nueva", on_click=_limpiar,
-                      icon=":material/add_comment:", use_container_width=True)
+    """Chat directo (sin botón), por ejemplo para pruebas o una página propia."""
+    _chat(modulo_actual, permitidos, responder_fn or responder, alto)

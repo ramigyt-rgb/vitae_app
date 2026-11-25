@@ -25,7 +25,7 @@ from vitae.core.database import *
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
 from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, render_formularios
-from vitae.ia.asistente import render_asistente
+from vitae.ia.asistente import boton_asistente, render_asistente
 from vitae.modulos.deudas_impositivas import normalizar as _deudas_normalizar, render_deudas
 from vitae.modulos.panel import render_panel
 from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
@@ -1500,8 +1500,9 @@ def _modulos_permitidos_ia() -> set[str] | None:
 
 
 def render_vitae_copilot(modulo_actual: str | None = None) -> None:
-    """Asistente Vitae: un único chat de IA en el menú lateral, en todas las
-    pantallas (reemplaza al Copiloto y a las consultas de IA de cada módulo)."""
+    """Asistente Vitae: botón «🤖 Asistente» fijo abajo a la derecha en todas las
+    pantallas, que abre el chat en una ventana (reemplaza al Copiloto y a las
+    consultas de IA de cada módulo)."""
     if not _auth_usa_copiloto():
         return
     actual = str(
@@ -1512,9 +1513,9 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     st.session_state["vitae_current_module"] = actual
     nombre_visible = "Panel general" if actual == "Dashboard Global" else actual
     try:
-        render_asistente(nombre_visible, permitidos=_modulos_permitidos_ia())
+        boton_asistente(nombre_visible, permitidos=_modulos_permitidos_ia())
     except Exception as exc:  # el asistente nunca tira abajo una pantalla, pero el error se ve
-        st.sidebar.error(f"Asistente Vitae: no se pudo mostrar ({type(exc).__name__}: {exc})"[:300])
+        st.error(f"Asistente Vitae: no se pudo mostrar ({type(exc).__name__}: {exc})"[:300])
 
 
 def render_header() -> None:
