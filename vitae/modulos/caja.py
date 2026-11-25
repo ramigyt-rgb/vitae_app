@@ -979,7 +979,8 @@ def render_caja(
                    "Sólo se modifican en Google Sheets las celdas que cambies.")
         vista = original.copy()
         vista.insert(0, "borrar", False)
-        editada = st.data_editor(
+        form_ed = st.form(f"{k}form_editor_{mes}_{rev()}", border=False)
+        editada = form_ed.data_editor(
             vista, hide_index=True, use_container_width=True, num_rows="fixed",
             height=min(80 + 36 * len(vista), 720),
             column_config={
@@ -998,12 +999,11 @@ def render_caja(
             key=f"{k}editor_{mes}_{rev()}",
         )
         borrar = [i for i, v in editada["borrar"].items() if bool(v)]
-        b1, b2 = st.columns(2)
+        b1, b2 = form_ed.columns(2)
         with b1:
-            ok = st.button("Guardar cambios" + (f" y borrar {len(borrar)}" if borrar else ""), type="primary",
-                           key=f"{k}editor_ok_{mes}", icon=":material/save:", use_container_width=True)
+            ok = st.form_submit_button("Guardar cambios", type="primary", icon=":material/save:", use_container_width=True)
         with b2:
-            if st.button("Descartar cambios", key=f"{k}editor_no_{mes}", use_container_width=True):
+            if st.form_submit_button("Descartar cambios", use_container_width=True):
                 st.session_state[rev_key] = rev() + 1
                 st.rerun()
         if ok:
