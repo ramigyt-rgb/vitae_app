@@ -1500,7 +1500,7 @@ def _modulos_permitidos_ia() -> set[str] | None:
 
 
 def render_vitae_copilot(modulo_actual: str | None = None) -> None:
-    """Asistente Vitae: «Vita», chat estilo Messenger abajo a la derecha en todas
+    """Asistente Vitae: «Luz», chat estilo Messenger abajo a la derecha en todas
     las pantallas, minimizable (reemplaza al Copiloto y a las consultas de IA de
     cada módulo)."""
     if not _auth_usa_copiloto():

@@ -919,6 +919,14 @@ def render_deudas(
             if ya:
                 st.caption("Ya hay deudas de ATSA/FATSA cargadas.")
             st.divider()
+        else:
+            nombre_corto = "VM" if tabla == "deudas_impositivas_vm" else nombre
+            st.markdown(f"**Planilla de deudas de {nombre_corto}**")
+            st.caption(f"Para sincronizarla: bajá la planilla de {nombre_corto} como Excel (en Google Sheets: Archivo → "
+                       "Descargar → Microsoft Excel) y subila acá abajo. Te muestro cómo queda —Rentas, ARCA y "
+                       "sindicatos, con sus totales— y se guarda con un botón. Cada vez que la quieras actualizar, "
+                       "repetí lo mismo con «Reemplazar lo que hay cargado» prendido.")
+            st.divider()
         st.markdown("**Importar desde Excel**")
         st.caption("Planilla con columnas IMPUESTO · PERIODO · FECHA DE VTO · CAPITAL · INTERESES · DEUDA TOTAL, y las "
                    "de sindicatos (CUOTA SINDICAL, SOLIDARIDAD, CONTRIBUCIÓN CONVENCIONAL). Lee todas las hojas.")
