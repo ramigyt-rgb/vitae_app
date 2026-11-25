@@ -25,6 +25,7 @@ from vitae.core.database import *
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
 from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, render_formularios
+from vitae.modulos.panel import render_panel
 from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
 from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
 from vitae.core.importadores import render_importer
@@ -3915,174 +3916,38 @@ def _dg_load_convention_snapshot() -> pd.DataFrame:
 
 
 def render_dashboard() -> None:
-    """Dashboard Global consolidado para dirección general."""
+    """Panel general: los datos importantes de cada módulo, calculados igual
+    que en cada módulo (vitae/modulos/panel.py)."""
     st.session_state["vitae_current_module"] = "Dashboard Global"
-    # Defensa en profundidad: el Dashboard valida sesión/permisos por sí mismo,
+    # Defensa en profundidad: el Panel valida sesión/permisos por sí mismo,
     # incluso si en el futuro cambia el router principal de app.py.
     _auth_require_login_and_permission()
     _render_vitae_app_shell()
     _auth_render_session_bar()
     render_vitae_copilot("Dashboard Global")
-    _dg_render_css()
 
-    try:
-        today = pd.Timestamp.now(tz="America/Argentina/Salta").normalize().tz_localize(None)
-    except Exception:
-        today = pd.Timestamp.today().normalize()
-
-    all_data = _dg_load_dashboard_data()
-    dfs: dict[str, pd.DataFrame] = {}
-    for module_name, cfg in MODULES.items():
-        if _dg_category(module_name, cfg) == "Excluir":
-            continue
-        table = cfg["table"]
-        dfs[module_name] = all_data.get(table, pd.DataFrame()).copy()
-
-    # Convenios utiliza dos pestañas y una estructura especial; se normaliza
-    # sólo para lectura ejecutiva, sin modificar las planillas originales.
-    convention_data = _dg_load_convention_snapshot()
-    for module_name, cfg in MODULES.items():
-        if _dg_category(module_name, cfg) == "Convenios":
-            dfs[module_name] = convention_data.copy()
-
-    # Mismo encabezado que el resto de la app. El logo y «Actualizar» ya están
-    # en el menú lateral (antes se repetían acá y en el celular el logo no cargaba).
-    encabezado_modulo(
-        "Panel general",
-        descripcion="Visión consolidada de VMR, VM y áreas corporativas: resultados, cobranza, "
-        "obligaciones, vencimientos y riesgos.",
-    )
-
-    filter_col, custom_col, export_col = st.columns([2.2, 2.4, 1.1])
-    with filter_col:
-        period_option = st.selectbox(
-            "Período de análisis",
-            [
-                "Mes actual", "Mes anterior", "Año actual",
-                "Últimos 12 meses", "Histórico", "Personalizado",
-            ],
-            key="dg_period_option",
+    def _encabezado() -> None:
+        encabezado_modulo(
+            "Panel general",
+            descripcion="Lo importante de Vitae en una pantalla: plata disponible, facturación y cobranza, "
+            "lo que hay que pagar y la operación. Cada número se calcula igual que en su módulo.",
         )
 
-    current_month_start = today.replace(day=1)
-    if period_option == "Mes actual":
-        start = current_month_start
-        end = today
-    elif period_option == "Mes anterior":
-        end = current_month_start - pd.Timedelta(days=1)
-        start = end.replace(day=1)
-    elif period_option == "Año actual":
-        start = today.replace(month=1, day=1)
-        end = today
-    elif period_option == "Últimos 12 meses":
-        start = (today - pd.DateOffset(months=11)).replace(day=1)
-        end = today
-    elif period_option == "Histórico":
-        start = pd.Timestamp("2000-01-01")
-        end = today
-    else:
-        with custom_col:
-            selected = st.date_input(
-                "Rango personalizado",
-                value=(current_month_start.date(), today.date()),
-                max_value=today.date(),
-                key="dg_custom_dates",
-            )
-        if isinstance(selected, (tuple, list)):
-            if len(selected) >= 2:
-                start, end = pd.Timestamp(selected[0]), pd.Timestamp(selected[1])
-            elif len(selected) == 1:
-                start = end = pd.Timestamp(selected[0])
-            else:
-                start, end = current_month_start, today
-        else:
-            start = end = pd.Timestamp(selected)
-    if period_option != "Personalizado":
-        with custom_col:
-            st.markdown(
-                f'<div class="dg-period">{start.strftime("%d/%m/%Y")} — {end.strftime("%d/%m/%Y")}</div>',
-                unsafe_allow_html=True,
-            )
+    def _impuestos(df: pd.DataFrame, table: str) -> pd.DataFrame:
+        data = _di_vm_from_sheet(df, table)
+        return _di_vm_refresh_status(data) if not data.empty else data
 
-    dashboard_sections = [
-        "Resumen ejecutivo",
-        "Finanzas y cobranza",
-        "Operaciones",
-        "Riesgos y vencimientos",
-        "Mapa de módulos",
-        "Director IA",
-    ]
-    active_dashboard_section = _vitae_lazy_selector(
-        "Sección del Dashboard",
-        dashboard_sections,
-        key="dg_active_section",
+    render_panel(
+        leer=get_df,
+        preparadores={
+            "honorarios": _hon_preparar,
+            "impuestos": _impuestos,
+            "deuda_total": _dt_enrich,
+            "gine": _gv_cargar,
+        },
+        encabezado=_encabezado,
     )
 
-    model = _dg_build_model(dfs, start, end, today)
-    previous_period = None
-    previous_model = None
-    if active_dashboard_section == "Resumen ejecutivo":
-        previous_period = _dg_previous_period(period_option, start, end)
-        if previous_period is not None:
-            previous_start, previous_end = previous_period
-            previous_cutoff = min(today, previous_end)
-            previous_model = _dg_build_model(dfs, previous_start, previous_end, previous_cutoff)
-
-    total_records = int(model["modules"]["Registros"].sum()) if not model["modules"].empty else 0
-    modules_with_data = int(model["modules"]["Registros"].gt(0).sum()) if not model["modules"].empty else 0
-    st.caption(
-        f"Corte al {today.strftime('%d/%m/%Y')} · "
-        f"{modules_with_data} módulos con datos · {total_records:,} registros fuente"
-    )
-    st.caption(
-        f"Filtro activo en indicadores temporales: {start.strftime('%d/%m/%Y')} — {end.strftime('%d/%m/%Y')}. "
-        "La disponibilidad muestra el último saldo existente hasta la fecha de cierre seleccionada."
-    )
-
-    with export_col:
-        snapshot = pd.DataFrame([{
-            "Desde": start.strftime("%d/%m/%Y"),
-            "Hasta": end.strftime("%d/%m/%Y"),
-            "Liquidez": model["liquidity"],
-            "Facturado": model["billed_period"],
-            "Cobrado de facturas del período": model["collected_period"],
-            "Cobros por fecha de pago en período": model.get("cash_collected_period", 0.0),
-            "Cobrado sin fecha": model["collected_without_date"],
-            "Pendiente facturas del período": model["billing_pending_period"],
-            "Facturación pendiente histórica": model["billing_pending"],
-            "Otras cuentas a cobrar actuales": model["account_receivables"],
-            "Cartera total a cobrar histórica": model["total_receivables"],
-            "Obligaciones del período": model["total_payables_period"],
-            "Vencido en período": model["overdue_amount"],
-            "Pacientes": model["patients_period"],
-            "Tareas del período": len(model["open_tasks_period"]),
-        }])
-        st.download_button(
-            "Exportar resumen",
-            data=snapshot.to_csv(index=False).encode("utf-8-sig"),
-            file_name=f"dashboard_global_{end.strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-
-    if active_dashboard_section == "Resumen ejecutivo":
-        _dg_render_overview(
-            model, start, end,
-            previous_model=previous_model,
-            previous_period=previous_period,
-            today=today,
-        )
-    elif active_dashboard_section == "Finanzas y cobranza":
-        _dg_render_finance(model, start, end, today)
-    elif active_dashboard_section == "Operaciones":
-        _dg_render_operations(model, start, end)
-    elif active_dashboard_section == "Riesgos y vencimientos":
-        _dg_render_risks(model, today)
-    elif active_dashboard_section == "Mapa de módulos":
-        _dg_render_modules(model)
-    elif active_dashboard_section == "Director IA":
-        _dg_render_ai(dfs, model, start, end, today)
 
 def _facturacion_hoy_argentina() -> pd.Timestamp:
     """Fecha operativa de Argentina para Facturación VM/VMR."""
@@ -20034,28 +19899,9 @@ def _gv_export_excel(patients: pd.DataFrame, cash: pd.DataFrame, summary: pd.Dat
     return output.getvalue()
 
 
-def render_gine_vitae_pro(
-    df_original: pd.DataFrame,
-    table: str = "gine_vitae",
-    module_name: str = "Gine Vitae",
-) -> None:
-    """Centro integral de planes, pacientes, operación y caja de Gine Vitae."""
-    # Usuario con acceso sólo a Formularios: no se cargan ni muestran planes,
-    # pacientes ni caja.
-    limitadas = _auth_secciones_limitadas(module_name or "Gine Vitae")
-    if limitadas is not None:
-        if "Formularios" in limitadas:
-            render_formularios(
-                leer_guardado=lambda: get_df(_GINE_FORMULARIOS_TABLA),
-                guardar=lambda df_nuevo: sync_df_to_sheet(_GINE_FORMULARIOS_TABLA, df_nuevo),
-                mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context="gine_formularios"),
-            )
-        else:
-            st.info("Tu usuario no tiene secciones habilitadas en Gine Vitae.")
-        return
-    _gv_css()
-    today = pd.Timestamp.today().normalize()
-
+def _gv_cargar(df_original: pd.DataFrame | None, table: str) -> dict[str, Any]:
+    """Lee Gine Vitae igual que su pantalla: pacientes, caja, resumen y la
+    matriz original (lo usa también el Panel general)."""
     cash_aux_raw = _gv_load_aux(table, "caja", _GV_CASH_COLUMNS)
     summary_aux_raw = _gv_load_aux(table, "resumen", _GV_SUMMARY_COLUMNS)
     raw_long = _gv_load_aux(table, "matriz", _GV_RAW_COLUMNS)
@@ -20108,6 +19954,34 @@ def render_gine_vitae_pro(
     summary = _gv_rebuild_summary(summary, cash, patients)
     patients = _gv_attach_position(patients, summary)
     data = _gv_enrich(patients)
+    return {"patients": patients, "cash": cash, "summary": summary, "data": data,
+            "raw_long": raw_long, "fallback_matrix": fallback_matrix}
+
+
+def render_gine_vitae_pro(
+    df_original: pd.DataFrame,
+    table: str = "gine_vitae",
+    module_name: str = "Gine Vitae",
+) -> None:
+    """Centro integral de planes, pacientes, operación y caja de Gine Vitae."""
+    # Usuario con acceso sólo a Formularios: no se cargan ni muestran planes,
+    # pacientes ni caja.
+    limitadas = _auth_secciones_limitadas(module_name or "Gine Vitae")
+    if limitadas is not None:
+        if "Formularios" in limitadas:
+            render_formularios(
+                leer_guardado=lambda: get_df(_GINE_FORMULARIOS_TABLA),
+                guardar=lambda df_nuevo: sync_df_to_sheet(_GINE_FORMULARIOS_TABLA, df_nuevo),
+                mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context="gine_formularios"),
+            )
+        else:
+            st.info("Tu usuario no tiene secciones habilitadas en Gine Vitae.")
+        return
+    _gv_css()
+    today = pd.Timestamp.today().normalize()
+    _gv = _gv_cargar(df_original, table)
+    patients, cash, summary, data = _gv["patients"], _gv["cash"], _gv["summary"], _gv["data"]
+    raw_long, fallback_matrix = _gv["raw_long"], _gv["fallback_matrix"]
 
     # Encabezado común arriba (título y descripción). «Actualizar» está en el menú lateral.
     gine_section = _vitae_lazy_selector(
