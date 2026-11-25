@@ -194,8 +194,13 @@ _VITAE_ROLES = [
     "Finanzas",
     "Operaciones",
     "Solo lectura",
+    "Gine Vitae · Formularios",
     "Personalizado",
 ]
+# Acceso parcial a un módulo: "sec::<Módulo>::<Sección>" habilita sólo esa
+# sección (sin el resto del módulo, sin Panel general y sin Copiloto IA).
+PERMISO_GINE_FORMULARIOS = "sec::Gine Vitae::Formularios"
+_PERMISOS_SECCION = {PERMISO_GINE_FORMULARIOS: "Gine Vitae · solo Formularios"}
 _VITAE_EMPRESAS = ["VITAE", "VM", "VMR"]
 
 
@@ -331,6 +336,7 @@ def _auth_permission_catalog() -> dict[str, str]:
     }
     for module_name in MODULES.keys():
         catalog[f"mod::{module_name}"] = str(module_name)
+    catalog.update(_PERMISOS_SECCION)
     return catalog
 
 
@@ -344,6 +350,8 @@ def _auth_role_permissions(role: str) -> list[str]:
     all_perms = list(catalog.keys())
     if role_norm == "administrador":
         return all_perms
+    if role_norm == "gine vitae · formularios":
+        return [PERMISO_GINE_FORMULARIOS]
     if role_norm in {"dirección", "direccion"}:
         return [p for p in all_perms if p != "configuracion"]
 
@@ -561,6 +569,34 @@ def _auth_permission_for_current_screen() -> tuple[str | None, str | None]:
     return None, None
 
 
+def _auth_secciones_limitadas(module_name: str, user: dict[str, Any] | None = None) -> list[str] | None:
+    """Secciones habilitadas cuando el usuario sólo tiene acceso parcial al módulo.
+
+    None = acceso completo (o ninguno); lista = sólo esas secciones.
+    """
+    user = user or _auth_current_user()
+    if not user or _auth_is_admin(user):
+        return None
+    perms = _auth_user_permissions(user)
+    if f"mod::{module_name}" in perms:
+        return None
+    prefijo = f"sec::{module_name}::"
+    secciones = [p[len(prefijo):] for p in perms if p.startswith(prefijo)]
+    return secciones or None
+
+
+def _auth_usa_copiloto(user: dict[str, Any] | None = None) -> bool:
+    """El Copiloto consulta todos los datos de Vitae: sólo para quien tiene
+    acceso a módulos completos o al Panel general."""
+    user = user or _auth_current_user()
+    if not user:
+        return False
+    if _auth_is_admin(user):
+        return True
+    perms = _auth_user_permissions(user)
+    return any(p.startswith("mod::") or p in {"dashboard_global", "configuracion"} for p in perms)
+
+
 def _auth_can_access(permission: str | None, company: str | None = None, user: dict[str, Any] | None = None) -> bool:
     user = user or _auth_current_user()
     if not user:
@@ -568,6 +604,9 @@ def _auth_can_access(permission: str | None, company: str | None = None, user: d
     if _auth_is_admin(user):
         return True
     if permission and permission not in _auth_user_permissions(user):
+        # Acceso parcial (una sección): habilita el módulo, sin exigir empresa.
+        if permission.startswith("mod::") and _auth_secciones_limitadas(permission[5:], user):
+            return True
         return False
     if company and company in _VITAE_EMPRESAS and company not in _auth_user_companies(user):
         return False
@@ -1002,7 +1041,10 @@ def _auth_render_permissions_management() -> None:
 
     rows = []
     for permission, label in catalog.items():
-        if not permission.startswith("mod::"):
+        if permission.startswith("sec::"):
+            module = permission.split("::")[1]
+            company = str(MODULES.get(module, {}).get("empresa", "—"))
+        elif not permission.startswith("mod::"):
             company = "Sistema"
         else:
             module = permission.split("::", 1)[1]
@@ -1433,6 +1475,8 @@ def _preguntar_copiloto_contextual(pregunta: str, modulo_actual: str) -> Any:
 
 def render_vitae_copilot(modulo_actual: str | None = None) -> None:
     """Copiloto persistente y discreto: no ocupa el sidebar ni deforma la app."""
+    if not _auth_usa_copiloto():
+        return
     actual = str(
         modulo_actual
         or st.session_state.get("vitae_current_module", "")
@@ -19986,6 +20030,19 @@ def render_gine_vitae_pro(
     module_name: str = "Gine Vitae",
 ) -> None:
     """Centro integral de planes, pacientes, operación y caja de Gine Vitae."""
+    # Usuario con acceso sólo a Formularios: no se cargan ni muestran planes,
+    # pacientes ni caja.
+    limitadas = _auth_secciones_limitadas(module_name or "Gine Vitae")
+    if limitadas is not None:
+        if "Formularios" in limitadas:
+            render_formularios(
+                leer_guardado=lambda: get_df(_GINE_FORMULARIOS_TABLA),
+                guardar=lambda df_nuevo: sync_df_to_sheet(_GINE_FORMULARIOS_TABLA, df_nuevo),
+                mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context="gine_formularios"),
+            )
+        else:
+            st.info("Tu usuario no tiene secciones habilitadas en Gine Vitae.")
+        return
     _gv_css()
     today = pd.Timestamp.today().normalize()
 
