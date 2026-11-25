@@ -7,6 +7,12 @@ Es la planilla «PROVEEDORES DE VITAE MEDICINA REPRODUCTIVA» tal cual se usa:
 - Abajo, el detalle de facturas: FECHA · PROVEEDOR · COMPROBANTE · MONTO ·
   PAGADO · SALDO · OBSERVACIÓN (en la observación suele ir la fecha de pago).
 
+Como en el Excel, las filas se pueden ocultar (por ejemplo, las facturas ya
+pagadas de meses anteriores): la planilla muestra sólo las visibles y las
+ocultas quedan guardadas como historial. Al importar el Excel se toman sólo
+las filas y columnas visibles; si una fila se ocultó en el Excel, se oculta
+también en la app.
+
 Se carga mes a mes (factura nueva, registrar pagos) y se sincroniza con el
 Excel borrador: las facturas se reconocen por proveedor + número de
 comprobante + moneda, así que volver a subir el mismo Excel no duplica nada;
@@ -43,7 +49,7 @@ EMPRESA = {
 MONEDAS = ["ARS", "USD"]
 TIPOS = ["A pagar", "A cobrar"]
 COLUMNAS = ["id", "fecha", "proveedor", "comprobante", "moneda", "monto", "pagado", "saldo",
-            "fecha_pago", "vencimiento", "tipo", "observacion"]
+            "fecha_pago", "vencimiento", "tipo", "observacion", "oculta"]
 # Nombres de la versión anterior del módulo: se leen y se pasan al formato nuevo.
 _ANTERIORES = {"persona_entidad", "entidad", "acreedor", "cliente", "concepto", "factura", "numero_factura",
                "nro_factura", "documento", "importe", "importe_ars", "importe_usd", "pagado_ars", "pagado_usd",
@@ -192,6 +198,8 @@ def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
     tipo = col("tipo").map(_sin_acentos)
     d["tipo"] = ["A cobrar" if "cobrar" in t else "A pagar" for t in tipo]
     d["observacion"] = col("observacion", "observaciones", "nota", "notas").map(_texto).str.strip()
+    d["oculta"] = col("oculta", "oculto", "archivada").map(
+        lambda v: _sin_acentos(v) in {"si", "true", "1", "x", "oculta", "oculto", "verdadero"}).astype(bool)
     d = d[(d["proveedor"].ne("")) | (d["comprobante"].ne("")) | (d["monto"].abs() > 0.004)].copy()
     d["_clave"] = [clave(p, c, m) for p, c, m in zip(d["proveedor"], d["comprobante"], d["moneda"])]
     ids = col("id", "id_registro").loc[d.index].map(_texto).str.strip()
@@ -220,6 +228,7 @@ def para_guardar(d: pd.DataFrame) -> pd.DataFrame:
     salida["saldo"] = (salida["monto"] - salida["pagado"]).clip(lower=0).round(2)
     for c in ("monto", "pagado", "saldo"):
         salida[c] = salida[c].map(lambda v: f"{v:.2f}")
+    salida["oculta"] = d["oculta"].map(lambda b: "SI" if bool(b) else "") if "oculta" in d.columns else ""
     salida["fecha"] = d["_fecha"].dt.strftime("%Y-%m-%d").fillna("") if "_fecha" in d.columns else d["fecha"]
     salida["fecha_pago"] = d["_pago"].dt.strftime("%Y-%m-%d").fillna("") if "_pago" in d.columns else d["fecha_pago"]
     salida["vencimiento"] = d["_venc"].dt.strftime("%Y-%m-%d").fillna("") if "_venc" in d.columns else d["vencimiento"]
@@ -230,12 +239,12 @@ def para_guardar(d: pd.DataFrame) -> pd.DataFrame:
 
 
 def fila(fecha: Any, proveedor: str, comprobante: str, moneda: str, monto: float, pagado: float = 0.0,
-         fecha_pago: Any = None, observacion: str = "", tipo: str = "A pagar") -> dict[str, Any]:
+         fecha_pago: Any = None, observacion: str = "", tipo: str = "A pagar", oculta: bool = False) -> dict[str, Any]:
     f, fp = una_fecha(fecha), una_fecha(fecha_pago)
     return {"fecha": f.strftime("%Y-%m-%d") if pd.notna(f) else "", "proveedor": proveedor.strip(),
             "comprobante": comprobante.strip(), "moneda": moneda, "monto": round(float(monto), 2),
             "pagado": round(float(pagado), 2), "fecha_pago": fp.strftime("%Y-%m-%d") if pd.notna(fp) else "",
-            "tipo": tipo, "observacion": observacion.strip()}
+            "tipo": tipo, "observacion": observacion.strip(), "oculta": "SI" if oculta else ""}
 
 
 def agregar(d: pd.DataFrame, filas: list[dict[str, Any]]) -> pd.DataFrame:
@@ -283,8 +292,21 @@ def totales(d: pd.DataFrame, hoy: pd.Timestamp | None = None) -> dict[str, Any]:
     return out
 
 
-def filtrar(d: pd.DataFrame, *, mes: str = "", proveedor: str = "", estado: str = "Todas", buscar: str = "") -> pd.DataFrame:
-    x = d
+def visibles(d: pd.DataFrame) -> pd.DataFrame:
+    return d[~d["oculta"].astype(bool)]
+
+
+def ocultar_pagadas(d: pd.DataFrame) -> tuple[pd.DataFrame, int]:
+    """Oculta las facturas saldadas (como se hace en el Excel a fin de mes)."""
+    sel = (~d["oculta"].astype(bool)) & (d["saldo"] <= 0.004) & (d["monto"] > 0.004)
+    x = d.copy()
+    x.loc[sel, "oculta"] = True
+    return x, int(sel.sum())
+
+
+def filtrar(d: pd.DataFrame, *, mes: str = "", proveedor: str = "", estado: str = "Todas", buscar: str = "",
+            con_ocultas: bool = True) -> pd.DataFrame:
+    x = d if con_ocultas else visibles(d)
     if mes:
         x = x[x["_mes"].eq(mes)]
     if proveedor:
@@ -368,10 +390,15 @@ def planilla_vmr() -> pd.DataFrame:
 # Excel borrador: lectura y sincronización
 # ---------------------------------------------------------------------------
 def leer_archivo(archivo: Any) -> dict[str, pd.DataFrame]:
-    """Hojas del archivo subido como matrices (sin encabezado)."""
+    """Hojas visibles del archivo como matrices (sin encabezado).
+
+    En un .xlsx se respeta lo que está oculto: las columnas ocultas se ignoran
+    y las filas ocultas (a mano, agrupadas o por un filtro) quedan anotadas en
+    ``matriz.attrs["ocultas"]`` (posiciones de fila)."""
     nombre = str(getattr(archivo, "name", "archivo")).lower()
     datos = archivo.getvalue() if hasattr(archivo, "getvalue") else archivo.read()
     if nombre.endswith(".csv"):
+        texto = datos.decode("latin-1")
         for cod in ("utf-8-sig", "latin-1"):
             try:
                 texto = datos.decode(cod)
@@ -379,7 +406,30 @@ def leer_archivo(archivo: Any) -> dict[str, pd.DataFrame]:
             except UnicodeDecodeError:
                 continue
         return {"CSV": pd.read_csv(io.StringIO(texto), header=None, dtype=object, sep=None, engine="python")}
-    return pd.read_excel(io.BytesIO(datos), sheet_name=None, header=None, dtype=object)
+    try:
+        from openpyxl import load_workbook
+
+        wb = load_workbook(io.BytesIO(datos), data_only=True)
+    except Exception:  # .xls viejo u otro formato: sin datos de visibilidad
+        return pd.read_excel(io.BytesIO(datos), sheet_name=None, header=None, dtype=object)
+    hojas: dict[str, pd.DataFrame] = {}
+    for ws in wb.worksheets:
+        if getattr(ws, "sheet_state", "visible") != "visible":
+            continue
+        filas = [list(f) for f in ws.iter_rows(values_only=True)]
+        ancho = max((len(f) for f in filas), default=0)
+        mat = pd.DataFrame([f + [None] * (ancho - len(f)) for f in filas], dtype=object)
+        cols_ocultas = set()
+        for dim in ws.column_dimensions.values():
+            if getattr(dim, "hidden", False) and dim.min:
+                cols_ocultas.update(range(int(dim.min) - 1, int(dim.max or dim.min)))
+        for j in cols_ocultas:
+            if j < ancho:
+                mat[j] = None
+        # iter_rows arranca en la fila 1: la fila r de Excel es la posición r - 1.
+        mat.attrs["ocultas"] = {r - 1 for r, dim in ws.row_dimensions.items() if getattr(dim, "hidden", False)}
+        hojas[ws.title] = mat
+    return hojas
 
 
 def _celda(v: Any) -> str:
@@ -394,6 +444,7 @@ def leer_planilla(hojas: dict[str, pd.DataFrame]) -> pd.DataFrame:
     for nombre_hoja, m in hojas.items():
         if m is None or m.empty:
             continue
+        ocultas = set(m.attrs.get("ocultas", set()))
         mat = m.reset_index(drop=True)
         mat.columns = range(mat.shape[1])
         n = len(mat)
@@ -433,7 +484,7 @@ def leer_planilla(hojas: dict[str, pd.DataFrame]) -> pd.DataFrame:
                 f = una_fecha(valores[j_fecha]) if j_fecha is not None else pd.NaT
                 pagado = (numero(valores[j_pag]) or 0.0) if j_pag is not None else 0.0
                 pago, nota = _observacion(valores[j_obs], f.year if pd.notna(f) else None) if j_obs is not None else ("", "")
-                filas.append(fila(f, prov, comp, moneda, monto, pagado, pago, nota))
+                filas.append(fila(f, prov, comp, moneda, monto, pagado, pago, nota, oculta=i in ocultas))
                 i += 1
             i += 1
     return normalizar(pd.DataFrame(filas)) if filas else _vacio()
@@ -453,14 +504,22 @@ def sincronizar(actual: pd.DataFrame, excel: pd.DataFrame, *, quitar_faltantes: 
     e["_vez"] = e.groupby("_clave").cumcount() if len(e) else pd.Series(dtype=int)
     idx_a = {(k, v): i for i, k, v in zip(a.index, a["_clave"], a["_vez"])}
     nuevas, cambios, iguales, vistos = [], [], 0, set()
+    ignoradas, ocultadas = 0, 0
     for _, f in e.iterrows():
         llave = (f["_clave"], f["_vez"])
         if llave not in idx_a:
-            nuevas.append(f)
+            if bool(f["oculta"]):
+                ignoradas += 1  # fila oculta en el Excel que la app no tiene: no se trae
+            else:
+                nuevas.append(f)
             continue
         i = idx_a[llave]
         vistos.add(i)
         dif = []
+        if bool(a.at[i, "oculta"]) != bool(f["oculta"]):
+            dif.append("se oculta" if bool(f["oculta"]) else "vuelve a verse")
+            ocultadas += int(bool(f["oculta"]))
+            a.at[i, "oculta"] = bool(f["oculta"])
         for campo, nombre in _CAMPOS_SYNC:
             va, ve = a.at[i, campo], f[campo]
             if campo in ("monto", "pagado"):
@@ -487,6 +546,7 @@ def sincronizar(actual: pd.DataFrame, excel: pd.DataFrame, *, quitar_faltantes: 
         base = pd.concat([base, para_guardar(pd.DataFrame(nuevas).drop(columns=["_vez"]))], ignore_index=True)
     resultado = normalizar(base)
     return resultado, {"nuevas": len(nuevas), "actualizadas": len(cambios), "iguales": iguales,
+                       "ocultadas": ocultadas, "ocultas_ignoradas": ignoradas,
                        "solo_app": len(faltan), "quitadas": len(faltan) if quitar_faltantes else 0,
                        "detalle_cambios": cambios,
                        "detalle_nuevas": pd.DataFrame(nuevas).drop(columns=["_vez"]) if nuevas else _vacio()}
@@ -520,6 +580,7 @@ _CSS = """
 .cc-pagada{color:#8A7F85}
 .cc-debe .cc-saldo{font-weight:700;color:#8C2853}
 .cc-tot{background:#EFE7EB;font-weight:700;border-top:1px solid #DCCFD6}
+.cc-oculta{background:repeating-linear-gradient(135deg,#FAF7F8 0 8px,#F4EFF2 8px 16px);font-style:italic}
 @media (max-width:760px){
   .cc-res{grid-template-columns:1fr}
   .cc-cols{display:none}
@@ -568,7 +629,7 @@ def html_detalle(x: pd.DataFrame, moneda: str, titulo: str) -> str:
     filas = []
     for _, f in x.iterrows():
         obs = " · ".join(t for t in (_fecha_ar(f["_pago"]), _texto(f["observacion"])) if t)
-        clase = "cc-debe" if f["saldo"] > 0.004 else "cc-pagada"
+        clase = ("cc-debe" if f["saldo"] > 0.004 else "cc-pagada") + (" cc-oculta" if bool(f["oculta"]) else "")
         filas.append(
             f'<div class="cc-row {clase}"><div class="cc-c">{_fecha_ar(f["_fecha"])}</div><div class="cc-t">{_e(f["proveedor"])}</div>'
             f'<div class="cc-t">{_e(f["comprobante"])}{" <small>(a cobrar)</small>" if f["tipo"] == "A cobrar" else ""}</div>'
@@ -637,6 +698,8 @@ def excel(d: pd.DataFrame, tabla: str) -> bytes:
             ws.append([f["_fecha"].to_pydatetime() if pd.notna(f["_fecha"]) else None, f["proveedor"], f["comprobante"],
                        float(f["monto"]), float(f["pagado"]) or None, float(f["saldo"]), obs])
             ws.cell(ws.max_row, 1).number_format = "d/m/yyyy"
+            if bool(f["oculta"]):
+                ws.row_dimensions[ws.max_row].hidden = True
             if isinstance(obs, datetime):
                 ws.cell(ws.max_row, 7).number_format = "d/m/yyyy"
             for j in (4, 5, 6):
@@ -654,7 +717,7 @@ def excel(d: pd.DataFrame, tabla: str) -> bytes:
 # Edición
 # ---------------------------------------------------------------------------
 _COLS_EDICION = ["borrar", "_fecha", "proveedor", "comprobante", "moneda", "monto", "pagado", "saldo", "_pago",
-                 "observacion", "tipo"]
+                 "observacion", "tipo", "oculta"]
 
 
 def tabla_edicion(x: pd.DataFrame) -> pd.DataFrame:
@@ -678,7 +741,7 @@ def aplicar_edicion(d: pd.DataFrame, original: pd.DataFrame, editada: pd.DataFra
         r = fila(f.get("_fecha"), _texto(f.get("proveedor")), _texto(f.get("comprobante")),
                  f.get("moneda") if f.get("moneda") in MONEDAS else "ARS", numero(f.get("monto")) or 0.0,
                  numero(f.get("pagado")) or 0.0, f.get("_pago"), _texto(f.get("observacion")),
-                 f.get("tipo") if f.get("tipo") in TIPOS else "A pagar")
+                 f.get("tipo") if f.get("tipo") in TIPOS else "A pagar", oculta=_sin_acentos(f.get("oculta")) in {"true", "1", "si"})
         r["id"] = i
         filas.append(r)
     nuevas = normalizar(pd.DataFrame(filas)) if filas else _vacio()
@@ -782,11 +845,22 @@ def render_cuenta_corriente(
             estado = st.segmented_control("Facturas", ["Todas", "Con saldo", "Pagadas"], default="Todas",
                                           key=f"{k}pl_estado") or "Todas"
         buscar = c4.text_input("Buscar", key=f"{k}pl_buscar", placeholder="Comprobante, proveedor, observación…")
+        n_ocultas = int(d["oculta"].sum())
+        ver_ocultas = st.toggle(f"Ver también las filas ocultas ({n_ocultas})", value=False, key=f"{k}pl_ocultas",
+                                disabled=n_ocultas == 0,
+                                help="Como en el Excel: las ocultas (por ejemplo, ya pagadas de meses anteriores) "
+                                     "no se muestran, pero quedan guardadas.") if n_ocultas else False
         x = filtrar(d, mes="" if mes == "Todos" else mes, proveedor="" if prov == "Todos" else prov,
-                    estado=estado, buscar=buscar)
+                    estado=estado, buscar=buscar, con_ocultas=ver_ocultas)
         if x.empty:
-            st.info("No hay facturas con esos filtros.")
+            st.info("No hay facturas visibles con esos filtros.")
         st.markdown(html_detalle(x, "ARS", "Detalle en pesos") + html_detalle(x, "USD", "En USD"), unsafe_allow_html=True)
+        _, n_pagadas = ocultar_pagadas(d)
+        if n_pagadas and st.button(f"Ocultar las {n_pagadas} facturas ya pagadas", key=f"{k}ocultar_pag",
+                                   icon=":material/visibility_off:",
+                                   help="Como a fin de mes en el Excel. Quedan guardadas y se pueden volver a mostrar en «Editar»."):
+            nuevo, n = ocultar_pagadas(d)
+            _guardar(nuevo, f"{n} facturas pagadas ocultas")
         st.download_button("Descargar Excel (formato planilla)", data=excel(d, tabla), icon=":material/download:",
                            file_name=f"{tabla}_{hoy:%Y-%m-%d}.xlsx", key=f"{k}xls",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -878,7 +952,9 @@ def render_cuenta_corriente(
                            format_func=lambda m: "Todos los meses" if m == "Todos" else nombre_mes(m))
         prov = c2.selectbox("Proveedor", ["Todos", *proveedores], key=f"{k}ed_prov")
         moneda = c3.selectbox("Moneda", ["Todas", *MONEDAS], key=f"{k}ed_moneda")
-        x = filtrar(d, mes="" if mes == "Todos" else mes, proveedor="" if prov == "Todos" else prov)
+        con_ocultas = st.toggle("Incluir las filas ocultas", value=False, key=f"{k}ed_ocultas")
+        x = filtrar(d, mes="" if mes == "Todos" else mes, proveedor="" if prov == "Todos" else prov,
+                    con_ocultas=con_ocultas)
         if moneda != "Todas":
             x = x[x["moneda"].eq(moneda)]
         st.caption(f"{len(x)} facturas. Todas las celdas se pueden cambiar (el saldo se calcula solo). Para borrar marcá 🗑️; "
@@ -896,6 +972,8 @@ def render_cuenta_corriente(
             "_pago": st.column_config.DateColumn("Fecha de pago", format="DD/MM/YYYY"),
             "observacion": st.column_config.TextColumn("Observación", width="medium"),
             "tipo": st.column_config.SelectboxColumn("Tipo", options=TIPOS, default="A pagar", width="small"),
+            "oculta": st.column_config.CheckboxColumn("Oculta", width="small", default=False,
+                                                      help="Oculta en la planilla (queda guardada)"),
         }
         with st.form(f"{k}form_ed_{rev}", border=False):
             editada = st.data_editor(tabla_e, hide_index=True, use_container_width=True, num_rows="dynamic",
@@ -929,6 +1007,8 @@ def render_cuenta_corriente(
         st.divider()
     st.markdown("**Sincronizar con el Excel borrador**")
     st.caption("Subí el Excel que usan de borrador (o bajalo de Google Sheets: Archivo → Descargar → Microsoft Excel). "
+               "Se toma sólo lo visible: las filas y columnas ocultas del Excel no se traen, y si una factura que ya "
+               "está en la app aparece oculta en el Excel, se oculta también acá. "
                "Busco las tablas FECHA · PROVEEDOR · COMPROBANTE · MONTO · PAGADO · SALDO · OBSERVACIÓN; la que tiene "
                "«EN USD» arriba va en dólares. Cada factura se reconoce por proveedor + comprobante: las nuevas se "
                "agregan, a las que ya están se les actualizan pagos y observaciones. Subir el mismo Excel dos veces no duplica nada.")
@@ -957,15 +1037,19 @@ def render_cuenta_corriente(
     if importado.empty:
         st.warning("No encontré facturas. Revisá que la hoja tenga los encabezados PROVEEDOR, COMPROBANTE y MONTO.")
         return
-    ti = totales(importado, hoy)
-    st.caption(f"En el Excel: {int(importado['moneda'].eq('ARS').sum())} facturas en pesos (saldo {pesos(ti['ARS'])}) · "
-               f"{int(importado['moneda'].eq('USD').sum())} en USD (saldo {usd(ti['USD'])}).")
+    vis = visibles(importado)
+    ti = totales(vis, hoy)
+    n_ocu = int(importado["oculta"].sum())
+    st.caption(f"Visibles en el Excel: {int(vis['moneda'].eq('ARS').sum())} facturas en pesos (saldo {pesos(ti['ARS'])}) · "
+               f"{int(vis['moneda'].eq('USD').sum())} en USD (saldo {usd(ti['USD'])})"
+               + (f" · {n_ocu} filas ocultas (no se traen)." if n_ocu else "."))
     quitar = st.toggle("Borrar de la app las facturas que no estén en el Excel", value=False, key=f"{k}quitar",
                        help="Apagado (lo normal): sólo agrega y actualiza.")
     nuevo, res = sincronizar(d, importado, quitar_faltantes=quitar)
     tarjetas_kpi([
         ("Nuevas", str(res["nuevas"]), "se agregan", "#2E8B57"),
-        ("Actualizadas", str(res["actualizadas"]), "cambian pagos / datos", "#C58A32"),
+        ("Actualizadas", str(res["actualizadas"]), (f"{res['ocultadas']} se ocultan · " if res["ocultadas"] else "")
+         + "cambian pagos / datos", "#C58A32"),
         ("Sin cambios", str(res["iguales"]), "ya estaban iguales", "#8A7F85"),
         ("Sólo en la app", str(res["solo_app"]), "se borran" if quitar else "quedan como están", "#B14E5E"),
     ])

@@ -16,3 +16,7 @@ secondaryBackgroundColor = "#F1ECEF"
 
 [client]
 toolbarMode = "minimal"
+
+[server]
+# Sirve la carpeta static/ en /app/static (logo de Luz, el asistente).
+enableStaticServing = true
