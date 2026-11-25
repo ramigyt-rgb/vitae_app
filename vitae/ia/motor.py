@@ -513,8 +513,11 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     herramientas = crear_herramientas(datos)
     from vitae.ia import experta_facturacion as _experta_fx
 
+    from vitae.ia import experta_caja as _experta_caja
+
     expertas = _experta_fx.herramientas(datos)
-    herramientas = herramientas + expertas
+    expertas_caja = _experta_caja.herramientas(datos)
+    herramientas = herramientas + expertas + expertas_caja
     de_accion: list[Callable[..., str]] = []
     if acciones is not None:
         from vitae.ia import acciones as _acciones
@@ -531,6 +534,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     sistema = (
         f"{_instrucciones(estilo)}\n\n"
         + (f"{_experta_fx.INSTRUCCIONES}\n\n" if expertas else "")
+        + (f"{_experta_caja.INSTRUCCIONES}\n\n" if expertas_caja else "")
         + (f"{_acciones.instrucciones(de_accion)}\n\n" if de_accion else "")
         + f"HOY: {['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'][hoy.weekday()]} "
           f"{hoy:%d/%m/%Y} (mes actual: {mes}).\n"

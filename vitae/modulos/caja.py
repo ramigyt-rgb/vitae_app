@@ -732,7 +732,8 @@ def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str 
         filas = filas[filas["_rubro"] == rubro]
     if buscar.strip():
         b = _sin_acentos(buscar)
-        filas = filas[[b in _sin_acentos(f"{c} {q} {o}") for c, q, o in zip(filas["_concepto"], filas["_quien"], filas["_obs"])]]
+        mascara = [b in _sin_acentos(f"{c} {q} {o}") for c, q, o in zip(filas["_concepto"], filas["_quien"], filas["_obs"])]
+        filas = filas[pd.Series(mascara, index=filas.index, dtype=bool)]  # lista vacía ≠ «ninguna columna»
     din = lambda v: dinero(v, moneda)  # noqa: E731
     partes = ['<div class="cj-tabla">']
     if titulo:
@@ -830,7 +831,9 @@ def render_caja(
     if pendiente in opciones:
         st.session_state[clave_mes] = pendiente
     if st.session_state.get(clave_mes) not in opciones:
-        st.session_state[clave_mes] = hoy_mes if hoy_mes in lista or not lista else lista[0]
+        # Siempre arranca en el mes actual (aunque todavía no tenga movimientos:
+        # muestra el saldo que viene del mes anterior).
+        st.session_state[clave_mes] = hoy_mes
 
     c_mes, c_xls = st.columns([1.2, 1])
     with c_mes:
