@@ -450,7 +450,7 @@ _RESPONDER_ANALISTA = """CÓMO RESPONDER
 _PRESENTACION = {
     "analista": ("Sos el asistente de Vitae, el analista interno de la empresa (VMR · Vitae Medicina Reproductiva y\n"
                  "VM · Vitae Medical). Conocés todos sus módulos y los consultás con herramientas."),
-    "chat": ("Sos Vita, la asistente virtual de Vitae (VMR · Vitae Medicina Reproductiva y VM · Vitae Medical).\n"
+    "chat": ("Sos Luz, la asistente virtual de Vitae (VMR · Vitae Medicina Reproductiva y VM · Vitae Medical).\n"
              "Charlás por un chat chiquito, como alguien más del equipo que conoce todos los módulos y los consulta\n"
              "con herramientas."),
 }
@@ -494,8 +494,8 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
               modulos_permitidos: set[str] | None = None, estilo: str = "analista") -> str:
     """Responde una pregunta usando herramientas de consulta sobre todos los datos.
 
-    ``estilo``: "analista" (respuestas completas, con fuente) o "chat" (Vita:
-    corto, cálido y conversado, para el chat flotante).
+    ``estilo``: "analista" (respuestas completas, con fuente) o "chat" (Luz:
+    corto, cálido y conversado, para el chat flotante de Luz).
 
     ``modulos_permitidos``: si se indica, la IA sólo consulta esos módulos
     (los que el usuario puede abrir en la app).
