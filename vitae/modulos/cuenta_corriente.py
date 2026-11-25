@@ -296,7 +296,8 @@ def a_pagar(d: pd.DataFrame) -> pd.DataFrame:
 def resumen_proveedores(d: pd.DataFrame, moneda: str) -> pd.DataFrame:
     """«Proveedores a pagar»: saldo por proveedor (también los que están en cero)."""
     x = a_pagar(d)
-    x = x[x["moneda"].eq(moneda) & x["proveedor"].ne("")]
+    # Como en la planilla: los proveedores de las filas visibles (y cualquiera que tenga saldo).
+    x = x[x["moneda"].eq(moneda) & x["proveedor"].ne("") & (~x["oculta"].astype(bool) | (x["saldo"] > 0.004))]
     if x.empty:
         return pd.DataFrame(columns=["proveedor", "saldo", "pendientes"])
     g = x.groupby("proveedor", sort=False).agg(saldo=("saldo", "sum"), pendientes=("saldo", lambda s: int((s > 0.004).sum())))
@@ -657,6 +658,56 @@ def leer_planilla(hojas: dict[str, pd.DataFrame]) -> pd.DataFrame:
     return resultado
 
 
+def _vez(df: pd.DataFrame) -> pd.Series:
+    """Número de aparición de cada factura (misma clave), contando primero las visibles:
+    así una copia oculta nunca le gana el lugar a la visible."""
+    if not len(df):
+        return pd.Series(dtype=int)
+    orden = df.sort_values("oculta", kind="stable") if "oculta" in df.columns else df
+    return orden.groupby("_clave").cumcount().reindex(df.index)
+
+
+def dejar_como_planilla(actual: pd.DataFrame, planilla: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Deja la cuenta corriente igual a una planilla de referencia:
+
+    - las facturas de la planilla quedan visibles y con sus datos (si ya estaban,
+      se corrigen; conservan su id);
+    - todo lo demás que había en la app es anterior y está pagado: se marca
+      pagado (pagado = monto) y se oculta. No se borra nada.
+    """
+    a = actual.copy()
+    p = planilla.copy()
+    a["_vez"] = _vez(a)
+    p["_vez"] = _vez(p)
+    idx_a = {(k, v): i for i, k, v in zip(a.index, a["_clave"], a["_vez"])}
+    campos = [c for c in COLUMNAS if c != "id"]
+    filas, usados, nuevas, actualizadas = [], set(), 0, 0
+    for _, f in p.iterrows():
+        r = f.drop(labels=["_vez"]).copy()
+        r["oculta"] = False
+        i = idx_a.get((f["_clave"], f["_vez"]))
+        if i is None:
+            nuevas += 1
+        else:
+            usados.add(i)
+            r["id"] = a.at[i, "id"]
+            antes = para_guardar(a.loc[[i]].drop(columns=["_vez"]))[campos].iloc[0]
+            despues = para_guardar(pd.DataFrame([r]))[campos].iloc[0]
+            actualizadas += int(not antes.equals(despues))
+        filas.append(r)
+    resto = a.drop(index=sorted(usados)).drop(columns=["_vez"])
+    con_saldo = resto["saldo"] > 0.004
+    resto.loc[con_saldo, "pagado"] = resto.loc[con_saldo, "monto"]
+    resto["saldo"] = 0.0
+    resto["oculta"] = True
+    partes = [para_guardar(resto)] if len(resto) else []
+    if filas:
+        partes.append(para_guardar(pd.DataFrame(filas)))
+    nuevo = normalizar(pd.concat(partes, ignore_index=True)) if partes else _vacio()
+    return nuevo, {"nuevas": nuevas, "actualizadas": actualizadas, "iguales": len(usados) - actualizadas,
+                   "anteriores": int(len(resto)), "anteriores_con_saldo": int(con_saldo.sum())}
+
+
 _CAMPOS_SYNC = [("fecha", "fecha"), ("proveedor", "proveedor"), ("comprobante", "comprobante"), ("monto", "monto"),
                 ("pagado", "pagado"), ("fecha_pago", "fecha de pago"), ("observacion", "observación")]
 
@@ -667,8 +718,8 @@ def sincronizar(actual: pd.DataFrame, excel: pd.DataFrame, *, quitar_faltantes: 
     actualiza las que ya están (misma factura = proveedor + comprobante + moneda)."""
     a = actual.copy()
     e = excel.copy()
-    a["_vez"] = a.groupby("_clave").cumcount() if len(a) else pd.Series(dtype=int)
-    e["_vez"] = e.groupby("_clave").cumcount() if len(e) else pd.Series(dtype=int)
+    a["_vez"] = _vez(a)
+    e["_vez"] = _vez(e)
     idx_a = {(k, v): i for i, k, v in zip(a.index, a["_clave"], a["_vez"])}
     nuevas, cambios, iguales, vistos = [], [], 0, set()
     ignoradas, ocultadas = 0, 0
@@ -1161,16 +1212,24 @@ def render_cuenta_corriente(
 
     # ---- Importar ----------------------------------------------------------
     if tabla == "cuenta_corriente_vmr":
-        st.markdown("**Planilla de VMR (noviembre 2026)**")
-        st.caption("Las facturas de las fotos de la planilla: 19 en pesos (desde marzo 2026) y 20 en USD. "
-                   "Proveedores a pagar $11.709.202,97 · USD 7.162,50. No duplica: si ya están, las deja como están.")
-        if st.button("Cargar la planilla de VMR", key=f"{k}seed", icon=":material/playlist_add:",
-                     type="primary" if d.empty else "secondary"):
-            nuevo, res = sincronizar(d, planilla_vmr())
-            if res["nuevas"] == 0 and res["actualizadas"] == 0:
-                st.info("Ya estaba todo cargado.")
-            else:
-                _guardar(nuevo, f"Planilla de VMR: {res['nuevas']} facturas nuevas, {res['actualizadas']} actualizadas")
+        st.markdown("**Dejar igual a la planilla de VMR (noviembre 2026)**")
+        st.caption("Quedan visibles las facturas de la planilla actual —19 en pesos desde marzo 2026 y 20 en USD, con sus "
+                   "pagos— y todo lo anterior que haya en la app se marca pagado y se oculta (no se borra: queda en el "
+                   "historial). Proveedores a pagar $11.709.202,97 · USD 7.162,50.")
+        nuevo_pl, res_pl = dejar_como_planilla(d, planilla_vmr())
+        tp = totales(nuevo_pl, hoy)
+        ya_igual = (res_pl["nuevas"] == 0 and res_pl["actualizadas"] == 0 and res_pl["anteriores_con_saldo"] == 0
+                    and int(d["oculta"].sum()) == res_pl["anteriores"])
+        if ya_igual:
+            st.success("La cuenta corriente ya está igual a la planilla. ✅")
+        else:
+            st.caption(f"Qué va a pasar: {res_pl['nuevas']} facturas nuevas · {res_pl['actualizadas']} se corrigen · "
+                       f"{res_pl['iguales']} ya estaban bien · {res_pl['anteriores']} anteriores se ocultan"
+                       + (f" ({res_pl['anteriores_con_saldo']} tenían saldo y se marcan pagadas)"
+                          if res_pl["anteriores_con_saldo"] else "")
+                       + f". Queda: {pesos(tp['ARS'])} · {usd(tp['USD'])}.")
+            if st.button("Dejar igual a la planilla", key=f"{k}seed", icon=":material/fact_check:", type="primary"):
+                _guardar(nuevo_pl, "Cuenta corriente igual a la planilla de noviembre 2026")
         st.divider()
     st.markdown("**Sincronizar con el Excel borrador**")
     st.caption("Subí el Excel que usan de borrador (o bajalo de Google Sheets: Archivo → Descargar → Microsoft Excel). "
