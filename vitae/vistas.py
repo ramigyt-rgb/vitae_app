@@ -26,6 +26,7 @@ from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
 from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, render_formularios
 from vitae.ia.asistente import render_asistente
+from vitae.modulos.deudas_impositivas import normalizar as _deudas_normalizar, render_deudas
 from vitae.modulos.panel import render_panel
 from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
 from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
@@ -3861,8 +3862,11 @@ def render_dashboard() -> None:
         )
 
     def _impuestos(df: pd.DataFrame, table: str) -> pd.DataFrame:
-        data = _di_vm_from_sheet(df, table)
-        return _di_vm_refresh_status(data) if not data.empty else data
+        data = _deudas_normalizar(df)  # misma lectura que el módulo Deudas impositivas
+        if not data.empty:
+            data["fecha_vencimiento"] = data["_vto"]
+            data["saldo"] = data["saldo"].clip(lower=0)
+        return data
 
     render_panel(
         leer=get_df,
@@ -16507,6 +16511,14 @@ def _di_vm_render_export(data: pd.DataFrame, table: str, module_name: str = "") 
     )
 
 
+def _di_leer_excel_planilla(uploaded_file: Any) -> pd.DataFrame:
+    """Lee todas las hojas de una planilla de deudas con el importador de siempre."""
+    sheets, filename = _di_vm_read_uploaded(uploaded_file)
+    frames = [_di_vm_parse_matrix(matrix, str(name), filename) for name, matrix in sheets.items()]
+    frames = [f for f in frames if f is not None and not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
 def render_deudas_impositivas_pro(
     df_original: pd.DataFrame,
     table: str,
@@ -20887,6 +20899,18 @@ def render_facturacion_pro(
         str(table).lower() in {"deudas_impositivas_vm", "deudas_impositivas_vmr"}
         or "impositiv" in identity_deuda_impositiva
     )
+    if is_deuda_impositiva and str(table).lower() in {"deudas_impositivas_vm", "deudas_impositivas_vmr"}:
+        # La planilla de deudas tal cual se usa: Rentas, ARCA (F931 por período,
+        # anticipos de Ganancias, IVA) y sindicatos (vitae/modulos/deudas_impositivas.py).
+        render_deudas(
+            df_base.copy(),
+            tabla=str(table).lower(),
+            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+            leer_excel=_di_leer_excel_planilla,
+            selector=_vitae_lazy_selector,
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"deudas_impositivas:{table}"),
+        )
+        return
     if is_deuda_impositiva and re.search(r"\bvmr\b", identity_deuda_impositiva):
         render_deudas_impositivas_vmr_pro(
             df_original=df_base.copy(),
