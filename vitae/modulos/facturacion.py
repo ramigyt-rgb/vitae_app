@@ -1095,24 +1095,6 @@ def _seccion_resumen(f: pd.DataFrame, metrics: dict[str, float], module_name: st
             fig.update_traces(textinfo="percent", sort=False)
             _grafico(fig, 330)
 
-    with st.expander("Preguntarle a la IA sobre esta vista", icon=":material/auto_awesome:", expanded=False):
-        st.caption("La IA responde usando solo los registros que estás viendo con los filtros actuales.")
-        pregunta = st.text_input("Pregunta", placeholder="Ej.: ¿Qué obra social conviene priorizar esta semana y por qué?", key=f"{key}_ia_q")
-        if st.button("Preguntar", key=f"{key}_ia_btn"):
-            if not pregunta.strip():
-                st.warning("Escribí una pregunta.")
-            else:
-                try:
-                    from vitae.ia.copiloto import preguntar_ia
-                    ia_df = f[["_fecha_base", "_paciente", "_obra_social", "_procedimiento", "_medico", "_numero_factura",
-                               "_vencimiento", "_fecha_pago", "_monto", "_cobrado", "_pendiente", "_estado_ejecutivo"]].copy()
-                    ia_df.columns = ["fecha", "paciente", "obra_social", "procedimiento", "medico", "factura",
-                                     "vencimiento", "fecha_pago", "facturado", "cobrado", "pendiente", "estado"]
-                    with st.spinner("Analizando…"):
-                        st.markdown(preguntar_ia(module_name, ia_df, pregunta))
-                except Exception as exc:
-                    st.error(f"La IA no pudo responder: {exc}")
-
 
 def _seccion_cobranza(f: pd.DataFrame, metrics: dict[str, float], key: str) -> None:
     pendientes = f[(~f["_cancelado"]) & (f["_pendiente"] > 0)]
