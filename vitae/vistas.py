@@ -28,6 +28,7 @@ from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, ren
 from vitae.ia.asistente import chat_flotante, render_asistente
 from vitae.modulos.deudas_impositivas import normalizar as _deudas_normalizar, render_deudas
 from vitae.modulos.panel import render_panel
+from vitae.modulos.cuenta_corriente import render_cuenta_corriente
 from vitae.modulos.caja import render_caja, saldo_actual as _caja_saldo_actual
 from vitae.modulos.pagos_pendientes import render_pagos_pendientes, saldo_mes_vigente as _pp_saldo_mes_vigente
 from vitae.core.importadores import render_importer
@@ -20951,6 +20952,19 @@ def render_facturacion_pro(
             guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
             selector=_vitae_lazy_selector,
             mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"caja:{table}"),
+        )
+        return
+
+    # CUENTA CORRIENTE VMR: la planilla de proveedores (saldo por proveedor en
+    # pesos y en USD, detalle de facturas, pagos) y la sincronización con el
+    # Excel borrador (vitae/modulos/cuenta_corriente.py).
+    if str(table).lower() == "cuenta_corriente_vmr":
+        render_cuenta_corriente(
+            df_base.copy(),
+            tabla=str(table).lower(),
+            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+            selector=_vitae_lazy_selector,
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"cuenta_corriente:{table}"),
         )
         return
 
