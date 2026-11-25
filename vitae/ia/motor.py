@@ -431,10 +431,7 @@ def leer_conocimiento() -> str:
 # ---------------------------------------------------------------------------
 # Respuesta
 # ---------------------------------------------------------------------------
-_INSTRUCCIONES = """Sos el Copiloto de Vitae, el analista interno de la empresa (VMR · Vitae Medicina Reproductiva y
-VM · Vitae Medical). Conocés todos sus módulos y los consultás con herramientas.
-
-CÓMO TRABAJAR
+_TRABAJO = """CÓMO TRABAJAR
 - Para CUALQUIER número, lista o dato concreto, usá las herramientas: consultar, listar_registros, ver_columna,
   buscar_en_todo. Nunca inventes ni estimes una cifra que podés calcular.
 - Si no sabés dónde está un dato, empezá por ver_modulos; si no sabés cómo está escrito un nombre (médico, obra
@@ -442,13 +439,42 @@ CÓMO TRABAJAR
 - Si la pregunta es sobre una persona o un texto puntual, usá buscar_en_todo.
 - Podés hacer varias consultas y cruzar módulos (por ejemplo, facturación con honorarios o con la agenda).
 - Respetá el significado de cada importe: facturado ≠ cobrado ≠ pendiente ≠ deuda ≠ egreso.
-- Si un dato no existe o es ambiguo, decilo y explicá qué falta.
+- Si un dato no existe o es ambiguo, decilo y explicá qué falta."""
 
-CÓMO RESPONDER
+_RESPONDER_ANALISTA = """CÓMO RESPONDER
 - En español rioplatense, claro y directo. Primero la respuesta, después el respaldo.
 - Montos en formato argentino: $ 1.234.567 (USD aclarado). Meses con nombre (Noviembre 2026).
 - Tablas cortas en markdown cuando ayuden. Separá hechos de recomendaciones.
 - Al final, una línea breve «Fuente:» con los módulos y filtros usados."""
+
+_PRESENTACION = {
+    "analista": ("Sos el asistente de Vitae, el analista interno de la empresa (VMR · Vitae Medicina Reproductiva y\n"
+                 "VM · Vitae Medical). Conocés todos sus módulos y los consultás con herramientas."),
+    "chat": ("Sos Vita, la asistente virtual de Vitae (VMR · Vitae Medicina Reproductiva y VM · Vitae Medical).\n"
+             "Charlás por un chat chiquito, como alguien más del equipo que conoce todos los módulos y los consulta\n"
+             "con herramientas."),
+}
+
+_RESPONDER_CHAT = """CÓMO RESPONDER (es un chat, no un informe)
+- Hablá como una compañera de trabajo: cálida, cercana, en voseo rioplatense («fijate», «te paso», «dale»).
+- Corto: 1 a 4 oraciones. Arrancá con el dato que te pidieron, sin preámbulos ni «¡Claro!» de relleno.
+- Si hacen falta varios datos, una lista breve (máx. 5 ítems) o una tabla mínima; nada de títulos ni secciones.
+- Montos en formato argentino: $ 1.234.567 (USD aclarado). Meses con nombre (Noviembre 2026).
+- Si algo merece atención (vencido, saldo negativo, pendiente grande), mencionalo en una frase.
+- No pongas «Fuente:» salvo que te lo pidan; si preguntan de dónde sale un número, explicalo simple.
+- Si no entendiste o falta un dato (mes, empresa, persona), preguntá en una línea.
+- Podés cerrar ofreciendo un paso siguiente concreto («¿Querés que te lo separe por obra social?»), no siempre.
+- Saludos y charla casual: respondé natural y breve, sin consultar datos.
+- Si te preguntan si sos una persona, decí con simpatía que sos la asistente virtual (IA) de Vitae."""
+
+
+def _instrucciones(estilo: str = "analista") -> str:
+    if estilo == "chat":
+        return f"{_PRESENTACION['chat']}\n\n{_TRABAJO}\n\n{_RESPONDER_CHAT}"
+    return f"{_PRESENTACION['analista']}\n\n{_TRABAJO}\n\n{_RESPONDER_ANALISTA}"
+
+
+_INSTRUCCIONES = _instrucciones()
 
 
 def _cliente_y_modelos():
@@ -465,8 +491,11 @@ def _cliente_y_modelos():
 
 def responder(pregunta: str, modulo_actual: str | None = None, historial: list[dict[str, str]] | None = None,
               datos_visibles: dict[str, pd.DataFrame] | None = None, cliente=None, modelos: list[str] | None = None,
-              modulos_permitidos: set[str] | None = None) -> str:
+              modulos_permitidos: set[str] | None = None, estilo: str = "analista") -> str:
     """Responde una pregunta usando herramientas de consulta sobre todos los datos.
+
+    ``estilo``: "analista" (respuestas completas, con fuente) o "chat" (Vita:
+    corto, cálido y conversado, para el chat flotante).
 
     ``modulos_permitidos``: si se indica, la IA sólo consulta esos módulos
     (los que el usuario puede abrir en la app).
@@ -485,7 +514,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     )
     conocimiento = leer_conocimiento()
     sistema = (
-        f"{_INSTRUCCIONES}\n\nHOY: {hoy:%d/%m/%Y} (mes actual: {mes}).\n"
+        f"{_instrucciones(estilo)}\n\nHOY: {hoy:%d/%m/%Y} (mes actual: {mes}).\n"
         f"PANTALLA ACTUAL DEL USUARIO: {modulo_actual or 'Inicio'}.\n"
         f"MÓDULOS DISPONIBLES: {resumen_modulos}.\n"
         + (f"\nCONOCIMIENTO DE LA EMPRESA (cargado por la dirección):\n{conocimiento[:20000]}\n" if conocimiento else "")
@@ -502,7 +531,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     config = types.GenerateContentConfig(
         system_instruction=sistema,
         tools=herramientas,
-        temperature=0.1,
+        temperature=0.4 if estilo == "chat" else 0.1,
         max_output_tokens=4000,
         automatic_function_calling=types.AutomaticFunctionCallingConfig(maximum_remote_calls=15),
     )
