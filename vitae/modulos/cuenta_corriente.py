@@ -297,9 +297,10 @@ def resumen_proveedores(d: pd.DataFrame, moneda: str) -> pd.DataFrame:
     """«Proveedores a pagar»: saldo por proveedor (también los que están en cero)."""
     x = a_pagar(d)
     # Como en la planilla: los proveedores de las filas visibles (y cualquiera que tenga saldo).
-    x = x[x["moneda"].eq(moneda) & x["proveedor"].ne("") & (~x["oculta"].astype(bool) | (x["saldo"] > 0.004))]
+    x = x[x["moneda"].eq(moneda) & (~x["oculta"].astype(bool) | (x["saldo"] > 0.004))].copy()
     if x.empty:
         return pd.DataFrame(columns=["proveedor", "saldo", "pendientes"])
+    x["proveedor"] = x["proveedor"].where(x["proveedor"].ne(""), "(sin proveedor)")
     g = x.groupby("proveedor", sort=False).agg(saldo=("saldo", "sum"), pendientes=("saldo", lambda s: int((s > 0.004).sum())))
     return g.reset_index().sort_values(["saldo", "proveedor"], ascending=[False, True], kind="stable").reset_index(drop=True)
 
@@ -667,7 +668,11 @@ def _vez(df: pd.DataFrame) -> pd.Series:
     return orden.groupby("_clave").cumcount().reindex(df.index)
 
 
-def dejar_como_planilla(actual: pd.DataFrame, planilla: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, Any]]:
+CORTE_PLANILLA_VMR = pd.Timestamp("2026-11-25")  # fecha de la planilla de las fotos
+
+
+def dejar_como_planilla(actual: pd.DataFrame, planilla: pd.DataFrame,
+                        hasta: pd.Timestamp | None = None) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Deja la cuenta corriente igual a una planilla de referencia:
 
     - las facturas de la planilla quedan visibles y con sus datos (si ya estaban,
@@ -696,16 +701,24 @@ def dejar_como_planilla(actual: pd.DataFrame, planilla: pd.DataFrame) -> tuple[p
             actualizadas += int(not antes.equals(despues))
         filas.append(r)
     resto = a.drop(index=sorted(usados)).drop(columns=["_vez"])
+    posteriores = resto[resto["_fecha"].notna() & (resto["_fecha"] > hasta)] if hasta is not None else resto.iloc[0:0]
+    resto = resto.drop(index=posteriores.index)  # lo cargado después de la planilla no se toca
     con_saldo = resto["saldo"] > 0.004
     resto.loc[con_saldo, "pagado"] = resto.loc[con_saldo, "monto"]
     resto["saldo"] = 0.0
     resto["oculta"] = True
-    partes = [para_guardar(resto)] if len(resto) else []
+    partes = [para_guardar(x) for x in (resto, posteriores) if len(x)]
     if filas:
         partes.append(para_guardar(pd.DataFrame(filas)))
     nuevo = normalizar(pd.concat(partes, ignore_index=True)) if partes else _vacio()
     return nuevo, {"nuevas": nuevas, "actualizadas": actualizadas, "iguales": len(usados) - actualizadas,
-                   "anteriores": int(len(resto)), "anteriores_con_saldo": int(con_saldo.sum())}
+                   "anteriores": int(len(resto)), "anteriores_con_saldo": int(con_saldo.sum()),
+                   "anteriores_visibles": int((~resto["oculta"].astype(bool)).sum()) if len(resto) else 0,
+                   "posteriores": int(len(posteriores))}
+
+
+def difiere_de_planilla(res: dict[str, Any]) -> bool:
+    return bool(res["nuevas"] or res["actualizadas"] or res["anteriores_con_saldo"] or res["anteriores_visibles"])
 
 
 _CAMPOS_SYNC = [("fecha", "fecha"), ("proveedor", "proveedor"), ("comprobante", "comprobante"), ("monto", "monto"),
@@ -1048,8 +1061,25 @@ def render_cuenta_corriente(
                                     label_visibility="collapsed") or PANTALLAS[0])
     proveedores = sorted({p for p in d["proveedor"] if p})
 
+    def _boton_igual_planilla(clave_b: str) -> None:
+        nuevo_pl, res_pl = dejar_como_planilla(d, planilla_vmr(), hasta=CORTE_PLANILLA_VMR)
+        if not difiere_de_planilla(res_pl):
+            return
+        tp = totales(nuevo_pl, hoy)
+        st.warning(
+            f"**La cuenta corriente no coincide con la planilla de noviembre 2026.** Hay {res_pl['anteriores_visibles']} "
+            f"facturas viejas a la vista ({res_pl['anteriores_con_saldo']} con saldo) y {res_pl['nuevas'] + res_pl['actualizadas']} "
+            f"de la planilla que faltan o tienen otros datos. Con el botón quedan visibles las 39 facturas de la planilla "
+            f"y todo lo anterior queda pagado y oculto (no se borra): {pesos(tp['ARS'])} · {usd(tp['USD'])}."
+            + (f" Las {res_pl['posteriores']} facturas posteriores al 25/11 no se tocan." if res_pl["posteriores"] else ""),
+            icon=":material/warning:")
+        if st.button("Dejar igual a la planilla", key=f"{k}{clave_b}", icon=":material/fact_check:", type="primary"):
+            _guardar(nuevo_pl, "Cuenta corriente igual a la planilla de noviembre 2026")
+
     # ---- Planilla ----------------------------------------------------------
     if seccion == "Planilla":
+        if tabla == "cuenta_corriente_vmr":
+            _boton_igual_planilla("igual_pl")
         if d.empty:
             st.info("Todavía no hay facturas cargadas. Cargalas en «Cargar» o traé el Excel borrador en «Importar».")
             return
@@ -1213,23 +1243,11 @@ def render_cuenta_corriente(
     # ---- Importar ----------------------------------------------------------
     if tabla == "cuenta_corriente_vmr":
         st.markdown("**Dejar igual a la planilla de VMR (noviembre 2026)**")
-        st.caption("Quedan visibles las facturas de la planilla actual —19 en pesos desde marzo 2026 y 20 en USD, con sus "
-                   "pagos— y todo lo anterior que haya en la app se marca pagado y se oculta (no se borra: queda en el "
-                   "historial). Proveedores a pagar $11.709.202,97 · USD 7.162,50.")
-        nuevo_pl, res_pl = dejar_como_planilla(d, planilla_vmr())
-        tp = totales(nuevo_pl, hoy)
-        ya_igual = (res_pl["nuevas"] == 0 and res_pl["actualizadas"] == 0 and res_pl["anteriores_con_saldo"] == 0
-                    and int(d["oculta"].sum()) == res_pl["anteriores"])
-        if ya_igual:
-            st.success("La cuenta corriente ya está igual a la planilla. ✅")
+        _, res_imp = dejar_como_planilla(d, planilla_vmr(), hasta=CORTE_PLANILLA_VMR)
+        if difiere_de_planilla(res_imp):
+            _boton_igual_planilla("seed")
         else:
-            st.caption(f"Qué va a pasar: {res_pl['nuevas']} facturas nuevas · {res_pl['actualizadas']} se corrigen · "
-                       f"{res_pl['iguales']} ya estaban bien · {res_pl['anteriores']} anteriores se ocultan"
-                       + (f" ({res_pl['anteriores_con_saldo']} tenían saldo y se marcan pagadas)"
-                          if res_pl["anteriores_con_saldo"] else "")
-                       + f". Queda: {pesos(tp['ARS'])} · {usd(tp['USD'])}.")
-            if st.button("Dejar igual a la planilla", key=f"{k}seed", icon=":material/fact_check:", type="primary"):
-                _guardar(nuevo_pl, "Cuenta corriente igual a la planilla de noviembre 2026")
+            st.success("La cuenta corriente ya está igual a la planilla. ✅")
         st.divider()
     st.markdown("**Sincronizar con el Excel borrador**")
     st.caption("Subí el Excel que usan de borrador (o bajalo de Google Sheets: Archivo → Descargar → Microsoft Excel). "

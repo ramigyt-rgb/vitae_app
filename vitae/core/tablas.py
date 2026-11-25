@@ -42,10 +42,11 @@ MODULES: Dict[str, Dict[str, Any]] = {
         "table": "cuenta_corriente_vmr",
         "empresa": "VMR",
         "tipo": "cuenta_corriente",
-        "descripcion": ("Proveedores de VMR: una fila por factura (fecha, proveedor, comprobante) con monto, pagado y "
-                        "saldo = lo que falta pagar. «moneda» separa pesos (ARS) de dólares (USD): nunca sumar ARS con "
-                        "USD. «Proveedores a pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó. "
-                        "oculta = SI: fila oculta en la planilla (historial)."),
+        "descripcion": "Proveedores de VMR: facturas, pagos y saldos en pesos y en dólares.",
+        "notas_ia": ("Una fila por factura (fecha, proveedor, comprobante) con monto, pagado y saldo = lo que falta "
+                     "pagar. «moneda» separa pesos (ARS) de dólares (USD): nunca sumar ARS con USD. «Proveedores a "
+                     "pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó. oculta = SI: fila "
+                     "oculta en la planilla (historial, ya pagada)."),
         "fields": [
             ("fecha", "date", True),
             ("proveedor", "text", True),
@@ -159,10 +160,11 @@ MODULES: Dict[str, Dict[str, Any]] = {
         "table": "cuenta_corriente_vm",
         "empresa": "VM",
         "tipo": "cuenta_corriente",
-        "descripcion": ("Proveedores de VM: una fila por factura (fecha, proveedor, comprobante) con monto, pagado y "
-                        "saldo = lo que falta pagar. «moneda» separa pesos (ARS) de dólares (USD): nunca sumar ARS con "
-                        "USD. «Proveedores a pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó. "
-                        "oculta = SI: fila oculta en la planilla (historial)."),
+        "descripcion": "Proveedores de VM: facturas, pagos y saldos en pesos y en dólares.",
+        "notas_ia": ("Una fila por factura (fecha, proveedor, comprobante) con monto, pagado y saldo = lo que falta "
+                     "pagar. «moneda» separa pesos (ARS) de dólares (USD): nunca sumar ARS con USD. «Proveedores a "
+                     "pagar» = suma del saldo por proveedor y moneda. fecha_pago = cuándo se pagó. oculta = SI: fila "
+                     "oculta en la planilla (historial, ya pagada)."),
         "fields": [
             ("fecha", "date", True),
             ("proveedor", "text", True),
