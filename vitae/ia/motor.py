@@ -531,7 +531,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     sistema = (
         f"{_instrucciones(estilo)}\n\n"
         + (f"{_experta_fx.INSTRUCCIONES}\n\n" if expertas else "")
-        + (f"{_acciones.INSTRUCCIONES}\n\n" if de_accion else "")
+        + (f"{_acciones.instrucciones(de_accion)}\n\n" if de_accion else "")
         + f"HOY: {['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'][hoy.weekday()]} "
           f"{hoy:%d/%m/%Y} (mes actual: {mes}).\n"
         f"PANTALLA ACTUAL DEL USUARIO: {modulo_actual or 'Inicio'}.\n"
