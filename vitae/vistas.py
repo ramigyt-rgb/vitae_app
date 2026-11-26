@@ -21259,7 +21259,8 @@ def render_facturacion_pro(
         return
 
     if table == "agenda_quirofano":
-        # Lo que se marca «Realizado» se carga solo en Facturación VMR o VM (vitae/modulos/autofacturacion.py).
+        # Lo que se marca «Realizado»: si es de VM se carga solo en Facturación VM; si es de VMR queda como
+        # solicitud en Facturación VMR (vitae/modulos/autofacturacion.py). Nunca se mezclan.
         for _aviso_af in st.session_state.pop("agenda_autofacturacion", []) or []:
             st.success(_aviso_af, icon=":material/receipt_long:")
 
