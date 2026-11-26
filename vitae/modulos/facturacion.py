@@ -298,6 +298,7 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     # columnas de cobrado/saldo, la fecha de pago ni el débito para calcular lo cobrado.
     est_completo = data["_estado_norm"].str.contains("completo", na=False)
     data["_cobrado"] = data["_monto"].where(est_completo, 0.0)
+    data["_completo"] = est_completo & ~cancelled
     data["_pendiente"] = (data["_monto"] - data["_cobrado"]).clip(lower=0)
     # Débitos (lo que la obra social pagó de menos): sólo se registran para reclamarlos; no cambian lo
     # cobrado ni lo pendiente.
