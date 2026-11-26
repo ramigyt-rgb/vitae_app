@@ -1531,6 +1531,19 @@ def _auth_ve_luz(user: dict[str, Any] | None = None) -> bool:
     return False
 
 
+def _luz_memoria(usuario: dict[str, Any] | None) -> Any:
+    """Memoria de Luz del usuario que está usando la app (pestañas luz_memoria y luz_chat)."""
+    try:
+        from vitae.ia.memoria import Memoria
+
+        quien = str((usuario or {}).get("usuario") or (usuario or {}).get("nombre") or "").strip()
+        if not quien:
+            return None
+        return Memoria(quien, get_df, lambda t, df: sync_df_to_sheet(t, df, limpiar_cache=False), st.session_state)
+    except Exception:
+        return None
+
+
 def _luz_ejecutar_accion(accion: dict[str, Any]) -> str:
     """Guarda una acción de Luz que el usuario confirmó (lee y escribe en Google Sheets)."""
     from vitae.ia import acciones as _luz_acciones
@@ -1562,7 +1575,7 @@ def render_vitae_copilot(modulo_actual: str | None = None) -> None:
         usuario = _auth_current_user() or {}
         nombre = str(usuario.get("nombre") or "").strip().split(" ")[0].capitalize() or None
         chat_flotante(nombre_visible, permitidos=_modulos_permitidos_ia(), nombre_usuario=nombre,
-                      ejecutar_fn=_luz_ejecutar_accion)
+                      ejecutar_fn=_luz_ejecutar_accion, memoria=_luz_memoria(usuario))
     except Exception as exc:  # el asistente nunca tira abajo una pantalla, pero el error se ve
         st.error(f"Asistente Vitae: no se pudo mostrar ({type(exc).__name__}: {exc})"[:300])
 

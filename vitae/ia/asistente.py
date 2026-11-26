@@ -43,8 +43,37 @@ Responder = Callable[[str, str, list[dict[str, str]], "set[str] | None"], str]
 
 # ---------------------------------------------------------------- conversación
 
+MEMORIA = "asis_memoria_obj"          # memoria de Luz del usuario (vitae/ia/memoria.py)
+VER_MEMORIA = "asis_ver_memoria"       # panel 🧠 abierto
+CHAT_CARGADO = "asis_chat_cargado"
+
+
+def memoria_actual() -> Any:
+    return st.session_state.get(MEMORIA)
+
+
 def mensajes() -> list[dict[str, str]]:
+    if CLAVE not in st.session_state and not st.session_state.get(CHAT_CARGADO):
+        st.session_state[CHAT_CARGADO] = True
+        mem = memoria_actual()
+        previos = []
+        if mem is not None:
+            try:
+                previos = mem.cargar_chat()  # la charla sigue aunque se recargue la página
+            except Exception:
+                previos = []
+        st.session_state[CLAVE] = previos
     return st.session_state.setdefault(CLAVE, [])
+
+
+def _guardar_chat() -> None:
+    mem = memoria_actual()
+    if mem is None:
+        return
+    try:
+        mem.guardar_chat([{k: m.get(k) for k in ("rol", "texto", "hora")} for m in mensajes()])
+    except Exception:
+        pass
 
 
 def _historial_para_motor(lista: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -71,7 +100,8 @@ def responder(pregunta: str, modulo_actual: str, historial: list[dict[str, str]]
 
             propuestas: list[dict[str, Any]] = []
             texto = motor_responder(pregunta, modulo_actual, historial=historial,
-                                    modulos_permitidos=permitidos, estilo="chat", acciones=propuestas)
+                                    modulos_permitidos=permitidos, estilo="chat", acciones=propuestas,
+                                    memoria=memoria_actual())
             st.session_state[NUEVAS_ACCIONES] = propuestas
             return texto
         except Exception as exc:  # cuota, modelo, red: se informa y se prueba el respaldo
@@ -87,7 +117,69 @@ def responder(pregunta: str, modulo_actual: str, historial: list[dict[str, str]]
 
 
 def _limpiar() -> None:
+    """Conversación nueva: antes, Luz repasa la anterior y anota lo que aprendió."""
+    mem = memoria_actual()
+    if mem is not None and mensajes():
+        try:
+            from vitae.ia.memoria import aprender_de_conversacion
+            from vitae.ia.motor import generar_texto
+
+            nuevos = aprender_de_conversacion(mensajes(), mem, generar_texto)
+            if nuevos:
+                st.toast(f"🧠 {NOMBRE} anotó {len(nuevos)} cosa{'s' if len(nuevos) > 1 else ''} de esta charla")
+        except Exception:
+            pass
     st.session_state[CLAVE] = []
+    _guardar_chat()
+
+
+def _ver_memoria(abrir: bool = True) -> None:
+    st.session_state[VER_MEMORIA] = abrir
+
+
+def _olvidar_recuerdo(id_: str) -> None:
+    mem = memoria_actual()
+    if mem is not None:
+        mem.olvidar(id_)
+
+
+def _anotar_manual() -> None:
+    mem = memoria_actual()
+    texto = str(st.session_state.get("asis_mem_texto") or "").strip()
+    if mem is None or not texto:
+        return
+    try:
+        que, _ = mem.agregar(texto, st.session_state.get("asis_mem_tipo") or "dato", origen="manual")
+        st.toast(f"🧠 {que.capitalize()}")
+    except Exception as exc:
+        st.toast(f"No se pudo anotar: {exc}")
+
+
+def _panel_memoria() -> None:
+    """🧠 Lo que Luz recuerda: se puede borrar o agregar."""
+    from vitae.ia.memoria import TIPOS
+
+    mem = memoria_actual()
+    recs = list(reversed(mem.recuerdos())) if mem is not None else []
+    with st.container(key="asis_memoria"):
+        st.markdown(f'<div class="asis-mem-tit">🧠 Lo que {NOMBRE} recuerda <span>{len(recs)}</span></div>',
+                    unsafe_allow_html=True)
+        if not recs:
+            st.markdown('<div class="asis-mem-vacio">Todavía no anotó nada. Pedile «acordate de…» o corregila '
+                        'cuando algo no sea así: va aprendiendo sola.</div>', unsafe_allow_html=True)
+        for r in recs[:60]:
+            with _fila(f"asis_mem_{r['id']}"):
+                st.markdown(f'<div class="asis-mem-item"><em>{html.escape(TIPOS.get(r["tipo"], r["tipo"]))}</em>'
+                            f'{html.escape(r["texto"])}</div>', unsafe_allow_html=True)
+                _boton("✕", key=f"asis_olv_{r['id']}", help="Olvidar", on_click=_olvidar_recuerdo, args=(r["id"],))
+        with st.form("asis_mem_form", clear_on_submit=True, border=False):
+            st.text_input("Algo para que recuerde", placeholder="Ej.: Los pagos a Divilab son en dólares",
+                                  label_visibility="collapsed", key="asis_mem_texto")
+            with _fila("asis_mem_acciones"):
+                st.selectbox("Tipo", list(TIPOS), format_func=lambda t: TIPOS[t], label_visibility="collapsed",
+                             key="asis_mem_tipo")
+                st.form_submit_button("Anotar", on_click=_anotar_manual)
+        _boton("← Volver al chat", key="asis_mem_volver", on_click=_ver_memoria, args=(False,))
 
 
 def _sugerir(texto: str) -> None:
@@ -398,6 +490,19 @@ _CSS = """<style>
 .asis-mini{padding:3px}.st-key-asis_chat_cerrado .asis-burbuja-logo{padding:2px}
 .asis-avatar img,.asis-mini img,.asis-burbuja-logo img{width:100%;height:100%;object-fit:contain;display:block;
   margin:0!important;max-width:none!important}
+.st-key-asis_memoria{background:#F7F3F5;padding:.55rem .6rem .6rem;gap:.35rem!important;max-height:430px;overflow-y:auto}
+.asis-mem-tit{font-weight:700;color:#5E1A39;font-size:.88rem;display:flex;align-items:center;gap:.4rem}
+.asis-mem-tit span{background:#8C2853;color:#fff;border-radius:999px;font-size:.68rem;padding:0 .45rem}
+.asis-mem-vacio{font-size:.8rem;color:#6E6268;background:#fff;border-radius:10px;padding:.5rem .6rem}
+[class*="st-key-asis_mem_m"]{background:#fff;border:1px solid #EADDE3;border-radius:10px;padding:.3rem .35rem .3rem .55rem;
+  gap:.2rem!important}
+[class*="st-key-asis_mem_m"] button{min-height:0!important;padding:0 .4rem!important;border:none!important;
+  background:transparent!important;box-shadow:none!important}
+[class*="st-key-asis_mem_m"] button p{color:#A33B4C!important;font-size:.8rem!important}
+.asis-mem-item{font-size:.79rem;color:#2B2226;line-height:1.35}
+.asis-mem-item em{display:block;font-style:normal;font-size:.64rem;color:#9A8D93;text-transform:uppercase;letter-spacing:.04em}
+.st-key-asis_mem_acciones{gap:.3rem!important}
+.st-key-asis_mem_volver button{border-radius:999px!important;min-height:0!important;padding:.2rem .8rem!important}
 .st-key-asis_pie{background:#fff;padding:.5rem .6rem .6rem;gap:.45rem!important;border-top:1px solid #EFE6EA}
 .st-key-asis_sugerencias{gap:.35rem!important;flex-wrap:nowrap!important;overflow-x:auto;scrollbar-width:none}
 .st-key-asis_sugerencias::-webkit-scrollbar{display:none}
@@ -544,7 +649,10 @@ def _cabecera(modulo_actual: str) -> None:
             f'<div class="asis-online">En línea · {html.escape(str(modulo_actual))}</div></div></div>',
             unsafe_allow_html=True,
         )
-        _boton("✎", key="asis_nueva", help="Conversación nueva", on_click=_limpiar)
+        if memoria_actual() is not None:
+            _boton("🧠", key="asis_memoria_btn", help=f"Lo que {NOMBRE} recuerda", on_click=_ver_memoria,
+                   args=(not st.session_state.get(VER_MEMORIA, False),))
+        _boton("✎", key="asis_nueva", help="Conversación nueva (antes anota lo que aprendió)", on_click=_limpiar)
         _boton("–", key="asis_minimizar", help="Minimizar", on_click=_minimizar)
 
 
@@ -590,11 +698,15 @@ def _conversacion(modulo_actual: str, permitidos: set[str] | None, responder_fn:
     _agregar("assistant", respuesta or "Mmm, no me salió nada para eso. ¿Me lo preguntás de otra forma?",
              accion=propuestas[-1] if propuestas else None)
     caja.markdown(html_conversacion(mensajes(), saludo=saludo, inicial=inicial), unsafe_allow_html=True)
+    _guardar_chat()
     _tarjeta_accion(lugar_accion, ejecutar_fn, permitidos)
 
 
 def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Responder,
-             nombre_usuario: str | None, ejecutar_fn: Callable[[dict[str, Any]], str] | None = None) -> None:
+             nombre_usuario: str | None, ejecutar_fn: Callable[[dict[str, Any]], str] | None = None,
+             memoria: Any = None) -> None:
+    if memoria is not None:
+        st.session_state[MEMORIA] = memoria
     if st.session_state.pop(REFRESCAR, False):
         st.rerun()  # Luz cambió datos: se recarga toda la pantalla para verlos
     st.markdown(_css(), unsafe_allow_html=True)
@@ -606,6 +718,9 @@ def _ventana(modulo_actual: str, permitidos: set[str] | None, responder_fn: Resp
     st.session_state[ABIERTO] = True
     with st.container(key="asis_chat_abierto"):
         _cabecera(modulo_actual)
+        if st.session_state.get(VER_MEMORIA) and memoria_actual() is not None:
+            _panel_memoria()
+            return
         _conversacion(modulo_actual, permitidos, responder_fn, nombre_usuario, ejecutar_fn)
 
 
@@ -620,12 +735,14 @@ def chat_flotante(
     responder_fn: Responder | None = None,
     nombre_usuario: str | None = None,
     ejecutar_fn: Callable[[dict[str, Any]], str] | None = None,
+    memoria: Any = None,
 ) -> None:
     """Luz: burbuja flotante que se abre en una ventanita; las dos se pueden arrastrar.
 
-    ``ejecutar_fn`` guarda una acción confirmada (por ejemplo, una cirugía en la agenda)."""
+    ``ejecutar_fn`` guarda una acción confirmada (por ejemplo, una cirugía en la agenda).
+    ``memoria``: lo que Luz recuerda de este usuario (vitae/ia/memoria.py)."""
     _arrastre()
-    _ventana_fragmento(modulo_actual, permitidos, responder_fn or responder, nombre_usuario, ejecutar_fn)
+    _ventana_fragmento(modulo_actual, permitidos, responder_fn or responder, nombre_usuario, ejecutar_fn, memoria)
 
 
 def render_asistente(
