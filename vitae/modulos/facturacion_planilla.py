@@ -408,3 +408,132 @@ def html_presentadas(h: pd.DataFrame) -> str:
                   f'<div></div><div></div><div class="fz-n">{pesos(float(h["facturado"].sum()))}</div>'
                   f'<div class="fz-n fz-x">{pesos(float(h["pendiente"].sum()))}</div><div></div></div></div>')
     return "".join(partes)
+
+
+# ---------------------------------------------------------------------------
+# Editar en tabla (como «Editar» de Deudas Impositivas): cambiar celdas y guardar todo junto
+# ---------------------------------------------------------------------------
+# (campo de control_facturacion.aplicar, título, tipo)
+EDICION = [("paciente", "Paciente", "texto"), ("mes", "Prestación", "fecha"), ("obra_social", "Obra social", "texto"),
+           ("procedimiento", "Procedimiento", "texto"), ("medico", "Médico", "texto"), ("monto", "Importe", "num"),
+           ("numero_factura", "N° factura", "texto"), ("fecha_factura", "Fecha factura", "fecha"),
+           ("vencimiento", "Vencimiento", "fecha"), ("fecha_pago", "Fecha de pago", "fecha"),
+           ("estado", "Estado", "texto"), ("debito", "Débito", "num"), ("observaciones", "Observaciones", "texto")]
+MAX_EDICION = 300
+
+
+def _fecha_o_none(v: Any) -> Any:
+    return v.date() if isinstance(v, pd.Timestamp) and pd.notna(v) else None
+
+
+def tabla_edicion(ctx: dict[str, Any], x: pd.DataFrame) -> pd.DataFrame:
+    """Una fila por registro (``fila`` = fila de la planilla) con los datos editables tal como están."""
+    raw, cols = ctx["raw"], ctx["cols"]
+    col_obs = cols.get("observaciones") or "observaciones"
+    filas = []
+    for i in x.index:
+        r = x.loc[i]
+        filas.append({
+            "fila": int(i), "Paciente": r["_paciente"], "Prestación": _fecha_o_none(r.get("_prestacion")),
+            "Obra social": "" if r["_obra_social"] == "SIN OBRA SOCIAL" else r["_obra_social"],
+            "Procedimiento": "" if r["_procedimiento"] == "SIN PROCEDIMIENTO" else r["_procedimiento"],
+            "Médico": "" if r["_medico"] == "SIN MÉDICO" else r["_medico"],
+            "Importe": float(r["_monto"]) if r["_monto"] else None, "N° factura": r["_numero_factura"],
+            "Fecha factura": _fecha_o_none(r.get("_fecha_factura")), "Vencimiento": _fecha_o_none(r.get("_vencimiento")),
+            "Fecha de pago": _fecha_o_none(r.get("_fecha_pago")), "Estado": _texto(r.get("_estado_original")),
+            "Débito": float(r["_debito"]) if r["_debito"] else None,
+            "Observaciones": _texto(raw.loc[i].get(col_obs, "")) if i in raw.index else ""})
+    return pd.DataFrame(filas, columns=["fila"] + [t for _, t, _ in EDICION])
+
+
+def _norm_edicion(v: Any, tipo: str) -> str:
+    if tipo == "fecha":
+        return ff._txt_fecha(v) if v is not None and not (isinstance(v, float) and pd.isna(v)) else ""
+    if tipo == "num":
+        try:
+            return "" if v is None or pd.isna(v) else ff._txt_imp(float(v))
+        except (TypeError, ValueError):
+            return ""
+    return _texto(v)
+
+
+def cambios_edicion(original: pd.DataFrame, editada: pd.DataFrame) -> list[dict[str, Any]]:
+    """Sólo las celdas que cambiaron → cambios para ``control_facturacion.aplicar``."""
+    base = original.set_index("fila")
+    out: list[dict[str, Any]] = []
+    for _, r in editada.iterrows():
+        try:
+            fila = int(r["fila"])
+        except (TypeError, ValueError):
+            continue
+        if fila not in base.index:
+            continue
+        for campo, titulo, tipo in EDICION:
+            nuevo, antes = _norm_edicion(r[titulo], tipo), _norm_edicion(base.loc[fila, titulo], tipo)
+            if nuevo != antes:
+                out.append({"fila": fila, "campo": campo, "valor": nuevo.upper() if campo == "paciente" else nuevo})
+    return out
+
+
+def render_edicion(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Callable[[pd.DataFrame], Any],
+                   key: str) -> None:
+    """Tabla para modificar los registros (los del filtro elegido) y guardar todo junto."""
+    k = f"{key}_fz_ed"
+    rev = int(st.session_state.get(f"{k}_rev", 0))
+    if x is None or x.empty:
+        st.markdown('<div class="fz-vacio">✅ No hay registros para editar con estos filtros.</div>', unsafe_allow_html=True)
+        return
+    t = st.text_input("Buscar", key=f"{k}_q", label_visibility="collapsed",
+                      placeholder="Buscar paciente, obra social, procedimiento o N° de factura")
+    x = ff.buscar(x, t)
+    if x.empty:
+        st.info("Nada coincide con la búsqueda.")
+        return
+    x = ff.ordenar(x, "Más urgentes")
+    if len(x) > MAX_EDICION:
+        st.caption(f"Se muestran {MAX_EDICION} de {len(x)} (lo pendiente de pago primero). Elegí un mes o buscá para "
+                   "ver el resto.")
+        x = x.head(MAX_EDICION)
+    st.caption(f"{len(x)} registro(s). Cambiá lo que necesites (cualquier celda) y tocá «Guardar cambios»: se escribe "
+               "en la planilla con su formato. Para anular, poné el estado «Anulado».")
+    base = tabla_edicion(ctx, x)
+    cc = st.column_config
+    obras = ff.opciones(ctx["d"], "_obra_social", "SIN OBRA SOCIAL")
+    cfg = {"fila": None,
+           "Paciente": cc.TextColumn("Paciente", width="medium"),
+           "Prestación": cc.DateColumn("Prestación", format="DD/MM/YYYY"),
+           "Obra social": cc.SelectboxColumn("Obra social", options=sorted(set(obras) | set(base["Obra social"]) - {""})),
+           "Procedimiento": cc.TextColumn("Procedimiento"),
+           "Médico": cc.TextColumn("Médico"),
+           "Importe": cc.NumberColumn("Importe", format="localized", min_value=0.0),
+           "N° factura": cc.TextColumn("N° factura"),
+           "Fecha factura": cc.DateColumn("Fecha factura", format="DD/MM/YYYY"),
+           "Vencimiento": cc.DateColumn("Vencimiento", format="DD/MM/YYYY"),
+           "Fecha de pago": cc.DateColumn("Fecha de pago", format="DD/MM/YYYY"),
+           "Estado": cc.SelectboxColumn("Estado", options=sorted(set(ff.ESTADOS) | set(base["Estado"]) - {""})),
+           "Débito": cc.NumberColumn("Débito", format="localized", min_value=0.0),
+           "Observaciones": cc.TextColumn("Observaciones", width="medium")}
+    with st.form(f"{k}_form_{rev}", border=False):
+        editada = st.data_editor(base, hide_index=True, use_container_width=True, num_rows="fixed", column_config=cfg,
+                                 height=min(110 + 36 * len(base), 680), key=f"{k}_tabla_{rev}")
+        b1, b2 = st.columns(2)
+        ok = b1.form_submit_button("Guardar cambios", type="primary", icon=":material/save:", use_container_width=True)
+        no = b2.form_submit_button("Descartar cambios", use_container_width=True)
+    if no:
+        st.session_state[f"{k}_rev"] = rev + 1
+        st.rerun()
+    if ok:
+        cambios = cambios_edicion(base, editada)
+        if not cambios:
+            st.info("No hay cambios para guardar.")
+            return
+        try:
+            guardar(cf.aplicar(ctx["raw"], ctx["cols"], cambios, ctx["hoy"]))
+        except Exception as exc:
+            st.error(f"No se pudo guardar: {exc}")
+            return
+        st.session_state[f"{k}_rev"] = rev + 1
+        st.session_state[f"{key}_cf_rev"] = int(st.session_state.get(f"{key}_cf_rev", 0)) + 1
+        n = len({c["fila"] for c in cambios})
+        st.toast(f"{len(cambios)} cambio(s) guardado(s) en {n} registro(s)", icon=":material/check_circle:")
+        st.rerun()
