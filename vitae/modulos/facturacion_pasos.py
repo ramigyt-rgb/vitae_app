@@ -126,6 +126,9 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     otra = "facturacion_vm" if empresa == "VMR" else "facturacion_vmr"
     ctx = cf.contexto(raw, empresa=empresa, agenda_raw=leer_tabla("agenda_quirofano"),
                       otras_facturaciones=[leer_tabla(otra)], hoy=hoy_d)
+    from vitae.modulos import presentaciones as pr
+
+    ctx["requisitos"] = leer_tabla(pr.TABLA_REQ)
     n = cuentas(ctx)
     cierres = leer_tabla(cfx.TABLA_CIERRES)
     actual = f"{hoy_d.year:04d}-{hoy_d.month:02d}"
@@ -301,7 +304,12 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                             (f"Con plazo: {resto}", "#F4F1F3", "#5E1A39"),
                             (f"Total sin facturar: {pesos(float(c['sin_facturar']['_monto'].sum()) if len(c['sin_facturar']) else 0, 0)}",
                              "#EEF4FB", "#2F4F7A")]), unsafe_allow_html=True)
-        if c["sin_facturar"].empty:
+        modo = st.pills("Facturar", ["Por obra social", "Por paciente"], default="Por obra social", key=f"{key}_fmodo",
+                        label_visibility="collapsed") or "Por obra social"
+        if modo == "Por obra social":
+            _presentaciones(st, ctx, key=key, guardar=guardar, leer_tabla=leer_tabla, guardar_tabla=guardar_tabla,
+                            usuario=usuario)
+        elif c["sin_facturar"].empty:
             st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
         else:
             x, _, _ = cf.grupo(c, "Facturar")
@@ -551,3 +559,151 @@ def _cierre(st: Any, ctx: dict[str, Any], cierres: pd.DataFrame | None, *, key: 
         st.dataframe(t.assign(**{c_: t[c_].map(lambda v: pesos(v, 0)) for c_ in ("Facturado", "Cobrado", "Por cobrar",
                                                                                "Débitos")}),
                      hide_index=True, use_container_width=True)
+
+
+def _presentaciones(st: Any, ctx: dict[str, Any], *, key: str, guardar: Callable[[pd.DataFrame], Any],
+                    leer_tabla: Callable[[str], pd.DataFrame | None], guardar_tabla: Callable[[str, pd.DataFrame], Any],
+                    usuario: str) -> None:
+    """Facturar por obra social: armar la presentación (lote), seguir las ya presentadas y la documentación."""
+    from vitae.modulos import presentaciones as pr
+
+    d, empresa, req = ctx["d"], ctx["empresa"], ctx.get("requisitos")
+    pres = leer_tabla(pr.TABLA_PRES)
+    rev = int(st.session_state.get(f"{key}_cf_rev", 0))
+
+    def _ok(aviso: str) -> None:
+        st.session_state[f"{key}_cf_rev"] = rev + 1
+        st.toast(aviso, icon=":material/check_circle:")
+        st.rerun()
+
+    def armar_dialogo(os_: str) -> None:
+        x = pr.sin_facturar(d)
+        x = x[x["_obra_social"] == os_].sort_values(["_prestacion", "_paciente"], na_position="last")
+        pedidos = pr.requisitos(req, empresa, os_)
+        falta = [pr.faltan(r["_documentacion"], pedidos) for _, r in x.iterrows()]
+        tabla = pd.DataFrame({"fila": x.index, "Incluir": [not f for f in falta], "Paciente": x["_paciente"],
+                              "Prestación": x["_prestacion"].map(lambda v: pr.fecha_corta(v)),
+                              "Procedimiento": x["_procedimiento"], "Importe": x["_monto"],
+                              "Documentación": ["completa ✓" if not f else "falta " + ", ".join(f) for f in falta]})
+        if not tabla["Incluir"].any():
+            tabla["Incluir"] = True
+        st.caption("Tildá las prestaciones que van en esta presentación (por defecto, las que tienen la documentación "
+                   "completa).")
+        ed = st.data_editor(tabla.reset_index(drop=True), hide_index=True, use_container_width=True,
+                            key=f"{key}_pr_ed_{os_}_{rev}", disabled=["Paciente", "Prestación", "Procedimiento", "Importe",
+                                                                      "Documentación"],
+                            column_config={"fila": None, "Importe": st.column_config.NumberColumn(format="localized")})
+        elegidas = [int(f_) for f_, inc in zip(ed["fila"], ed["Incluir"]) if inc]
+        c1, c2 = st.columns([1.3, 1])
+        periodo = c1.text_input("Período", value=pr.periodo_sugerido(x.loc[elegidas] if elegidas else x), key=f"{key}_pr_per")
+        modo = st.radio("Facturas", [pr.UNA, pr.CORRELATIVAS], horizontal=False, key=f"{key}_pr_modo")
+        c1, c2, c3 = st.columns(3)
+        numero = c1.text_input("N° de factura" if modo == pr.UNA else "Primer N°", value=ff.sugerir_numero(d),
+                               key=f"{key}_pr_num")
+        fecha = c2.date_input("Fecha", value=ctx["hoy"], format="DD/MM/YYYY", key=f"{key}_pr_f")
+        dias = ff.dias_vencimiento(d, os_)
+        venc = c3.date_input("Vencimiento", value=pd.Timestamp(fecha or ctx["hoy"]).date() + pd.Timedelta(days=dias),
+                             format="DD/MM/YYYY", key=f"{key}_pr_v", help=f"Sugerido: {dias} días.")
+        total = float(x.loc[elegidas, "_monto"].sum()) if elegidas else 0.0
+        if modo == pr.CORRELATIVAS and elegidas and _txt(numero):
+            nums = pr.correlativos(numero, len(elegidas))
+            st.caption(f"Números: {nums[0]} a {nums[-1]}.")
+        if st.button(f"Facturar {len(elegidas)} prestación(es) · {pesos(total, 0)}", type="primary",
+                     key=f"{key}_pr_ok", icon=":material/receipt_long:", use_container_width=True):
+            try:
+                raw, p, pid = pr.armar(ctx, elegidas, obra_social=os_, periodo=periodo, modo=modo, numero=numero,
+                                       fecha=fecha, vencimiento=venc, pres=pres, usuario=usuario)
+                guardar(raw)
+                guardar_tabla(pr.TABLA_PRES, p)
+            except Exception as exc:
+                st.error(str(exc))
+                return
+            _ok(f"Presentación {os_} facturada: {len(elegidas)} prestación(es)")
+
+    def cobro_dialogo(info: dict[str, Any]) -> None:
+        st.markdown(f'<div class="ff-sub">{_esc(info["obra_social"])} · {_esc(info["periodo"])} · saldo '
+                    f'{pesos(info["pendiente"], 0)}</div>', unsafe_allow_html=True)
+        fecha = st.date_input("Fecha de pago", value=ctx["hoy"], format="DD/MM/YYYY", key=f"{key}_pc_f_{info['id']}")
+        st.caption("Marca como cobradas todas las prestaciones del lote que siguen pendientes. Si a alguna le pagaron de "
+                   "menos, registralo después en su ficha (cobro de una parte).")
+        if st.button("Registrar cobro del lote", type="primary", key=f"{key}_pc_ok_{info['id']}", use_container_width=True):
+            cambios = pr.cambios_cobro_lote(d, info["id"], fecha)
+            if not cambios:
+                st.info("No queda nada pendiente en este lote.")
+                return
+            guardar(cf.aplicar(ctx["raw"], ctx["cols"], cambios, ctx["hoy"]))
+            _ok(f"Lote {info['obra_social']} cobrado")
+
+    # Para presentar
+    st.markdown(ff._CSS, unsafe_allow_html=True)
+    t = pr.por_obra_social(d, req, empresa)
+    st.markdown('<div class="cf-tit">Para presentar, por obra social</div>'
+                '<div class="fp-sub">Armá una presentación por obra social: elegís las prestaciones, el N° y la fecha una '
+                'sola vez y quedan todas facturadas.</div>', unsafe_allow_html=True)
+    if t.empty:
+        st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
+    for _, r in t.iterrows():
+        tono = "rojo" if r["Plazo"] is not None and pd.notna(r["Plazo"]) and r["Plazo"] < 0 else (
+            "ambar" if r["Plazo"] is not None and pd.notna(r["Plazo"]) and r["Plazo"] <= cf.AVISO_PRESENTACION else "gris")
+        fondo, color = ff.TONOS[tono]
+        listas = (f"{int(r['Listas'])} con la documentación completa" if r["Listas"] < r["Prestaciones"]
+                  else "todas con la documentación completa")
+        with st.container(border=True):
+            c1, c2 = st.columns([4, 1.5])
+            c1.markdown(f'<div class="ff-top"><div><div class="ff-nom">{_esc(r["Obra social"])}</div>'
+                        f'<div class="ff-sub">{int(r["Prestaciones"])} prestación(es) · {listas} · del '
+                        f'{pr.fecha_corta(r["Desde"])} al {pr.fecha_corta(r["Hasta"])}</div></div>'
+                        f'<div><div class="ff-imp">{pesos(r["Importe"], 0)}</div><div style="text-align:right">'
+                        f'<span class="ff-bd" style="background:{fondo};color:{color}">{_esc(pr.plazo_txt(r["Plazo"]))}'
+                        f'</span></div></div></div>', unsafe_allow_html=True)
+            if c2.button("Armar presentación", key=f"{key}_pr_{r['Obra social']}", type="primary",
+                         use_container_width=True, icon=":material/inventory_2:"):
+                st.dialog(f"Presentación · {r['Obra social']}", width="large")(armar_dialogo)(r["Obra social"])
+
+    # Ya presentadas
+    hechas = pr.presentaciones(pres, d, empresa)
+    if len(hechas):
+        st.markdown('<div class="cf-tit">Presentaciones hechas</div>', unsafe_allow_html=True)
+        ver = st.pills("Ver", ["Por cobrar", "Todas"], default="Por cobrar", key=f"{key}_pr_ver",
+                       label_visibility="collapsed") or "Por cobrar"
+        if ver == "Por cobrar":
+            hechas = hechas[hechas["pendiente"] > 0.5]
+        for _, h in hechas.head(30).iterrows():
+            tono = "verde" if h["estado"] == "Cobrada" else ("rojo" if h["vencido"] else "azul")
+            fondo, color = ff.TONOS[tono]
+            with st.container(border=True):
+                st.markdown(f'<div class="ff-top"><div><div class="ff-nom">{_esc(h["obra_social"])} · {_esc(h["periodo"])}</div>'
+                            f'<div class="ff-sub">Presentada el {_esc(h["fecha"])} · Fact. {_esc(h["numero"])} · vence '
+                            f'{_esc(h["vencimiento"]) or "—"} · {int(h["fichas"])} prestación(es)</div></div>'
+                            f'<div><div class="ff-imp">{pesos(h["facturado"], 0)}</div><div style="text-align:right">'
+                            f'<span class="ff-bd" style="background:{fondo};color:{color}">{_esc(h["estado"])}</span>'
+                            f'</div></div></div>', unsafe_allow_html=True)
+                st.progress(min(h["cobrado"] / h["facturado"], 1.0) if h["facturado"] else 0.0,
+                            text=f"Cobrado {pesos(h['cobrado'], 0)} · falta {pesos(h['pendiente'], 0)}")
+                c1, c2, c3 = st.columns([2.6, 1.3, 1.5])
+                c2.download_button("Detalle", data=pr.excel_lote(d, h.to_dict()), key=f"{key}_pr_x_{h['id']}",
+                                   file_name=f"presentacion_{h['obra_social']}_{h['fecha'].replace('/', '-')}.xlsx",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                   icon=":material/download:", use_container_width=True)
+                if h["pendiente"] > 0.5 and c3.button("Registrar cobro", key=f"{key}_pr_c_{h['id']}", type="primary",
+                                                      use_container_width=True, icon=":material/payments:"):
+                    st.dialog(f"Cobro del lote · {h['obra_social']}")(cobro_dialogo)(h.to_dict())
+
+    # Documentación que pide cada obra social
+    with st.expander("Documentación que pide cada obra social", icon=":material/fact_check:"):
+        st.caption("Una línea por obra social; los documentos separados por «|». «Todas» vale para las que no tienen nada "
+                   "cargado.")
+        obras = ff.opciones(d, "_obra_social", "SIN OBRA SOCIAL")
+        base = pr.tabla_req(req, empresa, obras)
+        ed = st.data_editor(base, hide_index=True, use_container_width=True, num_rows="dynamic", key=f"{key}_req_{rev}")
+        if st.button("Guardar documentación", key=f"{key}_req_ok", icon=":material/save:"):
+            guardar_tabla(pr.TABLA_REQ, pr.guardar_req(req, empresa, ed))
+            _ok("Documentación por obra social guardada")
+
+
+def _esc(t: Any) -> str:
+    return html.escape(str(t if t is not None else ""))
+
+
+def _txt(v: Any) -> str:
+    return str(v or "").strip()

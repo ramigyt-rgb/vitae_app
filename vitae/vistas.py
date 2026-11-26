@@ -21259,21 +21259,33 @@ def render_facturacion_pro(
         return
 
     if table == "agenda_quirofano":
+        # Lo que se marca «Realizado» se carga solo en Facturación VMR o VM (vitae/modulos/autofacturacion.py).
+        for _aviso_af in st.session_state.pop("agenda_autofacturacion", []) or []:
+            st.success(_aviso_af, icon=":material/receipt_long:")
+
+        def _guardar_agenda(df_nuevo, _antes=df_base.copy()):
+            sync_df_to_sheet("agenda_quirofano", df_nuevo)
+            try:
+                from vitae.modulos.autofacturacion import al_guardar_agenda
+
+                def _leer_af(t):
+                    try:
+                        return get_df(t)
+                    except Exception:
+                        return None
+
+                avisos = al_guardar_agenda(_antes, df_nuevo, _leer_af, lambda t, df: sync_df_to_sheet(t, df))
+                if avisos:
+                    st.session_state["agenda_autofacturacion"] = avisos
+            except Exception as exc:  # la Agenda se guardó igual; avisar sin romper
+                st.session_state["agenda_autofacturacion"] = [
+                    f"La cirugía se guardó, pero no se pudo cargar sola en Facturación ({type(exc).__name__}). "
+                    "Agregala desde Facturación → 1 · Cargar."]
 
         render_agenda_quirofano_ultra_pro(
-    
             df_original=df_base.copy(),
-    
-            guardar_callback=lambda df_nuevo: sync_df_to_sheet(
-    
-                "agenda_quirofano",
-    
-                df_nuevo,
-    
-            ),
-    
+            guardar_callback=_guardar_agenda,
         )
-    
         return
     # DEUDA TOTAL: centro corporativo especializado, con gestión, migración,
     # evolución, vencimientos, pagos, simulador, IA y exportación.

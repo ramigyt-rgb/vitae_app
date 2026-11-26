@@ -103,6 +103,11 @@ def preparar(raw: pd.DataFrame | None, hoy: date | None = None) -> tuple[pd.Data
     data["_debito_abierto"] = (data["_debito"] > 0.004) & ~data["_debito_estado"].map(_sin_acentos).str.contains(
         "recuper|acept", regex=True, na=False)
     data["_parcial"] = data["_estado_norm"].str.contains("parcial", na=False)
+    # Presentación (lote por obra social) y documentación presentada («Autorización | Orden médica»)
+    for campo in ("presentacion", "documentacion"):
+        c = _col_raw(raw, campo)
+        cols[campo] = c
+        data[f"_{campo}"] = raw[c].map(_texto) if c else ""
     return data, cols
 
 
@@ -247,11 +252,21 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         "sin_vencimiento": pend[pend["_vencimiento"].isna() & ~pend["_vencido"]],
         "debitos": a[a["_debito_abierto"]],
         "parcial_sin_debito": a[a["_parcial"] & (a["_debito"] <= 0.004)],
-        "repetidas": a[(rep != "") & rep.duplicated(keep=False)],
+        "repetidas": _repetidas(a, rep),
         "incompletos": a[(a["_obra_social"] == "SIN OBRA SOCIAL") | (a["_procedimiento"] == "SIN PROCEDIMIENTO")
                          | (a["_medico"] == "SIN MÉDICO") | (a["_monto"] <= 0)],
         "salteados": numeros_salteados(d),
     }
+
+
+def _repetidas(a: pd.DataFrame, rep: pd.Series) -> pd.DataFrame:
+    """Números de factura repetidos; no cuenta los de una misma presentación (una factura para el lote)."""
+    dup = a[(rep != "") & rep.duplicated(keep=False)]
+    if dup.empty or "_presentacion" not in dup.columns:
+        return dup
+    g = dup.groupby(dup["_numero_factura"].astype(str).str.strip())["_presentacion"]
+    mismo_lote = g.transform(lambda s: s.ne("").all() and s.nunique() == 1)
+    return dup[~mismo_lote]
 
 
 CONTROLES = [
@@ -422,7 +437,8 @@ def aplicar(raw: pd.DataFrame, cols: dict[str, str | None], cambios: list[dict[s
                "fecha_pago": "fecha_pago", "estado": "estado", "obra_social": "obra_social",
                "procedimiento": "procedimiento", "medico": "medico_responsable", "monto": "valor_pesos",
                "debito": "debito", "debito_estado": "debito_estado", "debito_motivo": "debito_motivo",
-               "paciente": "afiliado", "mes": "mes", "observaciones": "observaciones"}
+               "paciente": "afiliado", "mes": "mes", "observaciones": "observaciones",
+               "presentacion": "presentacion", "documentacion": "documentacion"}
     tipos = {"fecha_factura": "fecha", "vencimiento": "fecha", "fecha_pago": "fecha", "monto": "importe",
              "debito": "importe", "mes": "fecha"}
     for c in cambios:
@@ -435,7 +451,8 @@ def aplicar(raw: pd.DataFrame, cols: dict[str, str | None], cambios: list[dict[s
 
 
 def nueva_fila(raw: pd.DataFrame, cols: dict[str, str | None], cirugia: dict[str, Any], importe: Any,
-               hoy: date | None = None) -> pd.DataFrame:
+               hoy: date | None = None, documentacion: list[str] | None = None,
+               observaciones: str = "") -> pd.DataFrame:
     """Una cirugía de la Agenda → fila nueva de Facturación (estado Pendiente)."""
     from vitae.ia.acciones import _escribir_fecha, _escribir_importe
 
@@ -461,6 +478,10 @@ def nueva_fila(raw: pd.DataFrame, cols: dict[str, str | None], cirugia: dict[str
     poner("monto", "valor_pesos", _escribir_importe(importe, out[col_m] if col_m in out.columns else pd.Series(dtype=object))[0]
           if _texto(importe) else "")
     poner("estado", "estado", "Pendiente")
+    if documentacion:
+        poner("documentacion", "documentacion", " | ".join(documentacion))
+    if observaciones:
+        poner("observaciones", "observaciones", observaciones)
     return pd.concat([out, pd.DataFrame([fila])[out.columns]], ignore_index=True)
 
 
