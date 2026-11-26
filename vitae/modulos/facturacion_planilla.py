@@ -75,7 +75,7 @@ def _estado(r: pd.Series, hoy: date, forzar_incompleta: bool, nota: str) -> tupl
     if forzar_incompleta and ff.incompleta(r):
         falta = [t for t, ok in (("obra social", r["_obra_social"] == "SIN OBRA SOCIAL"),
                                  ("procedimiento", r["_procedimiento"] == "SIN PROCEDIMIENTO"),
-                                 ("importe", r["_monto"] <= 0)) if ok]
+                                 ("importe", r["_monto"] <= 0 and not r["_sin_cargo"])) if ok]
         return "falta " + ", ".join(falta), "ambar"
     texto, tono = ff.aviso(r, hoy)
     return texto, tono
@@ -90,7 +90,7 @@ def _saldo(r: pd.Series) -> float | None:
 def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, columna_os: bool,
           forzar_incompleta: bool, nota: str) -> str:
     texto, tono = _estado(r, hoy, forzar_incompleta, nota)
-    cobrada = ff.etapa(r) in ("cobrado", "anulado") and not r["_debito_abierto"]
+    cobrada = ff.etapa(r) in ("cobrado", "anulado", "sin_cargo") and not r["_debito_abierto"]
     detalle = " · ".join(x for x in (
         "" if r["_procedimiento"] == "SIN PROCEDIMIENTO" else r["_procedimiento"],
         "" if r["_medico"] == "SIN MÉDICO" else r["_medico"],
@@ -100,7 +100,7 @@ def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, colum
     v = r.get("_vencimiento")
     venc = _f(v) if r["_facturada"] else ""
     es_venc = bool(r["_vencido"]) and not cobrada
-    if not r["_facturada"] and not r["_cancelado"]:
+    if not r["_facturada"] and not r["_cancelado"] and not r["_sin_cargo"]:
         dias = r.get("_dias_plazo")
         if dias is not None and pd.notna(dias):
             limite = pd.Timestamp(hoy) + pd.Timedelta(days=int(dias))
@@ -140,7 +140,7 @@ def _total(x: pd.DataFrame) -> str:
 def resumen_txt(x: pd.DataFrame) -> str:
     vivos = x[~x["_cancelado"]]
     partes = [f"{len(vivos)} paciente(s)"]
-    sin = int((~vivos["_facturada"]).sum())
+    sin = int((~vivos["_facturada"] & ~vivos["_sin_cargo"]).sum())
     if sin:
         partes.append(f"{sin} sin facturar")
     pend = float(vivos.loc[vivos["_facturada"], "_pendiente"].sum())
@@ -172,7 +172,8 @@ def html_obra_social(x: pd.DataFrame, titulo: str, hoy: date, *, forzar_incomple
                                     forzar_incompleta=forzar_incompleta, nota=(notas or {}).get(i, "")))
         else:
             for k, i in enumerate(filas):
-                partes.append(_fila(x.loc[i], grupo="ANULADAS" if bool(g["_cancelado"].all()) else "SIN FACTURA",
+                partes.append(_fila(x.loc[i], grupo="ANULADAS" if bool(g["_cancelado"].all()) else (
+                                    "NO SE FACTURA" if bool(g["_sin_cargo"].all()) else "SIN FACTURA"),
                                     sub=f"{len(g)}" if len(g) > 1 else "", primera=k == 0,
                                     hoy=hoy, columna_os=False, forzar_incompleta=forzar_incompleta,
                                     nota=(notas or {}).get(i, "")))
