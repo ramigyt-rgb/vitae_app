@@ -1,4 +1,7 @@
-"""Pacientes: la base de personas de Vitae (todas las que pasaron por el edificio).
+"""Pacientes: la base INSTITUCIONAL de personas de Vitae (todas las que pasaron por el edificio).
+
+Es independiente de las áreas (Facturación, Quirófano, Cajas, Gine, Farmacia…): no se cruza con
+ellas. Todo el análisis (vitae/modulos/pacientes_analisis.py) sale sólo de esta base.
 
 Datos sensibles (Ley 25.326, art. 2 y 8; Ley 26.529): por eso este módulo
 - vive FUERA de MODULES: no entra en la precarga general, ni en el Panel, ni en la IA
@@ -520,38 +523,6 @@ def tabla_edades(df: pd.DataFrame, hoy: date | None = None) -> pd.DataFrame:
     return t.reindex([r for r in orden if r in t.index])
 
 
-_COLUMNAS_PERSONA = ("paciente", "afiliado", "nombre", "titular", "cliente", "persona", "apellido")
-_COLUMNAS_DOC = ("dni", "documento", "nro_doc", "doc")
-
-
-def menciones(paciente: dict[str, Any], tablas: dict[str, pd.DataFrame], limite: int = 5) -> list[dict[str, Any]]:
-    """Dónde aparece esta persona en el resto de Vitae (facturación, quirófano, gine, farmacia…)."""
-    toks = tokens_nombre(paciente.get("apellido_nombre", ""))
-    doc = _texto(paciente.get("nro_doc"))
-    out = []
-    for modulo, df in tablas.items():
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
-        cols_p = [c for c in df.columns if any(p in norm(c).replace(" ", "_") for p in _COLUMNAS_PERSONA)]
-        cols_d = [c for c in df.columns if any(norm(c).replace(" ", "_") == p or norm(c).startswith(p + " ")
-                                               or norm(c) == p for p in _COLUMNAS_DOC)]
-        mask = pd.Series(False, index=df.index)
-        if len(toks) >= 2:
-            for c in cols_p:
-                n = df[c].map(norm)
-                m = pd.Series(True, index=df.index)
-                for t in toks:
-                    m &= n.str.contains(rf"\b{re.escape(t)}\b", regex=True, na=False)
-                mask |= m
-        if doc and len(doc) >= 7:
-            for c in cols_d:
-                mask |= df[c].map(lambda v: re.sub(r"\D", "", str(v)).lstrip("0")) == doc
-        if mask.any():
-            filas = df[mask]
-            out.append({"modulo": modulo, "cantidad": int(mask.sum()), "filas": filas.head(limite)})
-    return sorted(out, key=lambda m: -m["cantidad"])
-
-
 def exportar_anonimo(df: pd.DataFrame, hoy: date | None = None, semilla: int | None = None) -> bytes:
     """Excel para investigación: SIN nombre, documento ni HC. Edad en rangos de 5 años."""
     hoy = hoy or date.today()
@@ -791,8 +762,7 @@ def _registrar_una_vez(almacen: Any, accion: str, detalle: str) -> None:
         almacen.registrar(accion, detalle)
 
 
-def _vista_buscar(st: Any, almacen: Any, df: pd.DataFrame, leer_otras: Callable[[], dict[str, pd.DataFrame]] | None,
-                  hoy: date) -> None:
+def _vista_buscar(st: Any, almacen: Any, df: pd.DataFrame, hoy: date) -> None:
     q = st.text_input("Buscar paciente", key="pac_buscar", placeholder="Apellido y nombre, DNI o N° de historia clínica",
                       label_visibility="collapsed")
     if not _texto(q):
@@ -825,75 +795,6 @@ def _vista_buscar(st: Any, almacen: Any, df: pd.DataFrame, leer_otras: Callable[
     p = res.iloc[elegido].to_dict()
     _registrar_una_vez(almacen, "ver_ficha", p["clave"])
     st.markdown(html_ficha(p, hoy), unsafe_allow_html=True)
-    if leer_otras is None:
-        return
-    st.markdown("##### En Vitae")
-    try:
-        encontrados = menciones(p, leer_otras())
-    except Exception as exc:
-        st.caption(f"No pude cruzar con los otros módulos ({type(exc).__name__}).")
-        return
-    if not encontrados:
-        st.caption("No aparece en Facturación, Quirófano, Gine Vitae, Farmacia ni en el resto de los módulos "
-                   "(se busca por nombre completo y por DNI).")
-        return
-    for m in encontrados:
-        with st.expander(f"{m['modulo']} · {m['cantidad']} registro{'s' if m['cantidad'] != 1 else ''}"):
-            cols = [c for c in m["filas"].columns if not str(c).startswith("_")][:10]
-            st.dataframe(m["filas"][cols], hide_index=True, use_container_width=True)
-            if m["cantidad"] > len(m["filas"]):
-                st.caption(f"… y {m['cantidad'] - len(m['filas'])} más en {m['modulo']}.")
-
-
-def _vista_tablero(st: Any, almacen: Any, df: pd.DataFrame, hoy: date) -> None:
-    total = len(df)
-    mujeres = (df["sexo"] == "Femenino").mean() if total else 0
-    con_fecha = (df["fecha_nac"] != "").mean() if total else 0
-    revisar = int((df["revisar"] != "").sum())
-    c = st.columns(4)
-    c[0].metric("Personas", f"{total:,}".replace(",", "."))
-    c[1].metric("Mujeres", f"{mujeres:.0%}")
-    c[2].metric("Con fecha de nacimiento", f"{con_fecha:.0%}")
-    c[3].metric("Para revisar", f"{revisar:,}".replace(",", "."))
-    edades = tabla_edades(df, hoy)
-    sin_dato = int(edades.loc["Sin dato"].sum()) if "Sin dato" in edades.index else 0
-    con = edades.drop(index="Sin dato", errors="ignore")
-    st.markdown("##### Edad y sexo")
-    if not con.empty:
-        try:
-            import plotly.graph_objects as go
-
-            fig = go.Figure()
-            colores = {"Femenino": "#8C2853", "Masculino": "#4F7CAC", "Indefinido": "#B9A9B1", "Sin dato": "#D9CFD4"}
-            for s in [c_ for c_ in ["Femenino", "Masculino", "Indefinido", "Sin dato"] if c_ in con.columns]:
-                fig.add_bar(x=list(con.index), y=list(con[s]), name=s, marker_color=colores[s])
-            fig.update_layout(barmode="stack", height=320, margin=dict(l=10, r=10, t=10, b=10),
-                              legend=dict(orientation="h", y=1.1), plot_bgcolor="rgba(0,0,0,0)",
-                              paper_bgcolor="rgba(0,0,0,0)")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        except Exception:
-            st.bar_chart(con)
-    st.caption(f"Edad calculada hoy desde la fecha de nacimiento. {sin_dato:,} personas sin fecha de nacimiento."
-               .replace(",", "."))
-    izq, der = st.columns(2)
-    with izq:
-        st.markdown("##### Origen del registro")
-        org = df["origen"].replace("", "Sin dato").value_counts().rename_axis("Origen").reset_index(name="Personas")
-        st.dataframe(org, hide_index=True, use_container_width=True)
-    with der:
-        st.markdown("##### Datos completos")
-        for k, v in completitud(df).items():
-            st.progress(min(max(v, 0.0), 1.0), text=f"{k}: {v:.0%}")
-    st.markdown("##### Investigación")
-    st.caption("Excel anonimizado: sin nombre, documento ni historia clínica, con la edad en rangos y el orden "
-               "mezclado. Para estudios y estadística interna.")
-    if st.button("Preparar Excel anonimizado", key="pac_prep_anon", icon=":material/science:"):
-        st.session_state["pac_anon"] = exportar_anonimo(df, hoy)
-        almacen.registrar("exportar_anonimo", f"{total} personas")
-    if st.session_state.get("pac_anon"):
-        st.download_button("Descargar Excel anonimizado", st.session_state["pac_anon"],
-                           file_name=f"vitae_pacientes_anonimizado_{hoy:%Y%m%d}.xlsx", key="pac_desc_anon",
-                           icon=":material/download:")
 
 
 def _vista_calidad(st: Any, almacen: Any, df: pd.DataFrame, hoy: date) -> None:
@@ -987,14 +888,13 @@ def _vista_importar(st: Any, almacen: Any, df: pd.DataFrame, hoy: date) -> None:
         almacen.registrar("importar", f"{archivo.name}: {len(plan['nuevos'])} nuevos, {len(plan['cambios'])} actualizados")
         for k in ("pac_imp", "pac_imp_huella", "pac_archivo"):
             st.session_state.pop(k, None)
-        st.session_state["pac_vista"] = "Buscar"
+        st.session_state["pac_vista"] = "Inteligencia"
         st.session_state["pac_ok"] = (f"Listo ✅ {len(plan['nuevos'])} pacientes nuevos y {len(plan['cambios'])} "
                                       "actualizados.")
         st.rerun()
 
 
-def render_pacientes(almacen: Any, leer_otras: Callable[[], dict[str, pd.DataFrame]] | None = None,
-                     hoy: date | None = None) -> None:
+def render_pacientes(almacen: Any, hoy: date | None = None) -> None:
     import streamlit as st
 
     hoy = hoy or date.today()
@@ -1007,7 +907,7 @@ def render_pacientes(almacen: Any, leer_otras: Callable[[], dict[str, pd.DataFra
     except Exception as exc:
         st.error(f"No pude leer la base de pacientes: {exc}")
         return
-    vistas = ["Inteligencia", "Buscar", "Tablero", "Calidad de datos", "Importar"]
+    vistas = ["Inteligencia", "Buscar", "Calidad de datos", "Importar"]
     if df.empty:
         st.info("La base de pacientes está vacía. Empezá importando el Excel del sistema de turnos.")
         st.session_state.setdefault("pac_vista", "Importar")
@@ -1025,11 +925,9 @@ def render_pacientes(almacen: Any, leer_otras: Callable[[], dict[str, pd.DataFra
     if vista == "Inteligencia":
         from vitae.modulos.pacientes_analisis import render_inteligencia
 
-        render_inteligencia(st, almacen, df, leer_otras, hoy)
+        render_inteligencia(st, almacen, df, hoy)
     elif vista == "Buscar":
-        _vista_buscar(st, almacen, df, leer_otras, hoy)
-    elif vista == "Tablero":
-        _vista_tablero(st, almacen, df, hoy)
+        _vista_buscar(st, almacen, df, hoy)
     elif vista == "Calidad de datos":
         _vista_calidad(st, almacen, df, hoy)
     else:

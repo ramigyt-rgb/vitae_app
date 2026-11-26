@@ -1,754 +1,326 @@
-"""Inteligencia de pacientes: todo lo que Vitae sabe de cada persona, cruzado y analizado.
+"""Inteligencia de Pacientes: análisis de la base INSTITUCIONAL (y sólo de ella).
 
-Une la base de Pacientes con las prestaciones del resto de la app (Facturación VMR y VM,
-Agenda de Quirófano, Gine Vitae, Farmacia y los formularios web de Gine) y calcula:
-resumen ejecutivo con hallazgos, prestaciones y estudios, recorrido del paciente (embudo,
-recurrencia, cohortes, secuencias), obras sociales, médicos, valor del paciente,
-oportunidades de crecimiento y datos anonimizados para investigación.
+No se cruza con Facturación, Quirófano, Cajas ni ninguna otra área: todo sale de las personas
+de la base (documento, sexo, nacimiento, estado civil, historia clínica, origen del registro).
 
-Todo se calcula DENTRO de la app (nada va a la IA). Mismas reglas de privacidad que
-vitae/modulos/pacientes.py.
+Además de la fecha de nacimiento, usa el NÚMERO DE DNI: en Argentina se asigna en orden
+cronológico, así que para quien no tiene fecha de nacimiento se puede ESTIMAR el año con un
+modelo que se ajusta solo con las personas que sí la tienen (y se mide cuánto se equivoca). Las
+edades estimadas siempre se marcan como tales. Los DNI desde 92 millones son de residentes
+extranjeros (dato útil en sí, pero ahí la estimación no sirve y no se usa).
+
+Todo se calcula dentro de la app: nada va a la IA.
 """
 from __future__ import annotations
 
-import functools
 import io
-import re
 from datetime import date
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
-from vitae.modulos.pacientes import (RANGOS, _texto, edad, edades, norm, rango_edad, tokens_nombre)
+from vitae.modulos.pacientes import RANGOS, edades, rango_edad
 
-try:
-    from vitae.core.helpers import leer_fechas_ar, money
-except Exception:  # pragma: no cover
-    leer_fechas_ar = money = None
+TRAMO_DNI = 500_000
+DNI_EXTRANJEROS = 92_000_000
+_ORDEN_RANGOS = [r for _, _, r in RANGOS] + ["Sin dato"]
 
-# ---------------------------------------------------------------------------
-# Clasificación de prácticas (medicina reproductiva + ginecología)
-# ---------------------------------------------------------------------------
-CATEGORIAS: list[tuple[str, tuple[str, ...]]] = [
-    ("Ovodonación", ("ovodon", "donacion de ovul", "donacion de ovocit", "receptora", "donante")),
-    ("Genética embrionaria (PGT)", ("pgt", "pgs", "pgd", "genetic", "biopsia embrion", "cariotip", "nipt")),
-    ("FIV / ICSI", ("fiv", "icsi", "in vitro", "fecundacion", "aspiracion folic", "puncion ovar", "puncion folic",
-                    "aspiracion ovoc", "alta complejidad")),
-    ("Transferencia embrionaria", ("transfer", "tec", "descongel")),
-    ("Criopreservación", ("crio", "vitrif", "congel", "preservacion de fertilidad", "mantenimiento", "guarda de",
-                          "almacenamiento")),
-    ("Inseminación (IIU)", ("insemin", "iiu", "iac", "iad", "baja complejidad")),
-    ("Andrología", ("esperm", "andrologi", "tesa", "tese", "biopsia testic", "capacitacion", "semen", "mesa")),
-    ("Cirugía ginecológica", ("histeroscop", "laparoscop", "miomect", "conizac", "legrado", "polipect", "cirugi",
-                              "quirurg", "ligadura", "salping", "quistect", "endometriosis", "biopsia")),
-    ("Obstetricia", ("parto", "cesare", "embarazo", "obstet", "prenatal")),
-    ("Estimulación y monitoreo", ("estimul", "monitoreo", "foliculom", "seguimiento folic", "induccion")),
-    ("Ecografía e imágenes", ("ecograf", "eco", "doppler", "mamograf", "histerosalping", "hsg", "imagen", "resonan")),
-    ("Laboratorio y estudios", ("laborat", "analisis", "hormon", "amh", "fsh", "beta", "hcg", "serolog", "pap", "papanicol", "citolog",
-                                "colpo", "cultivo", "estudio", "perfil", "test", "panel")),
-    ("Consulta", ("consulta", "control", "visita", "entrevista", "teleconsulta", "primera vez", "orientacion")),
-]
-TRATAMIENTOS = {"FIV / ICSI", "Ovodonación", "Inseminación (IIU)"}
-ESTUDIOS = {"Laboratorio y estudios", "Ecografía e imágenes", "Andrología", "Estimulación y monitoreo",
-            "Genética embrionaria (PGT)"}
-OTROS = "Otras prácticas"
-
-
-@functools.lru_cache(maxsize=20000)
-def categoria(procedimiento: str) -> str:
-    """Agrupa una práctica escrita a mano en una categoría (palabras cortas: palabra entera)."""
-    t = norm(procedimiento)
-    if not t or t in {"sin procedimiento", "sin dato"}:
-        return OTROS
-    for cat, claves in CATEGORIAS:
-        for c in claves:
-            if (re.search(rf"\b{re.escape(c)}\b", t) if len(c) <= 4 else c in t):
-                return cat
-    return OTROS
+GENERACIONES = [(1900, 1945, "Silenciosa (≤1945)"), (1946, 1964, "Baby boomers (1946-64)"),
+                (1965, 1980, "Generación X (1965-80)"), (1981, 1996, "Millennials (1981-96)"),
+                (1997, 2012, "Generación Z (1997-2012)"), (2013, 2100, "Alfa (2013+)")]
+FERTILIDAD = [(18, 29, "18-29"), (30, 34, "30-34"), (35, 37, "35-37"), (38, 40, "38-40"), (41, 42, "41-42"),
+              (43, 44, "43-44"), (45, 49, "45-49")]
+PEDIATRIA = [(0, 1, "0-1 año"), (2, 5, "2-5"), (6, 12, "6-12"), (13, 17, "13-17")]
+DIGITAL = {"Alta por turnos online", "Actualizado por turnos online", "Alta por turnos", "Actualizado por turnos"}
 
 
 # ---------------------------------------------------------------------------
-# Eventos: una fila por prestación, venga de donde venga
+# Edad: real (fecha de nacimiento) o estimada por número de DNI
 # ---------------------------------------------------------------------------
-COLUMNAS_EVENTO = ["fuente", "empresa", "fecha", "nombre", "dni", "procedimiento", "categoria", "obra_social",
-                   "medico", "importe", "cobrado", "pendiente", "fecha_factura", "fecha_pago", "estado"]
+def _dni_numerico(df: pd.DataFrame) -> pd.Series:
+    ok = df["clave"].str.startswith("DOC:") & df["tipo_doc"].isin(["DNI", "DU"])
+    return pd.to_numeric(df["nro_doc"].where(ok), errors="coerce")
 
 
-def _col(df: pd.DataFrame, *alias: str) -> str | None:
-    nombres = {norm(c).replace(" ", "_"): c for c in df.columns}
-    for a in alias:
-        if a in nombres:
-            return nombres[a]
-    for a in alias:
-        for n, c in nombres.items():
-            if len(a) > 3 and a in n:
-                return c
-    return None
+def _ano_decimal(fechas_iso: pd.Series) -> pd.Series:
+    f = pd.to_datetime(fechas_iso.where(fechas_iso.astype(str).str.len() >= 10), format="%Y-%m-%d", errors="coerce")
+    return f.dt.year + (f.dt.dayofyear - 1) / 365.25
 
 
-def _serie(df: pd.DataFrame, col: str | None) -> pd.Series:
-    if col is None:
-        return pd.Series([""] * len(df), index=df.index, dtype=object)
-    return df[col].map(_texto)
-
-
-def _fechas(serie: pd.Series) -> pd.Series:
-    if leer_fechas_ar is not None:
-        try:
-            return leer_fechas_ar(serie)
-        except Exception:
-            pass
-    return pd.to_datetime(serie, errors="coerce", dayfirst=True)
-
-
-def _importes(serie: pd.Series) -> pd.Series:
-    if money is not None:
-        return serie.map(money).astype(float)
-    return pd.to_numeric(serie, errors="coerce").fillna(0.0)
-
-
-def _de_facturacion(df: pd.DataFrame, fuente: str, empresa: str) -> pd.DataFrame:
-    import vitae.modulos.facturacion as fx
-
-    data, _cols = fx._prepare_facturacion(df)
-    data = data[~data["_cancelado"]] if "_cancelado" in data.columns else data
-    return pd.DataFrame({
-        "fuente": fuente, "empresa": empresa, "fecha": data["_fecha_base"], "nombre": data["_paciente"],
-        "dni": "", "procedimiento": data["_procedimiento"].replace("SIN PROCEDIMIENTO", ""),
-        "obra_social": data["_obra_social"].replace("SIN OBRA SOCIAL", ""),
-        "medico": data["_medico"].replace("SIN MÉDICO", ""), "importe": data["_monto"].astype(float),
-        "cobrado": data["_cobrado"].astype(float), "pendiente": data["_pendiente"].astype(float),
-        "fecha_factura": data["_fecha_factura"], "fecha_pago": data["_fecha_pago"],
-        "estado": data.get("_estado_original", ""),
-    })
-
-
-def _generico(df: pd.DataFrame, fuente: str, empresa: str, *, procedimiento_por_defecto: str = "",
-              filtro_tipo: str = "") -> pd.DataFrame:
-    c_nombre = _col(df, "paciente", "afiliado", "paciente_afiliado", "nombre_paciente", "nombre")
-    if c_nombre is None:
-        return pd.DataFrame(columns=COLUMNAS_EVENTO)
-    if filtro_tipo:
-        c_tipo = _col(df, "tipo", "movimiento")
-        if c_tipo is not None:
-            df = df[df[c_tipo].map(norm).str.contains(filtro_tipo, na=False)]
-    c_ape = _col(df, "apellido", "apellidos")
-    nombre = _serie(df, c_nombre)
-    if c_ape is not None and c_ape != c_nombre:
-        nombre = (_serie(df, c_ape) + " " + nombre).str.strip()
-    proc = _serie(df, _col(df, "procedimiento", "practica", "prestacion", "tratamiento", "articulo", "detalle"))
-    if procedimiento_por_defecto:
-        proc = proc.where(proc != "", procedimiento_por_defecto)
-    imp = _importes(_serie(df, _col(df, "importe", "monto", "valor_pesos", "total")))
-    cob_col = _col(df, "cobrado", "pagado")
-    cob = _importes(_serie(df, cob_col)) if cob_col else pd.Series(0.0, index=df.index)
-    estado = _serie(df, _col(df, "estado"))
-    cancelado = estado.map(norm).str.contains("cancel|anulad|suspend|no asist|ausente", regex=True, na=False)
-    out = pd.DataFrame({
-        "fuente": fuente, "empresa": empresa, "fecha": _fechas(_serie(df, _col(df, "fecha", "fecha_turno",
-                                                                                  "fecha_cirugia"))),
-        "nombre": nombre, "dni": _serie(df, _col(df, "dni", "documento", "nro_doc")).map(lambda v: re.sub(r"\D", "", v).lstrip("0")),
-        "procedimiento": proc, "obra_social": _serie(df, _col(df, "obra_social", "cobertura", "prepaga")),
-        "medico": _serie(df, _col(df, "medico", "medico_responsable", "profesional", "cirujano")),
-        "importe": imp, "cobrado": cob.clip(upper=imp.where(imp > 0, cob)), "pendiente": (imp - cob).clip(lower=0),
-        "fecha_factura": pd.NaT, "fecha_pago": pd.NaT, "estado": estado,
-    })
-    return out[~cancelado & (out["nombre"] != "")]
-
-
-def _empresa_de(modulo: str, defecto: str) -> str:
-    try:
-        from vitae.core.tablas import MODULES
-
-        return str(MODULES.get(modulo, {}).get("empresa") or defecto).upper()
-    except Exception:  # pragma: no cover
-        return defecto
-
-
-def eventos_desde(tablas: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    """Todas las prestaciones de Vitae en un solo formato."""
-    partes = []
-    for nombre, df in (tablas or {}).items():
-        if not isinstance(df, pd.DataFrame) or df.empty:
-            continue
-        n = norm(nombre)
-        try:
-            if "factur" in n and n.endswith("vmr"):
-                partes.append(_de_facturacion(df, "Facturación VMR", "VMR"))
-            elif "factur" in n and n.endswith("vm"):
-                partes.append(_de_facturacion(df, "Facturación VM", "VM"))
-            elif "quirofano" in n or "agenda" in n:
-                partes.append(_generico(df, "Quirófano", _empresa_de("Agenda Quirófano", "VITAE"),
-                                        procedimiento_por_defecto="Cirugía"))
-            elif "formularios" in n:
-                continue  # son consultas web (leads), van aparte
-            elif "gine" in n:
-                partes.append(_generico(df, "Gine Vitae", _empresa_de("Gine Vitae", "VM")))
-            elif "farmacia" in n and "movimiento" in n:
-                partes.append(_generico(df, "Farmacia", _empresa_de("Farmacia", "VITAE"),
-                                        procedimiento_por_defecto="Insumos de farmacia",
-                                        filtro_tipo="paciente"))
-        except Exception:
-            continue
-    if not partes:
-        return pd.DataFrame(columns=COLUMNAS_EVENTO)
-    ev = pd.concat(partes, ignore_index=True)
-    ev["fecha"] = pd.to_datetime(ev["fecha"], errors="coerce")
-    ev["procedimiento"] = ev["procedimiento"].map(_texto)
-    ev["categoria"] = ev["procedimiento"].map(categoria)
-    ev.loc[ev["fuente"] == "Farmacia", "categoria"] = "Insumos de farmacia"
-    for c in ("obra_social", "medico", "nombre"):
-        ev[c] = ev[c].map(_texto)
-    return ev[COLUMNAS_EVENTO].reset_index(drop=True)
-
-
-def leads_desde(tablas: dict[str, pd.DataFrame]) -> pd.DataFrame:
-    for nombre, df in (tablas or {}).items():
-        if "formularios" in norm(nombre) and isinstance(df, pd.DataFrame) and not df.empty:
-            nom = (_serie(df, _col(df, "apellido")) + " " + _serie(df, _col(df, "nombre"))).str.strip()
-            return pd.DataFrame({"fecha": _fechas(_serie(df, _col(df, "fecha"))), "nombre": nom,
-                                 "edad": pd.to_numeric(_serie(df, _col(df, "edad")), errors="coerce"),
-                                 "obra_social": _serie(df, _col(df, "obra_social")),
-                                 "estado": _serie(df, _col(df, "estado"))})
-    return pd.DataFrame(columns=["fecha", "nombre", "edad", "obra_social", "estado"])
-
-
-# ---------------------------------------------------------------------------
-# Vinculación con la base de pacientes
-# ---------------------------------------------------------------------------
-class Indice:
-    """Encuentra a la persona de la base por DNI o por nombre (en cualquier orden)."""
-
-    def __init__(self, personas: pd.DataFrame):
-        self.por_doc: dict[str, str] = {}
-        self.por_clave_nombre: dict[str, list[str]] = {}
-        self.por_token: dict[str, set[str]] = {}
-        self.tokens: dict[str, frozenset[str]] = {}
-        for f in personas[["clave", "nro_doc", "apellido_nombre"]].itertuples(index=False):
-            clave, doc, nombre = f
-            if doc and clave.startswith("DOC:"):
-                self.por_doc[doc] = clave
-            toks = frozenset(tokens_nombre(nombre))
-            if len(toks) < 2:
-                continue
-            self.tokens[clave] = toks
-            self.por_clave_nombre.setdefault(" ".join(sorted(toks)), []).append(clave)
-            for t in toks:
-                self.por_token.setdefault(t, set()).add(clave)
-        self._memo: dict[str, tuple[str, str]] = {}
-
-    def buscar(self, nombre: str, dni: str = "") -> tuple[str, str]:
-        """(clave o "", cómo: dni / nombre / nombre parcial / ambiguo / no está)."""
-        if dni and dni in self.por_doc:
-            return self.por_doc[dni], "dni"
-        toks = tokens_nombre(nombre)
-        if len(toks) < 2:
-            return "", "no está"
-        llave = " ".join(sorted(set(toks)))
-        if llave in self._memo:
-            return self._memo[llave]
-        exactos = self.por_clave_nombre.get(llave, [])
-        if len(exactos) == 1:
-            r = (exactos[0], "nombre")
-        elif len(exactos) > 1:
-            r = ("", "ambiguo")
-        else:
-            conjuntos = sorted((self.por_token.get(t, set()) for t in set(toks)), key=len)
-            if not conjuntos or not conjuntos[0]:
-                r = ("", "no está")
-            else:
-                cand = set(conjuntos[0])
-                for c in conjuntos[1:]:
-                    cand &= c
-                    if not cand:
-                        break
-                r = (next(iter(cand)), "nombre parcial") if len(cand) == 1 else (("", "ambiguo") if cand else ("", "no está"))
-        self._memo[llave] = r
-        return r
-
-
-def vincular(personas: pd.DataFrame, eventos: pd.DataFrame) -> pd.DataFrame:
-    """Agrega a cada evento: clave (de la base), vinculo y persona (clave, o EXT:<nombre> si no está en la base)."""
-    ev = eventos.copy()
-    if ev.empty:
-        for c in ("clave", "vinculo", "persona"):
-            ev[c] = pd.Series(dtype=object)
-        return ev
-    idx = Indice(personas)
-    res = [idx.buscar(n, d) for n, d in zip(ev["nombre"], ev["dni"])]
-    ev["clave"] = [r[0] for r in res]
-    ev["vinculo"] = [r[1] for r in res]
-    ev["persona"] = [c if c else "EXT:" + " ".join(sorted(set(tokens_nombre(n)))) for c, n in zip(ev["clave"], ev["nombre"])]
-    ev.loc[ev["persona"] == "EXT:", "persona"] = ""
-    return ev
-
-
-# ---------------------------------------------------------------------------
-# Perfil por persona
-# ---------------------------------------------------------------------------
-def perfiles(personas: pd.DataFrame, ev: pd.DataFrame, hoy: date) -> pd.DataFrame:
-    """Una fila por persona con prestaciones: demografía (si está en la base), actividad y valor."""
-    x = ev[ev["persona"] != ""]
+def _tramos(dni: pd.Series, ano: pd.Series, minimo: int = 15, iqr_max: float = 3.0) -> pd.DataFrame:
+    x = pd.DataFrame({"dni": dni, "ano": ano}).dropna()
+    x = x[x["dni"] < DNI_EXTRANJEROS]
     if x.empty:
-        return pd.DataFrame(columns=["persona", "clave", "eventos", "primera", "ultima", "facturado", "cobrado",
-                                     "pendiente", "categorias", "obra_social", "medico", "empresas", "sexo",
-                                     "edad", "rango", "origen", "en_base"])
-    g = x.groupby("persona")
+        return pd.DataFrame(columns=["tramo", "centro", "ano", "n", "iqr"])
+    x["tramo"] = (x["dni"] // TRAMO_DNI).astype(int)
+    g = x.groupby("tramo")["ano"]
+    t = pd.DataFrame({"ano": g.median(), "n": g.size(), "iqr": g.quantile(0.75) - g.quantile(0.25)})
+    t = t[(t["n"] >= minimo) & (t["iqr"] <= iqr_max)].reset_index()
+    t["centro"] = t["tramo"] * TRAMO_DNI + TRAMO_DNI / 2
+    # Debe crecer con el número: se descartan tramos que van para atrás (DNI reasignados, LE/LC viejas).
+    t = t.sort_values("centro")
+    t = t[t["ano"] >= t["ano"].cummax() - 1.0]
+    return t[["tramo", "centro", "ano", "n", "iqr"]].reset_index(drop=True)
 
-    def principal(col: str) -> pd.Series:
-        y = x[x[col] != ""]
-        if y.empty:
-            return pd.Series(dtype=object)
-        c = y.groupby(["persona", col]).size().rename("n").reset_index()
-        return c.sort_values(["persona", "n"], ascending=[True, False]).drop_duplicates("persona").set_index("persona")[col]
 
-    p = pd.DataFrame({
-        "eventos": g.size(), "primera": g["fecha"].min(), "ultima": g["fecha"].max(),
-        "facturado": g["importe"].sum(), "cobrado": g["cobrado"].sum(), "pendiente": g["pendiente"].sum(),
-        "categorias": g["categoria"].unique().map(frozenset),
-        "empresas": g["empresa"].unique().map(lambda a: " + ".join(sorted(a))),
-    })
-    p["obra_social"] = principal("obra_social").reindex(p.index).fillna("")
-    p["medico"] = principal("medico").reindex(p.index).fillna("")
-    p = p.reset_index()
-    p["clave"] = p["persona"].where(~p["persona"].str.startswith("EXT:"), "")
-    base = personas.set_index("clave")[["sexo", "fecha_nac", "origen"]] if len(personas) else None
-    if base is not None:
-        p = p.join(base, on="clave")
-    for c in ("sexo", "fecha_nac", "origen"):
-        if c not in p.columns:
-            p[c] = ""
-        p[c] = p[c].fillna("")
-    eds = edades(p["fecha_nac"], hoy)
-    p["edad"] = eds.astype(float)
-    p["rango"] = eds.map(lambda e: rango_edad(None if pd.isna(e) else int(e)))
-    p["en_base"] = p["clave"] != ""
-    return p.drop(columns=["fecha_nac"])
+def _aplicar(tramos: pd.DataFrame, dni: pd.Series) -> pd.Series:
+    est = pd.Series(np.nan, index=dni.index)
+    if tramos.empty or dni.empty:
+        return est
+    tramo = dni // TRAMO_DNI
+    usable = dni.notna() & tramo.isin(set(tramos["tramo"]))
+    if usable.any():
+        est[usable] = np.interp(dni[usable].astype(float), tramos["centro"].to_numpy(dtype=float),
+                                tramos["ano"].to_numpy(dtype=float))
+    return est
+
+
+def modelo_edad(df: pd.DataFrame, semilla: int = 0) -> dict[str, Any]:
+    """Ajusta DNI → año de nacimiento con quienes tienen ambos y mide el error en un 20% apartado."""
+    dni = _dni_numerico(df)
+    ano = _ano_decimal(df["fecha_nac"])
+    conocidos = dni.notna() & ano.notna()
+    tramos = _tramos(dni[conocidos], ano[conocidos])
+    error: dict[str, Any] = {"mediana_anos": None, "dentro_2_anos": None, "probados": 0}
+    idx = df.index[conocidos]
+    if len(idx) >= 200:
+        rng = np.random.default_rng(semilla)
+        prueba = rng.random(len(idx)) < 0.2
+        t_ent = _tramos(dni[idx[~prueba]], ano[idx[~prueba]])
+        est = _aplicar(t_ent, dni[idx[prueba]])
+        dif = (est - ano[idx[prueba]]).abs().dropna()
+        if len(dif):
+            error = {"mediana_anos": float(dif.median()), "dentro_2_anos": float((dif <= 2).mean()),
+                     "probados": int(len(dif))}
+    return {"tramos": tramos, "error": error}
+
+
+def edades_completas(df: pd.DataFrame, hoy: date, modelo: dict[str, Any] | None = None) -> pd.DataFrame:
+    """edad (real o estimada) y estimada (bool) para cada persona."""
+    real = edades(df["fecha_nac"], hoy).astype(float)
+    modelo = modelo or modelo_edad(df)
+    faltan = real.isna()
+    ano_est = _aplicar(modelo["tramos"], _dni_numerico(df)[faltan])
+    hoy_dec = hoy.year + (pd.Timestamp(hoy).dayofyear - 1) / 365.25
+    est = np.floor(hoy_dec - ano_est)
+    est = est.where(est >= 0)
+    edad = real.copy()
+    edad[faltan] = est
+    return pd.DataFrame({"edad": edad, "estimada": faltan & edad.notna()}, index=df.index)
 
 
 # ---------------------------------------------------------------------------
 # Análisis
 # ---------------------------------------------------------------------------
-def _pesos(x: float) -> str:
-    return "$ " + f"{x:,.0f}".replace(",", ".")
-
-
 def _pct(a: float, b: float) -> float:
     return float(a) / float(b) if b else 0.0
 
 
-def vinculacion(ev: pd.DataFrame) -> pd.DataFrame:
-    if ev.empty:
-        return pd.DataFrame(columns=["Fuente", "Prestaciones", "Vinculadas a la base", "%"])
-    t = ev.groupby("fuente").agg(Prestaciones=("fuente", "size"), vinc=("clave", lambda s: (s != "").sum()))
-    t["%"] = t["vinc"] / t["Prestaciones"]
-    return t.rename(columns={"vinc": "Vinculadas a la base"}).reset_index().rename(columns={"fuente": "Fuente"})
+def _rango(e: Any) -> str:
+    return rango_edad(None if pd.isna(e) else int(e))
 
 
-def por_categoria(ev: pd.DataFrame, perf: pd.DataFrame) -> pd.DataFrame:
-    if ev.empty:
-        return pd.DataFrame()
-    eda = perf.set_index("persona")["edad"] if len(perf) else pd.Series(dtype=float)
-    sexos = perf.set_index("persona")["sexo"] if len(perf) else pd.Series(dtype=object)
-    x = ev.assign(edad=ev["persona"].map(eda), sexo=ev["persona"].map(sexos))
-    g = x.groupby("categoria")
-    t = pd.DataFrame({
-        "Pacientes": g["persona"].nunique(), "Prestaciones": g.size(), "Facturado": g["importe"].sum(),
-        "Edad promedio": g["edad"].mean().round(1), "% mujeres": g["sexo"].agg(lambda s: (s == "Femenino").mean()
-                                                                              if s.notna().any() else None),
-    })
-    t["Ticket promedio"] = t["Facturado"] / t["Prestaciones"].where(t["Prestaciones"] > 0)
-    return t.sort_values("Pacientes", ascending=False).reset_index().rename(columns={"categoria": "Categoría"})
-
-
-def por_procedimiento(ev: pd.DataFrame, limite: int = 40) -> pd.DataFrame:
-    if ev.empty:
-        return pd.DataFrame()
-    x = ev[ev["procedimiento"] != ""]
-    g = x.groupby(["procedimiento", "categoria"])
-    t = pd.DataFrame({"Pacientes": g["persona"].nunique(), "Prestaciones": g.size(), "Facturado": g["importe"].sum()})
-    return t.sort_values("Prestaciones", ascending=False).head(limite).reset_index().rename(
-        columns={"procedimiento": "Práctica", "categoria": "Categoría"})
-
-
-def mensual(ev: pd.DataFrame, hoy: date, meses: int = 24) -> pd.DataFrame:
-    """Por mes: pacientes atendidos, pacientes nuevos (primera prestación), prestaciones y facturado."""
-    x = ev[ev["fecha"].notna() & (ev["persona"] != "")].copy()
-    if x.empty:
-        return pd.DataFrame()
-    x["mes"] = x["fecha"].dt.to_period("M")
-    primera = x.groupby("persona")["mes"].min()
-    desde = pd.Period(hoy, "M") - (meses - 1)
-    g = x[x["mes"] >= desde].groupby("mes")
-    t = pd.DataFrame({"Pacientes atendidos": g["persona"].nunique(), "Prestaciones": g.size(),
-                      "Facturado": g["importe"].sum()})
-    nuevos = primera[primera >= desde].value_counts()
-    t["Pacientes nuevos"] = nuevos.reindex(t.index).fillna(0).astype(int)
-    rango = pd.period_range(desde, pd.Period(hoy, "M"), freq="M")
-    t = t.reindex(rango, fill_value=0)
-    t.index = t.index.astype(str)
-    return t
-
-
-def crecimiento(ev: pd.DataFrame, hoy: date) -> dict[str, Any]:
-    x = ev[ev["fecha"].notna() & (ev["persona"] != "")]
-    fin = pd.Timestamp(hoy)
-    a = x[(x["fecha"] > fin - pd.DateOffset(months=12)) & (x["fecha"] <= fin)]
-    b = x[(x["fecha"] > fin - pd.DateOffset(months=24)) & (x["fecha"] <= fin - pd.DateOffset(months=12))]
-    primera = x.groupby("persona")["fecha"].min()
-    nuevos_a = int(((primera > fin - pd.DateOffset(months=12)) & (primera <= fin)).sum())
-    nuevos_b = int(((primera > fin - pd.DateOffset(months=24)) & (primera <= fin - pd.DateOffset(months=12))).sum())
-
-    def var(n, m):
-        return (n - m) / m if m else None
-
-    return {"pacientes_12m": int(a["persona"].nunique()), "pacientes_12m_ant": int(b["persona"].nunique()),
-            "facturado_12m": float(a["importe"].sum()), "facturado_12m_ant": float(b["importe"].sum()),
-            "nuevos_12m": nuevos_a, "nuevos_12m_ant": nuevos_b,
-            "var_pacientes": var(a["persona"].nunique(), b["persona"].nunique()),
-            "var_facturado": var(a["importe"].sum(), b["importe"].sum()), "var_nuevos": var(nuevos_a, nuevos_b)}
-
-
-def recurrencia(ev: pd.DataFrame, perf: pd.DataFrame) -> dict[str, Any]:
-    if perf.empty:
-        return {}
-    x = ev[ev["fecha"].notna() & (ev["persona"] != "")][["persona", "fecha"]].drop_duplicates()
-    x = x.sort_values(["persona", "fecha"])
-    dias = x.groupby("persona")["fecha"].diff().dt.days.dropna()
-    visitas = x.groupby("persona").size()
-    return {"pacientes": int(len(perf)), "con_mas_de_una": int((visitas >= 2).sum()),
-            "tasa_retorno": _pct((visitas >= 2).sum(), len(visitas)),
-            "dias_entre_visitas": float(dias.median()) if len(dias) else None,
-            "visitas_promedio": float(visitas.mean()) if len(visitas) else 0.0,
-            "distribucion": visitas.clip(upper=10).value_counts().sort_index().rename(
-                lambda v: "10 o más" if v >= 10 else str(v))}
-
-
-def secuencias(ev: pd.DataFrame, limite: int = 12) -> pd.DataFrame:
-    """Qué viene después de qué: pasos más comunes entre categorías (en orden de fecha)."""
-    x = ev[ev["fecha"].notna() & (ev["persona"] != "") & (ev["categoria"] != "Insumos de farmacia")]
-    x = x.sort_values(["persona", "fecha"])[["persona", "categoria"]]
-    sig = x.groupby("persona")["categoria"].shift(-1)
-    pares = pd.DataFrame({"Desde": x["categoria"], "Hacia": sig})
-    pares = pares[pares["Hacia"].notna() & (pares["Desde"] != pares["Hacia"])]
-    if pares.empty:
-        return pd.DataFrame(columns=["Desde", "Hacia", "Veces"])
-    return pares.value_counts().head(limite).rename("Veces").reset_index()
-
-
-def embudo(perf: pd.DataFrame) -> pd.DataFrame:
-    """Recorrido de fertilidad: consulta → estudios → tratamiento → transferencia."""
-    if perf.empty:
-        return pd.DataFrame(columns=["Etapa", "Pacientes", "% del paso anterior"])
-    cats = perf["categorias"]
-    pasos = [("Llegaron (cualquier prestación)", cats.map(lambda c: True)),
-             ("Consulta", cats.map(lambda c: "Consulta" in c)),
-             ("Estudios", cats.map(lambda c: bool(c & ESTUDIOS))),
-             ("Tratamiento (IIU, FIV/ICSI, ovodonación)", cats.map(lambda c: bool(c & TRATAMIENTOS))),
-             ("Transferencia embrionaria", cats.map(lambda c: "Transferencia embrionaria" in c))]
-    filas, previo = [], None
-    for etapa, m in pasos:
-        n = int(m.sum())
-        filas.append({"Etapa": etapa, "Pacientes": n, "% del paso anterior": _pct(n, previo) if previo else 1.0})
-        previo = n or previo
-    return pd.DataFrame(filas)
-
-
-def cohortes(ev: pd.DataFrame, hoy: date, trimestres: int = 8) -> pd.DataFrame:
-    """% de pacientes de cada trimestre de llegada que volvió en los trimestres siguientes."""
-    x = ev[ev["fecha"].notna() & (ev["persona"] != "")].copy()
-    if x.empty:
-        return pd.DataFrame()
-    x["t"] = x["fecha"].dt.to_period("Q")
-    primera = x.groupby("persona")["t"].min().rename("cohorte")
-    x = x.join(primera, on="persona")
-    x["n"] = (x["t"] - x["cohorte"]).map(lambda d: d.n)
-    desde = pd.Period(hoy, "Q") - (trimestres - 1)
-    x = x[x["cohorte"] >= desde]
-    if x.empty:
-        return pd.DataFrame()
-    tam = x.groupby("cohorte")["persona"].nunique()
-    t = x[x["n"] > 0].groupby(["cohorte", "n"])["persona"].nunique().unstack(fill_value=0)
-    t = t.reindex(tam.index, fill_value=0).div(tam, axis=0)
-    t.columns = [f"+{c} trim." for c in t.columns]
-    t.insert(0, "Pacientes nuevos", tam)
-    t.index = t.index.astype(str)
-    return t.iloc[:, : 1 + min(trimestres - 1, max(0, t.shape[1] - 1))]
-
-
-def obras_sociales(ev: pd.DataFrame, limite: int = 30) -> pd.DataFrame:
-    x = ev[ev["obra_social"] != ""]
-    if x.empty:
-        return pd.DataFrame()
-    dias = (x["fecha_pago"] - x["fecha_factura"]).dt.days if "fecha_pago" in x else pd.Series(dtype=float)
-    x = x.assign(dias=dias.where(dias >= 0))
-    g = x.groupby("obra_social")
-    t = pd.DataFrame({"Pacientes": g["persona"].nunique(), "Prestaciones": g.size(), "Facturado": g["importe"].sum(),
-                      "Cobrado": g["cobrado"].sum(), "Pendiente": g["pendiente"].sum(),
-                      "Días hasta el cobro (mediana)": g["dias"].median().round(0),
-                      "Práctica principal": g["categoria"].agg(lambda s: s.mode().iat[0] if len(s) else "")})
-    t["% cobrado"] = t["Cobrado"] / t["Facturado"].where(t["Facturado"] > 0)
-    t["Ticket promedio"] = t["Facturado"] / t["Prestaciones"]
-    return t.sort_values("Pacientes", ascending=False).head(limite).reset_index().rename(
-        columns={"obra_social": "Obra social"})
-
-
-def medicos(ev: pd.DataFrame, perf: pd.DataFrame, limite: int = 30) -> pd.DataFrame:
-    x = ev[(ev["medico"] != "") & (ev["persona"] != "") & ev["fecha"].notna()].sort_values("fecha")
-    if x.empty:
-        return pd.DataFrame()
-    primero = x.groupby("persona").head(1).groupby("medico")["persona"].nunique()
-    eda = perf.set_index("persona")["edad"] if len(perf) else pd.Series(dtype=float)
-    g = x.groupby("medico")
-    t = pd.DataFrame({"Pacientes": g["persona"].nunique(), "Prestaciones": g.size(), "Facturado": g["importe"].sum(),
-                      "Pacientes que llegaron con este médico": primero,
-                      "Edad promedio de sus pacientes": g["persona"].agg(lambda s: eda.reindex(s.unique()).mean()).round(1),
-                      "Práctica principal": g["categoria"].agg(lambda s: s.mode().iat[0] if len(s) else "")})
-    t["Pacientes que llegaron con este médico"] = t["Pacientes que llegaron con este médico"].fillna(0).astype(int)
-    return t.sort_values("Pacientes", ascending=False).head(limite).reset_index().rename(columns={"medico": "Médico"})
-
-
-def valor(perf: pd.DataFrame) -> dict[str, Any]:
-    v = perf[perf["facturado"] > 0]["facturado"].sort_values(ascending=False)
-    if v.empty:
-        return {}
-    top = v.head(max(1, int(round(len(v) * 0.2))))
-
-    def tabla(col: str, orden: list[str] | None = None) -> pd.DataFrame:
-        x = perf[(perf["facturado"] > 0) & (perf[col] != "")]
-        if x.empty:
-            return pd.DataFrame()
-        g = x.groupby(col)
-        t = pd.DataFrame({"Pacientes": g.size(), "Valor promedio": g["facturado"].mean(),
-                          "Valor total": g["facturado"].sum()})
-        if orden:
-            t = t.reindex([o for o in orden if o in t.index])
-        else:
-            t = t.sort_values("Valor total", ascending=False).head(15)
-        return t.reset_index()
-
-    return {"pacientes_con_valor": int(len(v)), "promedio": float(v.mean()), "mediana": float(v.median()),
-            "concentracion_top20": _pct(top.sum(), v.sum()),
-            "por_rango": tabla("rango", [r for _, _, r in RANGOS] + ["Sin dato"]),
-            "por_obra_social": tabla("obra_social"), "por_origen": tabla("origen"),
-            "por_sexo": tabla("sexo")}
-
-
-def oportunidades(ev: pd.DataFrame, perf: pd.DataFrame, leads: pd.DataFrame, personas_idx: Any,
-                  hoy: date) -> list[dict[str, Any]]:
-    """Listas accionables. Cada una: título, por qué importa, cantidad y las personas (para seguimiento)."""
-    out: list[dict[str, Any]] = []
-    if not perf.empty:
-        fin = pd.Timestamp(hoy)
-        cats = perf["categorias"]
-        consulta_sin = perf[cats.map(lambda c: ("Consulta" in c or bool(c & ESTUDIOS)) and not (c & TRATAMIENTOS)
-                                     and bool(c & ({"Consulta"} | ESTUDIOS)))
-                            & (perf["empresas"].str.contains("VMR"))]
-        out.append({"titulo": "Consultaron o se estudiaron en VMR y no iniciaron tratamiento",
-                    "por_que": "Es el paso del embudo donde más pacientes se pierden: seguimiento médico, "
-                               "financiación o segunda consulta.", "personas": consulta_sin})
-        crio = ev[(ev["categoria"] == "Criopreservación") & (ev["persona"] != "")].groupby("persona")["fecha"].max()
-        trans = ev[(ev["categoria"] == "Transferencia embrionaria") & (ev["persona"] != "")].groupby("persona")["fecha"].max()
-        sin_trans = [p for p, f in crio.items() if not (p in trans.index and pd.notna(f) and trans[p] >= f)]
-        out.append({"titulo": "Tienen material criopreservado y no hay transferencia posterior",
-                    "por_que": "Seguimiento del material guardado (renovaciones, decisión de uso) y posible "
-                               "próximo tratamiento.", "personas": perf[perf["persona"].isin(sin_trans)]})
-        dormidos = perf[(perf["ultima"] < fin - pd.DateOffset(months=12)) &
-                        (perf["ultima"] >= fin - pd.DateOffset(months=36))]
-        out.append({"titulo": "No volvieron en más de 12 meses (activos en los últimos 3 años)",
-                    "por_que": "Controles anuales y continuidad de cuidado: la forma más barata de crecer es que "
-                               "vuelva quien ya confía en Vitae.", "personas": dormidos})
-        deben = perf[perf["pendiente"] > 0].sort_values("pendiente", ascending=False)
-        out.append({"titulo": "Prestaciones facturadas pendientes de cobro",
-                    "por_que": "Plata ya trabajada que todavía no entró.", "personas": deben})
-        unica = perf[(perf["eventos"] == 1) & (perf["ultima"] < fin - pd.DateOffset(months=3))]
-        out.append({"titulo": "Vinieron una sola vez (hace más de 3 meses)",
-                    "por_que": "Mide la primera experiencia: si es alto, revisar atención, turnos y derivaciones.",
-                    "personas": unica})
-    if leads is not None and not leads.empty and personas_idx is not None:
-        idx = Indice(personas_idx)
-        con_eventos = set(ev["persona"]) if not ev.empty else set()
-        conv = []
-        for nombre in leads["nombre"]:
-            c, _ = idx.buscar(nombre)
-            conv.append(bool(c) and c in con_eventos)
-        l2 = leads.assign(convirtio=conv)
-        no = l2[~l2["convirtio"]]
-        out.append({"titulo": f"Consultas web de Gine sin prestación registrada ({_pct(len(no), len(l2)):.0%} de "
-                              f"{len(l2)})", "por_que": "Conversión de la web en pacientes: llamar a tiempo "
-                              "multiplica los turnos.", "personas": None, "leads": no,
-                    "tasa_conversion": _pct(l2["convirtio"].sum(), len(l2))})
+def _bandas(edad: pd.Series, bandas: list[tuple[int, int, str]]) -> pd.Series:
+    out = pd.Series(None, index=edad.index, dtype=object)
+    for d, h, nombre in bandas:
+        out[(edad >= d) & (edad <= h)] = nombre
     return out
 
 
-def hallazgos(personas: pd.DataFrame, ev: pd.DataFrame, perf: pd.DataFrame, hoy: date) -> list[str]:
-    """Frases con los datos más importantes (se calculan, no se inventan)."""
+def piramide(df: pd.DataFrame, ed: pd.DataFrame, incluir_estimadas: bool = True) -> pd.DataFrame:
+    edad = ed["edad"].where(incluir_estimadas | ~ed["estimada"])
+    x = pd.DataFrame({"rango": edad.map(_rango), "sexo": df["sexo"].replace("", "Sin dato")})
+    t = x.groupby(["rango", "sexo"]).size().unstack(fill_value=0)
+    return t.reindex([r for r in _ORDEN_RANGOS if r in t.index])
+
+
+def generaciones(df: pd.DataFrame, ed: pd.DataFrame, hoy: date) -> pd.DataFrame:
+    g = _bandas(hoy.year - ed["edad"], GENERACIONES).fillna("Sin dato")
+    t = pd.DataFrame({"gen": g, "sexo": df["sexo"]}).groupby("gen").agg(
+        Personas=("sexo", "size"), Mujeres=("sexo", lambda s: (s == "Femenino").mean()))
+    orden = [n for *_, n in GENERACIONES] + ["Sin dato"]
+    return t.reindex([o for o in orden if o in t.index]).reset_index().rename(columns={"gen": "Generación"})
+
+
+def segmentos(df: pd.DataFrame, ed: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Personas hoy en cada etapa de vida (con edad real o estimada): demanda potencial por servicio."""
+    edad = ed["edad"]
+    muj = df["sexo"] == "Femenino"
+    hom = df["sexo"] == "Masculino"
+
+    def tabla(mask: pd.Series, bandas: list[tuple[int, int, str]]) -> pd.DataFrame:
+        b = _bandas(edad[mask], bandas)
+        t = pd.DataFrame({"b": b, "est": ed["estimada"][mask]}).dropna(subset=["b"]).groupby("b").agg(
+            Personas=("est", "size"), estimadas=("est", "sum"))
+        t = t.reindex([n for *_, n in bandas]).fillna(0).astype(int)
+        t["De ellas, con edad estimada"] = t.pop("estimadas")
+        return t.reset_index().rename(columns={"b": "Edad"})
+
+    return {
+        "fertilidad": tabla(muj, FERTILIDAD),
+        "andrologia": tabla(hom, [(18, 29, "18-29"), (30, 39, "30-39"), (40, 49, "40-49"), (50, 59, "50-59")]),
+        "menopausia": tabla(muj, [(40, 44, "40-44 (perimenopausia)"), (45, 50, "45-50"), (51, 55, "51-55"),
+                                  (56, 65, "56-65 (posmenopausia)")]),
+        "pediatria": tabla(edad.notna(), PEDIATRIA),
+        "mayores": tabla(edad.notna(), [(65, 74, "65-74"), (75, 84, "75-84"), (85, 120, "85 o más")]),
+    }
+
+
+def canales(df: pd.DataFrame, ed: pd.DataFrame) -> dict[str, Any]:
+    origen = df["origen"].replace("", "Sin dato (carga en el sistema)")
+    total = origen.value_counts().rename_axis("Origen").reset_index(name="Personas")
+    total["%"] = total["Personas"] / max(len(df), 1)
+    digital = df["origen"].isin(DIGITAL)
+    x = pd.DataFrame({"rango": ed["edad"].map(_rango), "digital": digital, "sexo": df["sexo"]})
+    por_edad = (x[x["rango"] != "Sin dato"].groupby("rango")["digital"].mean()
+                .reindex([r for r in _ORDEN_RANGOS if r != "Sin dato"]).dropna()
+                .rename("% turnos online").rename_axis("Edad").reset_index())
+    por_sexo = x[x["sexo"].isin(["Femenino", "Masculino"])].groupby("sexo")["digital"].mean()
+    return {"origen": total, "digital": float(digital.mean()) if len(df) else 0.0, "por_edad": por_edad,
+            "por_sexo": por_sexo}
+
+
+def documentacion(df: pd.DataFrame, ed: pd.DataFrame) -> dict[str, Any]:
+    dni = _dni_numerico(df)
+    extranjero_res = dni >= DNI_EXTRANJEROS
+    doc_ext = df["tipo_doc"].isin(["CI", "Pasaporte", "Doc. extranjero"])
+    tipos = df["tipo_doc"].replace("", "Sin dato").value_counts().rename_axis("Tipo").reset_index(name="Personas")
+    hc = df["historia_clinica"]
+    formato = hc.map(lambda h: "Sin HC" if not h else (f"{len(h)} dígitos" if h.isdigit() else "Con letras"))
+    hc_origen = pd.crosstab(formato.rename("Historia clínica"), df["origen"].replace("", "Sin dato")).reset_index()
+    hc_origen.columns.name = None
+    return {"tipos": tipos, "extranjeros_residentes": int(extranjero_res.sum()),
+            "documento_extranjero": int(doc_ext.sum()),
+            "sin_documento": int(df["tipo_doc"].isin(["NN", "RN"]).sum()),
+            "con_hc": _pct((hc != "").sum(), len(df)), "hc_por_origen": hc_origen}
+
+
+def crecimiento_base(df: pd.DataFrame) -> pd.DataFrame:
+    """Personas nuevas por mes desde que la base se importa (primera_carga)."""
+    f = pd.to_datetime(df["primera_carga"], errors="coerce")
+    if f.dropna().dt.to_period("M").nunique() < 2:
+        return pd.DataFrame()
+    t = f.dt.to_period("M").value_counts().sort_index()
+    return pd.DataFrame({"Mes": t.index.astype(str), "Personas nuevas": t.to_numpy()})
+
+
+def hallazgos(df: pd.DataFrame, ed: pd.DataFrame, modelo: dict[str, Any], hoy: date) -> list[str]:
+    n = len(df)
+    if not n:
+        return ["La base está vacía: importá el Excel del sistema de turnos."]
+
+    def fmt(v: Any) -> str:
+        return f"{int(v):,}".replace(",", ".")
+
     h: list[str] = []
-    total = len(personas)
-    if total:
-        muj = (personas["sexo"] == "Femenino").mean()
-        h.append(f"La base tiene {total:,} personas; {muj:.0%} son mujeres.".replace(",", "."))
-        eds = edades(personas["fecha_nac"], hoy).dropna()
-        if len(eds):
-            fert = int(((eds >= 30) & (eds <= 44)).sum())
-            h.append(f"{fert:,} personas con fecha de nacimiento tienen entre 30 y 44 años (edad reproductiva "
-                     f"de mayor demanda), el {fert / len(eds):.0%} de las que tienen el dato.".replace(",", "."))
-        sin = (personas["fecha_nac"] == "").mean()
-        if sin > 0.2:
-            h.append(f"Al {sin:.0%} le falta la fecha de nacimiento: completarla en el sistema de turnos mejora "
-                     "todos los análisis por edad.")
-    if ev.empty:
-        h.append("Todavía no hay prestaciones para cruzar (Facturación, Quirófano, Gine): cuando las haya, "
-                 "aparecen el recorrido, el valor y las oportunidades.")
-        return h
-    vinc = (ev["clave"] != "").mean()
-    h.append(f"{len(ev):,} prestaciones registradas en Vitae; el {vinc:.0%} se pudo vincular a una persona de la "
-             "base (por DNI o por nombre).".replace(",", "."))
-    cr = crecimiento(ev, hoy)
-    if cr["var_pacientes"] is not None:
-        h.append(f"Pacientes atendidos en los últimos 12 meses: {cr['pacientes_12m']:,} "
-                 f"({cr['var_pacientes']:+.0%} contra los 12 anteriores).".replace(",", "."))
-    if cr["var_nuevos"] is not None:
-        h.append(f"Pacientes nuevos en 12 meses: {cr['nuevos_12m']:,} ({cr['var_nuevos']:+.0%}).".replace(",", "."))
-    rec = recurrencia(ev, perf)
-    if rec:
-        h.append(f"El {rec['tasa_retorno']:.0%} de los pacientes volvió al menos una vez"
-                 + (f"; entre una visita y la siguiente pasan {rec['dias_entre_visitas']:.0f} días (mediana)."
-                    if rec.get("dias_entre_visitas") is not None else "."))
-    cat = por_categoria(ev, perf)
-    if not cat.empty:
-        top = cat.iloc[0]
-        h.append(f"La práctica con más pacientes es {top['Categoría']} ({int(top['Pacientes']):,})."
-                 .replace(",", "."))
-        trat = cat[cat["Categoría"].isin(TRATAMIENTOS) & cat["Edad promedio"].notna()]
-        for _, f in trat.iterrows():
-            h.append(f"Edad promedio en {f['Categoría']}: {f['Edad promedio']:.1f} años.")
-    v = valor(perf)
-    if v:
-        h.append(f"El 20% de los pacientes con facturación concentra el {v['concentracion_top20']:.0%} de lo "
-                 f"facturado; valor promedio por paciente {_pesos(v['promedio'])}.")
-    os_ = obras_sociales(ev)
-    if not os_.empty:
-        f = os_.iloc[0]
-        h.append(f"La cobertura con más pacientes es {f['Obra social']} ({int(f['Pacientes']):,}).".replace(",", "."))
-        lentas = os_[(os_["Prestaciones"] >= 10) & os_["Días hasta el cobro (mediana)"].notna()]
-        if not lentas.empty:
-            l = lentas.sort_values("Días hasta el cobro (mediana)", ascending=False).iloc[0]
-            h.append(f"La que más tarda en pagar es {l['Obra social']}: {l['Días hasta el cobro (mediana)']:.0f} días "
-                     "de la factura al cobro (mediana).")
+    muj = df["sexo"] == "Femenino"
+    h.append(f"La base institucional tiene {fmt(n)} personas: {muj.mean():.0%} mujeres y "
+             f"{(df['sexo'] == 'Masculino').mean():.0%} varones.")
+    real = ed["edad"].notna() & ~ed["estimada"]
+    est = ed["estimada"]
+    if est.any():
+        err = modelo["error"]
+        precision = ""
+        if err["mediana_anos"] is not None:
+            mediana = f"{err['mediana_anos']:.1f}".replace(".", ",")
+            precision = (f" (en la mitad de los casos se equivoca {mediana} años o menos; "
+                         f"el {err['dentro_2_anos']:.0%} queda a menos de 2 años)")
+        h.append(f"Edad: {fmt(real.sum())} personas la tienen por fecha de nacimiento y a {fmt(est.sum())} más se la "
+                 f"estimé por su número de DNI{precision}. Total con edad: {ed['edad'].notna().mean():.0%}.")
+    edad = ed["edad"]
+    if edad.notna().any():
+        h.append(f"Edad mediana: {edad[muj].median():.0f} años las mujeres y "
+                 f"{edad[df['sexo'] == 'Masculino'].median():.0f} los varones.")
+        h.append(f"{fmt((muj & edad.between(30, 44)).sum())} mujeres tienen entre 30 y 44 años (la franja de mayor "
+                 f"demanda en reproducción); {fmt((muj & edad.between(35, 44)).sum())} de ellas tienen 35 o más.")
+        h.append(f"{fmt((muj & edad.between(45, 55)).sum())} mujeres están entre 45 y 55 años "
+                 "(perimenopausia y menopausia).")
+        ped = int(edad.between(0, 17).sum())
+        if ped:
+            h.append(f"{fmt(ped)} pacientes son menores de 18 ({_pct(ped, edad.notna().sum()):.0%} de quienes tienen "
+                     f"edad); {fmt(edad.between(0, 5).sum())} tienen 5 años o menos.")
+        h.append(f"{fmt((edad >= 65).sum())} tienen 65 años o más.")
+    c = canales(df, ed)
+    h.append(f"El {c['digital']:.0%} de la base usó los turnos online (alta o actualización de datos).")
+    if len(c["por_edad"]) >= 2:
+        orden = c["por_edad"].sort_values("% turnos online")
+        h.append(f"Por edad, quienes más usan los turnos online tienen {orden.iloc[-1]['Edad']} años "
+                 f"({orden.iloc[-1]['% turnos online']:.0%}); quienes menos, {orden.iloc[0]['Edad']} "
+                 f"({orden.iloc[0]['% turnos online']:.0%}).")
+    d = documentacion(df, ed)
+    ext = d["extranjeros_residentes"] + d["documento_extranjero"]
+    if ext:
+        h.append(f"{fmt(ext)} personas son extranjeras ({fmt(d['extranjeros_residentes'])} con DNI de residente y "
+                 f"{fmt(d['documento_extranjero'])} con pasaporte, cédula o documento de otro país).")
+    sin = (df["fecha_nac"] == "").mean()
+    if sin > 0.2:
+        h.append(f"Al {sin:.0%} le falta la fecha de nacimiento: pedirla al dar el turno haría exactas todas las "
+                 "edades.")
     return h
 
 
-# ---------------------------------------------------------------------------
-# Investigación: dataset anonimizado enriquecido
-# ---------------------------------------------------------------------------
-def dataset_investigacion(perf: pd.DataFrame, ev: pd.DataFrame, hoy: date, minimo: int = 5,
-                          semilla: int | None = None) -> bytes:
-    """Excel sin datos identificatorios: personas y prestaciones con un id anónimo al azar.
+def analizar(df: pd.DataFrame, hoy: date) -> dict[str, Any]:
+    modelo = modelo_edad(df)
+    ed = edades_completas(df, hoy, modelo)
+    return {"modelo": modelo, "edades": ed, "hallazgos": hallazgos(df, ed, modelo, hoy)}
 
-    - Edad en rangos, fechas al mes, sin nombre/DNI/HC/médico.
-    - Prácticas con menos de ``minimo`` pacientes se reemplazan por su categoría (evita reidentificar).
-    """
-    import random
 
-    gen = random.Random(semilla)
-    personas = list(perf["persona"])
-    ids = [f"A{i + 1:06d}" for i in range(len(personas))]
-    gen.shuffle(ids)
-    mapa = dict(zip(personas, ids))
-    x = ev[ev["persona"].isin(mapa)].copy()
-    raros = x.groupby("procedimiento")["persona"].nunique()
-    raros = set(raros[raros < minimo].index)
-    x["practica"] = [c if p in raros or not p else p for p, c in zip(x["procedimiento"], x["categoria"])]
-    eda = perf.set_index("persona")["edad"]
-    nac_edad = x["persona"].map(eda)
-    anos = ((pd.Timestamp(hoy) - x["fecha"]).dt.days / 365.25).fillna(0)
-    edad_evento = (nac_edad - anos).map(lambda e: rango_edad(int(e)) if pd.notna(e) and e >= 0 else "Sin dato")
-    eventos = pd.DataFrame({"id_anonimo": x["persona"].map(mapa), "mes": x["fecha"].dt.strftime("%Y-%m"),
-                            "empresa": x["empresa"], "categoria": x["categoria"], "practica": x["practica"],
-                            "cobertura": x["obra_social"].where(x["obra_social"] != "", "Sin dato"),
-                            "rango_edad_en_la_prestacion": edad_evento, "importe": x["importe"].round(0)})
-    eventos = eventos.sample(frac=1, random_state=semilla).sort_values(["id_anonimo", "mes"]).reset_index(drop=True)
-    pers = pd.DataFrame({
-        "id_anonimo": perf["persona"].map(mapa), "sexo": perf["sexo"].replace("", "Sin dato"),
-        "rango_edad_hoy": perf["rango"], "origen": perf["origen"].replace("", "Sin dato"),
-        "prestaciones": perf["eventos"], "categorias": perf["categorias"].map(lambda c: ", ".join(sorted(c))),
-        "primer_mes": perf["primera"].dt.strftime("%Y-%m"), "ultimo_mes": perf["ultima"].dt.strftime("%Y-%m"),
-        "valor_total": perf["facturado"].round(0), "en_base_de_pacientes": perf["en_base"].map({True: "Sí", False: "No"}),
-    }).sort_values("id_anonimo").reset_index(drop=True)
+def dataset_investigacion(df: pd.DataFrame, ed: pd.DataFrame, hoy: date, semilla: int | None = None) -> bytes:
+    """Excel anonimizado: sin nombre, documento ni HC; edad en rangos (marcando si es estimada); orden al azar."""
+    x = pd.DataFrame({
+        "sexo": df["sexo"].replace("", "Sin dato"),
+        "rango_edad": ed["edad"].map(_rango),
+        "edad_estimada_por_dni": ed["estimada"].map({True: "Sí", False: "No"}).where(ed["edad"].notna(), ""),
+        "generacion": _bandas(hoy.year - ed["edad"], GENERACIONES).fillna("Sin dato"),
+        "estado_civil": df["estado_civil"].replace("", "Sin dato"),
+        "origen": df["origen"].replace("", "Sin dato"),
+        "extranjero": ((_dni_numerico(df) >= DNI_EXTRANJEROS) |
+                       df["tipo_doc"].isin(["CI", "Pasaporte", "Doc. extranjero"])).map({True: "Sí", False: "No"}),
+    })
+    x = x.sample(frac=1, random_state=semilla).reset_index(drop=True)
+    x.insert(0, "id_anonimo", [f"A{i + 1:06d}" for i in range(len(x))])
+    resumen = x.groupby(["rango_edad", "sexo"]).size().unstack(fill_value=0)
+    resumen = resumen.reindex([r for r in _ORDEN_RANGOS if r in resumen.index])
     diccionario = pd.DataFrame([
-        ("id_anonimo", "Identificador al azar, distinto en cada exportación. No permite volver a la persona."),
-        ("rango_edad_*", "Edad en rangos (no fecha de nacimiento)."),
-        ("mes", "Mes de la prestación (sin día)."),
-        ("practica", f"Práctica tal como se factura; si la hicieron menos de {minimo} personas se reemplaza por la "
-                     "categoría."),
-        ("categoria", "Agrupación automática de prácticas (fertilidad, estudios, cirugía, etc.)."),
-        ("cobertura", "Obra social o prepaga."),
-        ("valor_total / importe", "Pesos facturados (sin anulados)."),
+        ("id_anonimo", "Número al azar, distinto en cada exportación. No permite volver a la persona."),
+        ("rango_edad", "Edad hoy en rangos. Si no había fecha de nacimiento, se estimó por el número de DNI."),
+        ("edad_estimada_por_dni", "Sí = la edad es estimada."),
+        ("generacion", "Según el año de nacimiento (real o estimado)."),
+        ("origen", "Cómo se registró la persona (turnos online, migración de laboratorio, carga en el sistema)."),
+        ("extranjero", "DNI de residente extranjero (92 millones o más) o documento de otro país."),
     ], columns=["Campo", "Qué es"])
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as xl:
-        pd.DataFrame({"Vitae · investigación (datos anonimizados)": [
-            f"Generado el {hoy:%d/%m/%Y}. Sin nombre, documento, historia clínica, médico ni fechas exactas.",
+        pd.DataFrame({"Vitae · base institucional de pacientes (anonimizada)": [
+            f"Generado el {hoy:%d/%m/%Y}. Sin nombre, documento, historia clínica ni fechas.",
             "Uso interno para investigación y estadística. Prohibido intentar reidentificar a las personas.",
             "Antes de publicar, consultar al comité de ética que corresponda.",
         ]}).to_excel(xl, sheet_name="Leeme", index=False)
-        pers.to_excel(xl, sheet_name="Pacientes", index=False)
-        eventos.to_excel(xl, sheet_name="Prestaciones", index=False)
+        x.to_excel(xl, sheet_name="Pacientes", index=False)
+        resumen.to_excel(xl, sheet_name="Edad x sexo")
         diccionario.to_excel(xl, sheet_name="Diccionario", index=False)
     return buffer.getvalue()
-
-
-def edad_por_tratamiento_y_ano(ev: pd.DataFrame, perf: pd.DataFrame, hoy: date) -> pd.DataFrame:
-    """Para investigación: edad promedio al momento de cada tratamiento, por año."""
-    x = ev[ev["categoria"].isin(TRATAMIENTOS | {"Transferencia embrionaria", "Criopreservación"}) & ev["fecha"].notna()]
-    if x.empty or perf.empty:
-        return pd.DataFrame()
-    eda = perf.set_index("persona")["edad"]
-    anos = (pd.Timestamp(hoy) - x["fecha"]).dt.days / 365.25
-    x = x.assign(edad_ev=x["persona"].map(eda) - anos, ano=x["fecha"].dt.year)
-    x = x[x["edad_ev"].notna() & (x["edad_ev"] > 0)]
-    if x.empty:
-        return pd.DataFrame()
-    return x.pivot_table(index="ano", columns="categoria", values="edad_ev", aggfunc="mean").round(1)
-
-
-# ---------------------------------------------------------------------------
-# Todo junto (se calcula una vez y se guarda en la sesión)
-# ---------------------------------------------------------------------------
-def analizar(personas: pd.DataFrame, tablas: dict[str, pd.DataFrame], hoy: date) -> dict[str, Any]:
-    ev = vincular(personas, eventos_desde(tablas))
-    perf = perfiles(personas, ev, hoy)
-    leads = leads_desde(tablas)
-    return {"eventos": ev, "perfiles": perf, "leads": leads, "hoy": hoy,
-            "hallazgos": hallazgos(personas, ev, perf, hoy)}
 
 
 # ---------------------------------------------------------------------------
 # Pantalla «Inteligencia»
 # ---------------------------------------------------------------------------
-SECCIONES = ["Resumen", "Prestaciones", "Recorrido", "Obras sociales", "Médicos", "Valor", "Oportunidades",
+SECCIONES = ["Resumen", "Demografía", "Etapas de vida", "Canales", "Documentación", "Edad estimada",
              "Investigación"]
-_VINO = "#8C2853"
-_PALETA = ["#8C2853", "#4F7CAC", "#C9895B", "#5E9C76", "#8E6FB1", "#D1A93F", "#5BA4A4", "#B5577A", "#7A8B99",
-           "#A0522D", "#6B8E23", "#9A8D93", "#3A6B8C", "#C06C84"]
+_PALETA = {"Femenino": "#8C2853", "Masculino": "#4F7CAC"}
+_SERIES = ["#8C2853", "#4F7CAC", "#C9895B", "#5E9C76", "#8E6FB1", "#D1A93F"]
 
 _CSS = """<style>
 .pin-hallazgos{background:#fff;border:1px solid #E8D9E0;border-radius:14px;padding:.8rem 1.1rem;margin:.3rem 0 1rem}
-.pin-hallazgos li{margin:.28rem 0;color:#2B2226}
+.pin-hallazgos li{margin:.3rem 0;color:#2B2226}
 .pin-tit{font-weight:700;color:#5E1A39;margin-bottom:.3rem}
-.pin-op{background:#fff;border:1px solid #E8D9E0;border-left:4px solid #8C2853;border-radius:12px;padding:.6rem .9rem;margin:.4rem 0}
-.pin-op b{color:#3A1426}.pin-op span{color:#8A7F85;font-size:.86rem}
 .pin-nota{color:#8A7F85;font-size:.82rem}
 </style>"""
 
 
-def _fmt_pesos(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
-    out = df.copy()
-    for c in columnas:
-        if c in out.columns:
-            out[c] = out[c].map(lambda v: _pesos(v) if pd.notna(v) else "")
-    return out
+def _num(n: Any) -> str:
+    return f"{int(n):,}".replace(",", ".")
 
 
 def _fmt_pct(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
@@ -759,301 +331,233 @@ def _fmt_pct(df: pd.DataFrame, columnas: list[str]) -> pd.DataFrame:
     return out
 
 
-def _num(n: Any) -> str:
-    return f"{int(n):,}".replace(",", ".")
+def _tabla(st: Any, df: pd.DataFrame | None) -> None:
+    if df is None or df.empty:
+        st.caption("Sin datos para mostrar.")
+        return
+    st.dataframe(df, hide_index=True, use_container_width=True)
 
 
-def _var(v: float | None) -> str | None:
-    return None if v is None else f"{v:+.0%}"
-
-
-def _grafico_barras(st: Any, df: pd.DataFrame, x: str, ys: list[str], *, apilado: bool = False, alto: int = 320,
-                    horizontal: bool = False) -> None:
-    if df.empty:
+def _barras(st: Any, df: pd.DataFrame, x: str, ys: list[str], *, horizontal: bool = False, alto: int = 300,
+            color: str | None = None, porcentaje: bool = False) -> None:
+    if df is None or df.empty:
         return
     try:
         import plotly.graph_objects as go
 
         fig = go.Figure()
         for i, y in enumerate(ys):
+            c = color or _SERIES[i % len(_SERIES)]
             if horizontal:
-                fig.add_bar(y=list(df[x]), x=list(df[y]), name=y, orientation="h",
-                            marker_color=_PALETA[i % len(_PALETA)])
+                fig.add_bar(y=list(df[x]), x=list(df[y]), name=y, orientation="h", marker_color=c)
             else:
-                fig.add_bar(x=list(df[x]), y=list(df[y]), name=y, marker_color=_PALETA[i % len(_PALETA)])
-        fig.update_layout(barmode="stack" if apilado else "group", height=alto, margin=dict(l=10, r=10, t=10, b=10),
-                          legend=dict(orientation="h", y=1.12), plot_bgcolor="rgba(0,0,0,0)",
-                          paper_bgcolor="rgba(0,0,0,0)", showlegend=len(ys) > 1)
+                fig.add_bar(x=list(df[x]), y=list(df[y]), name=y, marker_color=c)
+        fig.update_layout(height=alto, margin=dict(l=10, r=10, t=10, b=10), plot_bgcolor="rgba(0,0,0,0)",
+                          paper_bgcolor="rgba(0,0,0,0)", showlegend=len(ys) > 1, legend=dict(orientation="h", y=1.12))
         if horizontal:
             fig.update_yaxes(autorange="reversed")
+        if porcentaje:
+            (fig.update_xaxes if horizontal else fig.update_yaxes)(tickformat=".0%")
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     except Exception:
         st.bar_chart(df.set_index(x)[ys])
 
 
-def _grafico_lineas(st: Any, df: pd.DataFrame, ys: list[str], alto: int = 300) -> None:
-    if df.empty:
+def _piramide_grafico(st: Any, t: pd.DataFrame) -> None:
+    con = t.drop(index="Sin dato", errors="ignore")
+    if con.empty:
         return
     try:
         import plotly.graph_objects as go
 
+        muj = con["Femenino"] if "Femenino" in con.columns else pd.Series(0, index=con.index)
+        var = con["Masculino"] if "Masculino" in con.columns else pd.Series(0, index=con.index)
         fig = go.Figure()
-        for i, y in enumerate(ys):
-            fig.add_scatter(x=list(df.index), y=list(df[y]), name=y, mode="lines+markers",
-                            line=dict(color=_PALETA[i % len(_PALETA)], width=2.5))
-        fig.update_layout(height=alto, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=1.15),
-                          plot_bgcolor="rgba(0,0,0,0)", paper_bgcolor="rgba(0,0,0,0)")
+        fig.add_bar(y=list(con.index), x=list(-muj), name="Mujeres", orientation="h", marker_color=_PALETA["Femenino"],
+                    customdata=list(muj), hovertemplate="%{y}: %{customdata} mujeres<extra></extra>")
+        fig.add_bar(y=list(con.index), x=list(var), name="Varones", orientation="h", marker_color=_PALETA["Masculino"],
+                    hovertemplate="%{y}: %{x} varones<extra></extra>")
+        tope = max(int(muj.max()), int(var.max()), 1)
+        paso = max(1, int(round(tope / 3, -2)) or 1)
+        marcas = list(range(0, tope + 1, paso))
+        fig.update_layout(barmode="overlay", bargap=0.08, height=400, margin=dict(l=10, r=10, t=10, b=10),
+                          legend=dict(orientation="h", y=1.08), plot_bgcolor="rgba(0,0,0,0)",
+                          paper_bgcolor="rgba(0,0,0,0)",
+                          xaxis=dict(tickvals=[-m for m in marcas[::-1]] + marcas[1:],
+                                     ticktext=[_num(m) for m in marcas[::-1]] + [_num(m) for m in marcas[1:]]))
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
     except Exception:
-        st.line_chart(df[ys])
+        st.bar_chart(con)
 
 
-def _tabla(st: Any, df: pd.DataFrame, **k: Any) -> None:
-    if df is None or df.empty:
-        st.caption("Sin datos para mostrar.")
-        return
-    st.dataframe(df, hide_index=True, use_container_width=True, **k)
+def render_inteligencia(st: Any, almacen: Any, df: pd.DataFrame, hoy: date) -> None:
+    from vitae.modulos.pacientes import _registrar_una_vez, completitud
 
-
-def _lista_personas(personas: pd.DataFrame, perf: pd.DataFrame, ev: pd.DataFrame, hoy: date) -> pd.DataFrame:
-    """Personas de una oportunidad, con lo justo para el seguimiento."""
-    if perf is None or perf.empty:
-        return pd.DataFrame()
-    base = personas.set_index("clave")
-    ultima_cat = (ev[ev["persona"] != ""].sort_values("fecha").groupby("persona")["categoria"].last()
-                  if not ev.empty else pd.Series(dtype=object))
-    nombres_ev = (ev[ev["persona"] != ""].groupby("persona")["nombre"].first() if not ev.empty
-                  else pd.Series(dtype=object))
-    filas = []
-    for f in perf.itertuples(index=False):
-        en = f.clave in base.index if f.clave else False
-        b = base.loc[f.clave] if en else None
-        filas.append({
-            "Apellido y nombre": (b["apellido_nombre"] if en else nombres_ev.get(f.persona, "")),
-            "Documento": (f"{b['tipo_doc']} {b['nro_doc']}".strip() if en else "No está en la base"),
-            "HC": (b["historia_clinica"] if en else ""),
-            "Edad": (f"{int(f.edad)}" if f.edad is not None and pd.notna(f.edad) else ""),
-            "Última prestación": f.ultima.strftime("%d/%m/%Y") if pd.notna(f.ultima) else "",
-            "Último paso": ultima_cat.get(f.persona, ""),
-            "Cobertura": f.obra_social, "Médico": f.medico,
-            "Pendiente": _pesos(f.pendiente) if f.pendiente else "",
-        })
-    return pd.DataFrame(filas)
-
-
-def render_inteligencia(st: Any, almacen: Any, personas: pd.DataFrame,
-                        leer_otras: Any, hoy: date) -> None:
     st.markdown(_CSS, unsafe_allow_html=True)
-    tablas = {}
-    if leer_otras is not None:
-        try:
-            tablas = leer_otras() or {}
-        except Exception as exc:
-            st.caption(f"No pude leer los otros módulos ({type(exc).__name__}): se analiza sólo la base.")
-    firma = (len(personas), tuple(sorted((k, len(v)) for k, v in tablas.items() if isinstance(v, pd.DataFrame))),
-             hoy.isoformat())
+    if df.empty:
+        st.info("La base está vacía: importá el Excel del sistema de turnos para ver el análisis.")
+        return
+    firma = (len(df), str(df["actualizado"].max()) if "actualizado" in df.columns else "", hoy.isoformat())
     if st.session_state.get("pin_firma") != firma or "pin_res" not in st.session_state:
-        with st.spinner("Cruzando pacientes con todas las prestaciones de Vitae…"):
-            st.session_state["pin_res"] = analizar(personas, tablas, hoy)
+        with st.spinner("Analizando la base de pacientes…"):
+            st.session_state["pin_res"] = analizar(df, hoy)
             st.session_state["pin_firma"] = firma
     r = st.session_state["pin_res"]
-    ev, perf, leads = r["eventos"], r["perfiles"], r["leads"]
-    seccion = st.pills("Sección", SECCIONES, key="pin_seccion", default="Resumen", label_visibility="collapsed") \
-        or "Resumen"
-    from vitae.modulos.pacientes import _registrar_una_vez
-
+    ed, modelo = r["edades"], r["modelo"]
+    seccion = st.pills("Sección", SECCIONES, key="pin_seccion", default="Resumen",
+                       label_visibility="collapsed") or "Resumen"
     _registrar_una_vez(almacen, "inteligencia", seccion)
+    muj = df["sexo"] == "Femenino"
 
     if seccion == "Resumen":
-        cr = crecimiento(ev, hoy) if not ev.empty else {}
-        rec = recurrencia(ev, perf) if not perf.empty else {}
+        d = documentacion(df, ed)
         c = st.columns(4)
-        c[0].metric("Personas en la base", _num(len(personas)))
-        c[1].metric("Pacientes atendidos (12 meses)", _num(cr.get("pacientes_12m", 0)),
-                    _var(cr.get("var_pacientes")), help="Con al menos una prestación; contra los 12 meses anteriores.")
-        c[2].metric("Pacientes nuevos (12 meses)", _num(cr.get("nuevos_12m", 0)), _var(cr.get("var_nuevos")))
-        c[3].metric("Facturado (12 meses)", _pesos(cr.get("facturado_12m", 0)), _var(cr.get("var_facturado")))
+        c[0].metric("Personas", _num(len(df)))
+        c[1].metric("Mujeres", f"{muj.mean():.0%}")
+        c[2].metric("Con edad", f"{ed['edad'].notna().mean():.0%}",
+                    help="Por fecha de nacimiento o estimada por el número de DNI.")
+        c[3].metric("Edad mediana", f"{ed['edad'].median():.0f} años" if ed["edad"].notna().any() else "—")
         c = st.columns(4)
-        c[0].metric("Volvieron al menos una vez", f"{rec.get('tasa_retorno', 0):.0%}")
-        c[1].metric("Visitas por paciente", f"{rec.get('visitas_promedio', 0):.1f}".replace(".", ","))
-        c[2].metric("Días entre visitas (mediana)",
-                    f"{rec['dias_entre_visitas']:.0f}" if rec.get("dias_entre_visitas") is not None else "—")
-        c[3].metric("Prestaciones vinculadas", f"{(ev['clave'] != '').mean():.0%}" if not ev.empty else "—",
-                    help="Prestaciones de Facturación, Quirófano, Gine y Farmacia que se pudieron unir a una persona "
-                         "de la base (por DNI o nombre).")
+        c[0].metric("Mujeres de 30 a 44 años", _num((muj & ed["edad"].between(30, 44)).sum()))
+        c[1].metric("Menores de 18", _num(ed["edad"].between(0, 17).sum()))
+        c[2].metric("Usaron turnos online", f"{df['origen'].isin(DIGITAL).mean():.0%}")
+        c[3].metric("Extranjeros", _num(d["extranjeros_residentes"] + d["documento_extranjero"]))
         items = "".join(f"<li>{h}</li>" for h in r["hallazgos"])
-        st.markdown(f'<div class="pin-hallazgos"><div class="pin-tit">💡 Lo más importante</div><ul>{items}</ul></div>',
-                    unsafe_allow_html=True)
-        m = mensual(ev, hoy)
-        if not m.empty:
-            st.markdown("##### Evolución mensual (24 meses)")
-            _grafico_lineas(st, m, ["Pacientes atendidos", "Pacientes nuevos"])
-        if not ev.empty:
-            with st.expander("Cómo se vinculó cada fuente"):
-                _tabla(st, _fmt_pct(vinculacion(ev), ["%"]))
-                st.caption("Se une por DNI cuando la fuente lo tiene; si no, por nombre completo en cualquier orden. "
-                           "Los nombres repetidos en la base (homónimos) no se asignan, para no mezclar personas.")
+        st.markdown(f'<div class="pin-hallazgos"><div class="pin-tit">💡 Lo más importante de la base</div>'
+                    f'<ul>{items}</ul></div>', unsafe_allow_html=True)
+        cb = crecimiento_base(df)
+        if not cb.empty:
+            st.markdown("##### Crecimiento de la base (personas nuevas por mes)")
+            _barras(st, cb, "Mes", ["Personas nuevas"], alto=260)
+        else:
+            st.caption("Desde la próxima importación vas a ver acá cuántas personas nuevas suma la base cada mes.")
 
-    elif seccion == "Prestaciones":
-        if ev.empty:
-            st.info("Todavía no hay prestaciones para analizar.")
-            return
-        cat = por_categoria(ev, perf)
-        st.markdown("##### Por tipo de práctica")
-        _grafico_barras(st, cat.head(14), "Categoría", ["Pacientes"], horizontal=True, alto=380)
-        _tabla(st, _fmt_pct(_fmt_pesos(cat, ["Facturado", "Ticket promedio"]), ["% mujeres"]))
-        x = ev[ev["fecha"].notna()].copy()
-        if not x.empty:
-            x["mes"] = x["fecha"].dt.to_period("M")
-            desde = pd.Period(hoy, "M") - 23
-            top = list(cat["Categoría"].head(6))
-            t = (x[(x["mes"] >= desde) & x["categoria"].isin(top)].groupby(["mes", "categoria"])["persona"]
-                 .nunique().unstack(fill_value=0))
-            if not t.empty:
-                t.index = t.index.astype(str)
-                st.markdown("##### Pacientes por mes en las prácticas principales")
-                _grafico_lineas(st, t, [c for c in top if c in t.columns])
-        st.markdown("##### Prácticas más frecuentes")
-        _tabla(st, _fmt_pesos(por_procedimiento(ev), ["Facturado"]))
-        with st.expander("Cómo se clasificó cada práctica"):
-            cl = ev.groupby(["procedimiento", "categoria"]).size().rename("Veces").reset_index() \
-                .sort_values("Veces", ascending=False).rename(columns={"procedimiento": "Práctica", "categoria": "Categoría"})
-            _tabla(st, cl.head(300))
-            otros = (ev["categoria"] == OTROS).mean()
-            st.caption(f"{otros:.0%} quedó en «{OTROS}». Si alguna está mal agrupada, avisame y ajusto la regla.")
-
-    elif seccion == "Recorrido":
-        if perf.empty:
-            st.info("Todavía no hay prestaciones para armar el recorrido.")
-            return
-        st.markdown("##### Embudo de fertilidad")
-        emb = embudo(perf)
-        _grafico_barras(st, emb, "Etapa", ["Pacientes"], horizontal=True, alto=260)
-        _tabla(st, _fmt_pct(emb, ["% del paso anterior"]))
-        st.caption("Cada etapa cuenta pacientes que alguna vez tuvieron esa práctica.")
+    elif seccion == "Demografía":
+        incluir = st.toggle("Incluir edades estimadas por DNI", value=True, key="pin_estimadas",
+                            help="Si lo apagás, sólo cuentan las personas con fecha de nacimiento.")
+        t = piramide(df, ed, incluir)
+        st.markdown("##### Pirámide de edad")
+        _piramide_grafico(st, t)
+        sin = int(t.loc["Sin dato"].sum()) if "Sin dato" in t.index else 0
+        st.caption(f"{_num(sin)} personas sin edad" + (" (ni fecha de nacimiento ni DNI que permita estimarla)."
+                                                      if incluir else " por fecha de nacimiento."))
         izq, der = st.columns(2)
         with izq:
-            st.markdown("##### Visitas por paciente")
-            rec = recurrencia(ev, perf)
-            dist = rec["distribucion"].rename_axis("Visitas").reset_index(name="Pacientes")
-            _grafico_barras(st, dist, "Visitas", ["Pacientes"], alto=260)
+            st.markdown("##### Generaciones")
+            g = generaciones(df, ed, hoy)
+            _barras(st, g[g["Generación"] != "Sin dato"], "Generación", ["Personas"], horizontal=True, alto=280)
+            _tabla(st, _fmt_pct(g, ["Mujeres"]))
         with der:
-            st.markdown("##### Qué viene después de qué")
-            _tabla(st, secuencias(ev))
-        co = cohortes(ev, hoy)
-        if not co.empty:
-            st.markdown("##### Retorno por trimestre de llegada")
-            pct = [c for c in co.columns if c.startswith("+")]
-            _tabla(st, _fmt_pct(co.reset_index().rename(columns={"cohorte": "Llegaron en"}), pct))
-            st.caption("Ejemplo: de los que llegaron en ese trimestre, qué % volvió 1, 2, 3… trimestres después.")
+            st.markdown("##### Sexo")
+            sx = df["sexo"].replace("", "Sin dato").value_counts().rename_axis("Sexo").reset_index(name="Personas")
+            sx["%"] = sx["Personas"] / len(df)
+            _tabla(st, _fmt_pct(sx, ["%"]))
+            st.markdown("##### Estado civil")
+            ec = df["estado_civil"][df["estado_civil"] != ""].value_counts().rename_axis("Estado civil") \
+                .reset_index(name="Personas")
+            _tabla(st, ec)
+            st.caption(f"Sólo el {(df['estado_civil'] != '').mean():.0%} de la base tiene este dato.")
 
-    elif seccion == "Obras sociales":
-        os_ = obras_sociales(ev)
-        if os_.empty:
-            st.info("No hay coberturas cargadas en las prestaciones.")
-            return
-        _grafico_barras(st, os_.head(12), "Obra social", ["Pacientes"], horizontal=True, alto=360)
-        _tabla(st, _fmt_pct(_fmt_pesos(os_, ["Facturado", "Cobrado", "Pendiente", "Ticket promedio"]), ["% cobrado"]))
-        st.caption("Días hasta el cobro: desde la fecha de factura a la fecha de pago (sólo Facturación).")
-
-    elif seccion == "Médicos":
-        md = medicos(ev, perf)
-        if md.empty:
-            st.info("No hay médicos cargados en las prestaciones.")
-            return
-        _grafico_barras(st, md.head(12), "Médico", ["Pacientes", "Pacientes que llegaron con este médico"],
-                        horizontal=True, alto=380)
-        _tabla(st, _fmt_pesos(md, ["Facturado"]))
-        st.caption("«Llegaron con este médico»: su primera prestación en Vitae fue con él o ella (capacidad de "
-                   "atraer pacientes nuevos).")
-
-    elif seccion == "Valor":
-        v = valor(perf)
-        if not v:
-            st.info("Todavía no hay facturación vinculada a pacientes.")
-            return
-        c = st.columns(4)
-        c[0].metric("Pacientes con facturación", _num(v["pacientes_con_valor"]))
-        c[1].metric("Valor promedio por paciente", _pesos(v["promedio"]))
-        c[2].metric("Valor mediano", _pesos(v["mediana"]))
-        c[3].metric("Lo que aporta el 20% de mayor valor", f"{v['concentracion_top20']:.0%}")
+    elif seccion == "Etapas de vida":
+        s = segmentos(df, ed)
+        st.caption("Cuántas personas de la base están hoy en cada etapa de la vida: dimensiona la demanda "
+                   "potencial de cada servicio.")
         izq, der = st.columns(2)
         with izq:
-            st.markdown("##### Por edad")
-            t = v["por_rango"]
-            _grafico_barras(st, t, "rango", ["Valor promedio"], alto=260)
-            _tabla(st, _fmt_pesos(t.rename(columns={"rango": "Edad"}), ["Valor promedio", "Valor total"]))
+            st.markdown("##### Mujeres en edad reproductiva")
+            _barras(st, s["fertilidad"], "Edad", ["Personas"], alto=260, color=_PALETA["Femenino"])
+            _tabla(st, s["fertilidad"])
+            st.markdown("##### Mujeres: perimenopausia y menopausia")
+            _tabla(st, s["menopausia"])
         with der:
-            st.markdown("##### Por cobertura")
-            _tabla(st, _fmt_pesos(v["por_obra_social"].rename(columns={"obra_social": "Obra social"}),
-                                  ["Valor promedio", "Valor total"]))
-            st.markdown("##### Por origen del registro")
-            _tabla(st, _fmt_pesos(v["por_origen"].rename(columns={"origen": "Origen"}),
-                                  ["Valor promedio", "Valor total"]))
-        st.caption("Valor = lo facturado (sin anulados) a cada paciente en toda su historia en Vitae.")
+            st.markdown("##### Varones (salud reproductiva masculina)")
+            _barras(st, s["andrologia"], "Edad", ["Personas"], alto=260, color=_PALETA["Masculino"])
+            _tabla(st, s["andrologia"])
+            st.markdown("##### Niñas, niños y adolescentes")
+            _tabla(st, s["pediatria"])
+            st.markdown("##### Mayores de 65")
+            _tabla(st, s["mayores"])
 
-    elif seccion == "Oportunidades":
-        ops = oportunidades(ev, perf, leads, personas, hoy)
-        if not ops:
-            st.info("Todavía no hay prestaciones para detectar oportunidades.")
-            return
-        st.caption("Listas para seguimiento médico y administrativo. Para contactar con fines comerciales hace "
-                   "falta el consentimiento de cada paciente (Ley 25.326).")
-        for i, op in enumerate(ops):
-            n = len(op["personas"]) if op.get("personas") is not None else len(op.get("leads", []))
-            st.markdown(f'<div class="pin-op"><b>{op["titulo"]}: {_num(n)}</b><br><span>{op["por_que"]}</span></div>',
-                        unsafe_allow_html=True)
-            if n == 0:
-                continue
-            with st.expander("Ver la lista"):
-                if op.get("personas") is not None:
-                    lista = _lista_personas(personas, op["personas"].head(300), ev, hoy)
-                else:
-                    lista = op["leads"].assign(fecha=op["leads"]["fecha"].dt.strftime("%d/%m/%Y")).head(300) \
-                        .rename(columns={"fecha": "Fecha", "nombre": "Nombre", "edad": "Edad",
-                                         "obra_social": "Cobertura", "estado": "Estado"})
-                _registrar_una_vez(almacen, "ver_oportunidad", f"{op['titulo'][:60]}: {n}")
-                _tabla(st, lista)
-                if n > 300:
-                    st.caption(f"Muestro 300 de {_num(n)}.")
-                if st.button("Preparar Excel de esta lista", key=f"pin_op_xl_{i}", icon=":material/download:"):
-                    buf = io.BytesIO()
-                    lista.to_excel(buf, index=False)
-                    st.session_state[f"pin_op_bytes_{i}"] = buf.getvalue()
-                    almacen.registrar("exportar_lista", f"{op['titulo'][:60]}: {len(lista)}")
-                if st.session_state.get(f"pin_op_bytes_{i}"):
-                    st.download_button("Descargar", st.session_state[f"pin_op_bytes_{i}"],
-                                       file_name=f"vitae_oportunidad_{i + 1}_{hoy:%Y%m%d}.xlsx", key=f"pin_op_dl_{i}")
+    elif seccion == "Canales":
+        c = canales(df, ed)
+        k = st.columns(3)
+        k[0].metric("Usaron turnos online", f"{c['digital']:.0%}")
+        if "Femenino" in c["por_sexo"].index:
+            k[1].metric("Mujeres", f"{c['por_sexo']['Femenino']:.0%}")
+        if "Masculino" in c["por_sexo"].index:
+            k[2].metric("Varones", f"{c['por_sexo']['Masculino']:.0%}")
+        st.markdown("##### Cómo se registró cada persona")
+        _tabla(st, _fmt_pct(c["origen"], ["%"]))
+        st.markdown("##### Uso de turnos online por edad")
+        _barras(st, c["por_edad"], "Edad", ["% turnos online"], alto=280, porcentaje=True)
+        st.caption("Ayuda a decidir por dónde comunicarse con cada grupo de edad (web, WhatsApp, teléfono, recepción).")
+
+    elif seccion == "Documentación":
+        d = documentacion(df, ed)
+        k = st.columns(4)
+        k[0].metric("DNI de residente extranjero", _num(d["extranjeros_residentes"]),
+                    help="DNI argentinos desde 92 millones: se otorgan a personas extranjeras residentes.")
+        k[1].metric("Pasaporte, cédula o doc. de otro país", _num(d["documento_extranjero"]))
+        k[2].metric("Sin documento (NN / recién nacidos)", _num(d["sin_documento"]))
+        k[3].metric("Con historia clínica", f"{d['con_hc']:.0%}")
+        izq, der = st.columns(2)
+        with izq:
+            st.markdown("##### Tipos de documento")
+            _tabla(st, d["tipos"])
+        with der:
+            st.markdown("##### Historia clínica según el origen del registro")
+            _tabla(st, d["hc_por_origen"])
+            st.caption("Los distintos largos de número suelen venir de sistemas distintos (p. ej. la migración del "
+                       "laboratorio).")
+        st.markdown("##### Datos completos")
+        for k_, v in completitud(df).items():
+            st.progress(min(max(v, 0.0), 1.0), text=f"{k_}: {v:.0%}")
+
+    elif seccion == "Edad estimada":
+        err = modelo["error"]
+        con_fecha = int((ed["edad"].notna() & ~ed["estimada"]).sum())
+        k = st.columns(4)
+        k[0].metric("Con fecha de nacimiento", _num(con_fecha))
+        k[1].metric("Edad estimada por DNI", _num(ed["estimada"].sum()))
+        k[2].metric("Error típico", f"{err['mediana_anos']:.1f} años".replace(".", ",") if err["mediana_anos"] is not None
+                    else "—",
+                    help="Mediana de la diferencia entre la edad estimada y la real, medida en un 20% de personas "
+                         "con fecha de nacimiento que se apartaron para probar.")
+        k[3].metric("A menos de 2 años", f"{err['dentro_2_anos']:.0%}" if err["dentro_2_anos"] is not None else "—")
+        st.markdown(
+            "En Argentina el número de DNI se asigna en orden: cuanto más alto, más joven la persona. Con las "
+            f"{_num(con_fecha)} personas que tienen fecha de nacimiento, Vitae aprende qué año corresponde a cada "
+            "tramo de números y lo usa para estimar la edad de quienes no la tienen. Sólo se usan los tramos donde "
+            "la relación es firme; los DNI de extranjeros (92 millones o más), las LE/LC viejas y los documentos "
+            "dudosos quedan sin estimar.")
+        tr = modelo["tramos"]
+        if not tr.empty:
+            t = pd.DataFrame({"DNI desde": (tr["tramo"] * TRAMO_DNI).map(_num),
+                              "Año de nacimiento típico": tr["ano"].round(0).astype(int),
+                              "Personas para aprender": tr["n"].astype(int)})
+            with st.expander("Ver la tabla DNI → año de nacimiento"):
+                _tabla(st, t)
+        st.markdown('<div class="pin-nota">Las edades estimadas nunca se escriben en la base: sólo se usan en estos '
+                    'análisis y se marcan en las exportaciones.</div>', unsafe_allow_html=True)
 
     else:  # Investigación
         st.markdown("##### Datos para investigación")
-        st.caption("Excel anonimizado con pacientes y prestaciones: sin nombre, documento, historia clínica, médico "
-                   "ni fechas exactas; edad en rangos; las prácticas que hicieron menos de 5 personas se agrupan por "
-                   "categoría. Antes de publicar, pasar por el comité de ética que corresponda.")
-        c = st.columns(3)
-        c[0].metric("Pacientes con prestaciones", _num(len(perf)))
-        c[1].metric("Prestaciones", _num(len(ev)))
-        c[2].metric("Años de historia", _num(ev["fecha"].dt.year.nunique()) if not ev.empty else "0")
-        if not perf.empty and st.button("Preparar Excel para investigación", key="pin_inv_xl", icon=":material/science:"):
-            st.session_state["pin_inv_bytes"] = dataset_investigacion(perf, ev, hoy)
-            almacen.registrar("exportar_investigacion", f"{len(perf)} pacientes, {len(ev)} prestaciones")
+        st.caption("Excel anonimizado de toda la base: sin nombre, documento, historia clínica ni fechas; edad en "
+                   "rangos (marcando las estimadas), generación, estado civil, origen y si es extranjero. Antes de "
+                   "publicar, pasar por el comité de ética que corresponda.")
+        if st.button("Preparar Excel para investigación", key="pin_inv_xl", icon=":material/science:"):
+            st.session_state["pin_inv_bytes"] = dataset_investigacion(df, ed, hoy)
+            almacen.registrar("exportar_investigacion", f"{len(df)} personas")
         if st.session_state.get("pin_inv_bytes"):
             st.download_button("Descargar Excel para investigación", st.session_state["pin_inv_bytes"],
-                               file_name=f"vitae_investigacion_{hoy:%Y%m%d}.xlsx", key="pin_inv_dl",
+                               file_name=f"vitae_pacientes_investigacion_{hoy:%Y%m%d}.xlsx", key="pin_inv_dl",
                                icon=":material/download:")
-        t = edad_por_tratamiento_y_ano(ev, perf, hoy)
-        if not t.empty:
-            st.markdown("##### Edad promedio al momento del tratamiento, por año")
-            _tabla(st, t.reset_index().rename(columns={"ano": "Año"}))
-        st.markdown("##### Preguntas que estos datos permiten estudiar")
+        st.markdown("##### Preguntas que la base permite estudiar")
         st.markdown(
-            "- ¿Cambió la edad de las pacientes que inician tratamientos de fertilidad con los años?\n"
-            "- ¿Cuántas pacientes pasan de la consulta al tratamiento y cuánto tardan?\n"
-            "- ¿Qué proporción usa su material criopreservado y después de cuánto tiempo?\n"
-            "- ¿Difieren las prácticas según la cobertura (acceso a tratamientos)?\n"
-            "- ¿Cuántas pacientes vuelven para un segundo ciclo o una transferencia adicional?\n"
-            "- Demanda por edad y sexo para planificar consultorios, quirófano y laboratorio."
+            "- Perfil de edad y sexo de quienes se atienden en Vitae, y cómo cambia con cada importación.\n"
+            "- Tamaño de cada población (edad reproductiva, menopausia, pediatría, mayores) para planificar "
+            "servicios y equipos.\n"
+            "- Adopción de turnos online por edad y sexo.\n"
+            "- Peso de pacientes extranjeros.\n"
+            "- Calidad del registro (datos faltantes, documentos dudosos) y su evolución."
         )
-        st.markdown('<div class="pin-nota">Los resultados clínicos (embarazo, nacido vivo) no están en Vitae todavía: '
-                    'si se registran, se pueden sumar tasas de éxito por edad y tratamiento.</div>',
-                    unsafe_allow_html=True)

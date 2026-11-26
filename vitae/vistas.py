@@ -1556,31 +1556,6 @@ def _auth_en_lista(secreto: str, por_defecto: str, user: dict[str, Any] | None =
     return False
 
 
-def _pacientes_otras_tablas() -> dict[str, pd.DataFrame]:
-    """El resto de Vitae, para mostrar en la ficha dónde aparece cada paciente."""
-    out: dict[str, pd.DataFrame] = {}
-    for nombre, cfg in MODULES.items():
-        tabla = str(cfg.get("table") or "")
-        if not tabla or tabla in {"usuarios_vitae", "convenios"} or tabla.startswith(("luz_", "pacientes")):
-            continue
-        empresa = str(cfg.get("empresa", "") or "").strip().upper() or None
-        if not _auth_can_access(f"mod::{nombre}", empresa):
-            continue  # sólo lo que este usuario ya puede ver
-        try:
-            out[nombre] = get_df(tabla)
-        except Exception:
-            continue
-    for nombre, tabla, modulo in (("Farmacia · movimientos", "farmacia_movimientos", "Farmacia"),
-                                  ("Gine Vitae · formularios web", "gine_vitae_formularios", "Gine Vitae")):
-        if modulo not in out:
-            continue
-        try:
-            out[nombre] = get_df(tabla)
-        except Exception:
-            continue
-    return out
-
-
 def render_pacientes_pagina() -> None:
     """Módulo Pacientes (fuera de MODULES a propósito: ver vitae/modulos/pacientes.py)."""
     st.session_state["vitae_current_module"] = "Pacientes"
@@ -1593,11 +1568,11 @@ def render_pacientes_pagina() -> None:
     from vitae.core.ui import encabezado_modulo
     from vitae.modulos import pacientes as _pacientes
 
-    encabezado_modulo("Pacientes", descripcion="Todas las personas que pasaron por Vitae: búsqueda, ficha, "
-                                               "tablero, calidad de datos e importación.")
+    encabezado_modulo("Pacientes", descripcion="Base institucional: todas las personas que pasaron por Vitae. "
+                                               "Inteligencia, búsqueda, calidad de datos e importación.")
     quien = str(user.get("usuario") or user.get("nombre") or "").strip()
     almacen = _pacientes.AlmacenSheets(sheet_id=_secret("PACIENTES_SHEET_ID", ""), usuario=quien)
-    _pacientes.render_pacientes(almacen, leer_otras=_pacientes_otras_tablas)
+    _pacientes.render_pacientes(almacen)
 
 
 def _luz_memoria(usuario: dict[str, Any] | None) -> Any:
