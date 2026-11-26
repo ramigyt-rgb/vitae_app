@@ -337,7 +337,8 @@ def dialogo(st: Any, accion_: str, fila: int, ctx: dict[str, Any], guardar: Call
     if fila not in d.index:
         return
     r = d.loc[fila]
-    titulos = {"facturar": "Facturar", "cobro": "Registrar cobro", "debito": "Débito", "editar": "Editar"}
+    titulos = {"facturar": "Facturar", "cobro": "Registrar cobro", "debito": "Débito", "editar": "Editar",
+               "documentos": "Documentación"}
     k = f"{key}_dlg_{accion_}_{fila}"
 
     def facturar() -> None:
@@ -442,7 +443,27 @@ def dialogo(st: Any, accion_: str, fila: int, ctx: dict[str, Any], guardar: Call
                 return
             _guardar_y(st, ctx, guardar, cambios, f"{pac}: guardado", key, ("editar", fila) if s else None)
 
-    cuerpo = {"facturar": facturar, "cobro": cobro, "debito": debito, "editar": editar}[accion_]
+    def documentos() -> None:
+        from vitae.modulos import presentaciones as pr
+
+        _cabecera(st, r)
+        pedidos = pr.requisitos(ctx.get("requisitos"), ctx["empresa"], r["_obra_social"])
+        tiene = pr.lista_docs(r.get("_documentacion", ""))
+        extras = [x for x in tiene if pr._sin_acentos(x) not in {pr._sin_acentos(p_) for p_ in pedidos}]
+        st.caption(f"Lo que pide {r['_obra_social']}. Tildá lo que ya tenés; con todo tildado queda lista para presentar.")
+        marcados = []
+        for j, doc in enumerate(pedidos + extras):
+            if st.checkbox(doc, value=pr._sin_acentos(doc) in {pr._sin_acentos(x) for x in tiene}, key=f"{k}_c{j}"):
+                marcados.append(doc)
+        otro = st.text_input("Otro documento (opcional)", key=f"{k}_otro", placeholder="Ej.: Informe de anatomía patológica")
+        if _texto(otro):
+            marcados.append(_texto(otro))
+        g, s = _botones(st, k)
+        if g or s:
+            _guardar_y(st, ctx, guardar, [{"fila": fila, "campo": "documentacion", "valor": pr.SEP.join(marcados)}],
+                       f"{r['_paciente']}: documentación guardada", key, ("documentos", fila) if s else None)
+
+    cuerpo = {"facturar": facturar, "cobro": cobro, "debito": debito, "editar": editar, "documentos": documentos}[accion_]
     titulo = f"{titulos[accion_]} · {r['_paciente'] or 'registro'}"
     st.dialog(titulo, width="large" if accion_ == "editar" else "medium")(cuerpo)()
 
@@ -536,18 +557,33 @@ def render_fichas(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Cal
             return
     filas = [int(i) for i in x.index]
     st.session_state[f"{key}_orden"] = filas
+    st.session_state[f"{key}_orden_documentos"] = [i for i in filas if etapa(ctx["d"].loc[i]) == "cargado"]
     for acc in ("facturar", "cobro", "debito", "editar"):
         st.session_state[f"{key}_orden_{acc}"] = [i for i in filas
                                                   if accion(ctx["d"].loc[i], forzar_incompleta or incompleta(ctx["d"].loc[i]))[0] == acc]
     paginas = max(1, -(-len(filas) // POR_PAGINA))
     pag = min(int(st.session_state.get(f"{k}_pag", 0)), paginas - 1)
+    con_docs = "requisitos" in ctx
     for i in filas[pag * POR_PAGINA:(pag + 1) * POR_PAGINA]:
         r = ctx["d"].loc[i]
         inc = forzar_incompleta or incompleta(r)
         acc, etiqueta = accion(r, inc and forzar_incompleta)
+        nota = (notas or {}).get(i, "")
+        docs_btn = con_docs and etapa(r) == "cargado" and not (inc and forzar_incompleta)
+        if docs_btn:
+            from vitae.modulos import presentaciones as pr
+
+            nd = pr.nota_docs(r, ctx.get("requisitos"), ctx["empresa"])
+            nota = " · ".join(x for x in (nota, nd) if x)
         with st.container(border=True):
-            st.markdown(html_ficha(r, ctx["hoy"], (notas or {}).get(i, "")), unsafe_allow_html=True)
-            b = st.columns([3, 1.1, 1.5]) if acc != "editar" else st.columns([4.1, 1.5])
+            st.markdown(html_ficha(r, ctx["hoy"], nota), unsafe_allow_html=True)
+            if docs_btn:
+                b = st.columns([1.9, 1.4, 1.1, 1.5])
+                if b[1].button("Documentación", key=f"{k}_d_{i}", use_container_width=True, icon=":material/fact_check:"):
+                    dialogo(st, "documentos", i, ctx, guardar, key)
+                b = [b[0], b[2], b[3]]
+            else:
+                b = st.columns([3, 1.1, 1.5]) if acc != "editar" else st.columns([4.1, 1.5])
             if acc != "editar":
                 if b[1].button("Editar", key=f"{k}_e_{i}", use_container_width=True, icon=":material/edit:"):
                     dialogo(st, "editar", i, ctx, guardar, key)
@@ -580,6 +616,9 @@ def render_agenda_fichas(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.
     st.markdown(f'<div class="cf-tit">Cirugías realizadas sin cargar · {len(ag)}</div>'
                 f'<div class="cf-sub">Sólo las de procedimientos de {html.escape(ctx["empresa"])}. Tocá «Agregar», revisá '
                 'el importe sugerido y guardá.</div>', unsafe_allow_html=True)
+    if len(ag) > 1 and st.button(f"Agregar las {len(ag)} con el importe sugerido", key=f"{key}_ag_todas",
+                                 icon=":material/playlist_add:", help="Después podés revisar cada una en 2 · Facturar."):
+        agregar_todas(st, ctx, guardar, key)
     for i, r in ag.reset_index(drop=True).iterrows():
         with st.container(border=True):
             c1, c2 = st.columns([4.1, 1.5])
@@ -590,3 +629,25 @@ def render_agenda_fichas(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.
                         f'color:{TONOS["rojo"][1]}">realizada, sin cargar</span>', unsafe_allow_html=True)
             if c2.button("Agregar", key=f"{key}_ag_add_{i}", type="primary", use_container_width=True, icon=":material/add:"):
                 dialogo_nuevo(st, ctx, guardar, key, r.to_dict())
+
+
+def filas_agenda(ctx: dict[str, Any]) -> pd.DataFrame:
+    """Todas las cirugías sin cargar → la planilla con sus filas nuevas (importe sugerido)."""
+    nuevo, d, hoy = ctx["raw"], ctx["d"], ctx["hoy"]
+    for _, r in ctx["c"]["agenda"].iterrows():
+        imp = importe_sugerido(d, _texto(r["Procedimiento"]), _texto(r["Obra social"]))
+        nuevo = cf.nueva_fila(nuevo, ctx["cols"], r.to_dict(), _txt_imp(imp), hoy,
+                              observaciones="Cargada desde la Agenda de Quirófano")
+    return nuevo
+
+
+def agregar_todas(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
+    n = len(ctx["c"]["agenda"])
+    try:
+        guardar(filas_agenda(ctx))
+    except Exception as exc:
+        st.error(f"No se pudo guardar: {exc}")
+        return
+    st.session_state[f"{key}_cf_rev"] = int(st.session_state.get(f"{key}_cf_rev", 0)) + 1
+    st.toast(f"{n} cirugía(s) agregada(s)", icon=":material/check_circle:")
+    st.rerun()
