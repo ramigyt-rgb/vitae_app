@@ -646,12 +646,20 @@ def render_edicion(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Ca
 REG_COLUMNAS = ["Paciente", "Fecha prestación", "N° factura", "Fecha factura", "Vto. factura", "Importe", "Saldo",
                 "Estado"]
 REG_ANCHOS = [2.6, 1.15, 1.35, 1.1, 1.1, 1.2, 1.2, 1.9]
+REG_ANCHO_EDITAR = 0.42
 REG_POR_TANDA = 60
 
 CSS_REG = """<style>
-.fr-h{font-size:.66rem;font-weight:600;color:#8A7F85;text-transform:uppercase;letter-spacing:.04em;padding:.1rem 0}
-.fr-c{font-size:.84rem;color:#1F1A1D;font-variant-numeric:tabular-nums;line-height:1.25;padding:.15rem 0;overflow-wrap:anywhere}
-.fr-c small{display:block;color:#8A7F85;font-size:.72rem}
+.fr-h{font-size:.6rem;font-weight:600;color:#8A7F85;text-transform:uppercase;letter-spacing:.04em;padding:0}
+.fr-c{font-size:.78rem;color:#1F1A1D;font-variant-numeric:tabular-nums;line-height:1.2;padding:.05rem 0;overflow-wrap:anywhere}
+.fr-c small{display:block;color:#8A7F85;font-size:.68rem}
+div[class*="st-key-frblk_"] div[data-testid="stVerticalBlock"]{gap:.05rem}
+div[class*="st-key-frblk_"] div[data-testid="stHorizontalBlock"]{gap:.45rem;border-top:1px solid #F1ECEF;padding:.12rem 0;
+ align-items:center}
+div[class*="st-key-frblk_"] div[data-testid="stMarkdownContainer"] p{margin:0}
+div[class*="st-key-fred_"] button{min-height:1.5rem;height:1.5rem;padding:0 .3rem;border-radius:6px;color:#8C2853}
+div[class*="st-key-fred_"] button p{font-size:.82rem;line-height:1}
+div[class*="st-key-fred_"] button:hover{background:#F7E9EF}
 .fr-n{text-align:right;white-space:nowrap}
 .fr-ok{opacity:.55}
 .fr-tot{background:#EFE7EB;border-radius:8px;padding:.35rem .6rem;font-weight:700;font-size:.84rem;display:flex;
@@ -663,6 +671,13 @@ def _celda(t: str, *, num: bool = False, color: str = "", tenue: bool = False, c
     estilo = f' style="color:{color}"' if color else ""
     clases = "fr-c" + (" fr-n" if num else "") + (" fr-ok" if tenue else "")
     return f'<div class="{clases}"{estilo}>{_e(t)}{f"<small>{_e(chico)}</small>" if chico else ""}</div>'
+
+
+def _clave_css(t: Any) -> str:
+    """Una clave segura para usar como clase CSS (sólo letras, números y _)."""
+    import re as _re
+
+    return _re.sub(r"[^A-Za-z0-9_]+", "_", str(t))[:60]
 
 
 def celdas_registro(r: pd.Series, hoy: date) -> list[tuple[str, dict[str, Any]]]:
@@ -723,18 +738,18 @@ def render_registros(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: 
 
     limite = int(st.session_state.get(f"{k}_limite", REG_POR_TANDA))
     mostradas = set(orden[:limite])
-    anchos = REG_ANCHOS + ([0.9] if edita else [])
+    anchos = REG_ANCHOS + ([REG_ANCHO_EDITAR] if edita else [])
     for os_ in ff.resumen_obras(x)["Obra social"]:
         g = x[x["_obra_social"] == os_]
         filas = [int(j) for _, idx in ff.grupos_factura(ff.ordenar(g, "Más urgentes")) for j in idx
                  if int(j) in mostradas]
         if not filas:
             continue
-        with st.container(border=True):
+        with st.container(border=True, key=f"frblk_{_clave_css(k)}_{_clave_css(os_)}"):
             st.markdown(f'<div class="fz-tit" style="margin:-.2rem -.2rem .3rem;border-radius:8px"><b>{_e(os_)}</b>'
                         f'<span>{_e(resumen_txt(g))}</span></div>', unsafe_allow_html=True)
             cab = st.columns(anchos, vertical_alignment="bottom")
-            for j, titulo in enumerate(REG_COLUMNAS + (["Editar"] if edita else [])):
+            for j, titulo in enumerate(REG_COLUMNAS + ([""] if edita else [])):
                 derecha = titulo in ("Importe", "Saldo")
                 cab[j].markdown(f'<div class="fr-h{" fr-n" if derecha else ""}">{_e(titulo)}</div>',
                                 unsafe_allow_html=True)
@@ -743,8 +758,8 @@ def render_registros(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: 
                 cols = st.columns(anchos, vertical_alignment="center")
                 for j, (texto, op) in enumerate(celdas_registro(r, ctx["hoy"])):
                     cols[j].markdown(_celda(texto, **op), unsafe_allow_html=True)
-                if edita and cols[-1].button("Editar", key=f"{k}_ed_{i}", icon=":material/edit:",
-                                             use_container_width=True):
+                if edita and cols[-1].button("✎", key=f"fred_{_clave_css(k)}_{i}", type="tertiary",
+                                             help="Editar los datos de este paciente"):
                     ff.dialogo(st, "editar", i, ctx, guardar, key)
             vivos = g[~g["_cancelado"]]
             st.markdown(f'<div class="fr-tot"><span>TOTAL · {len(g)} paciente(s)</span><span>Importe '
