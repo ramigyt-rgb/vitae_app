@@ -206,15 +206,17 @@ def impuestos(df: pd.DataFrame | None, tabla: str, preparar: Callable | None, ho
 
 
 def planes(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
+    """Mismo cálculo que el módulo Planes de pagos y préstamos (lo que falta pagar)."""
+    from vitae.modulos import planes as pl
+
     if _vacio(df):
         return {"hay": False}
-    estado = _txt(df, "estado").map(_sin_acentos)
-    activo = ~estado.isin({"finalizado", "finalizada", "cancelado", "cancelada", "pagado", "pagada"})
-    saldo = _num(df, "saldo").where(activo, 0.0).clip(lower=0)
-    prox = _fecha(df, "proximo_vencimiento", "vencimiento")
-    return {"hay": True, "saldo": float(saldo.sum()), "activos": int((activo & (saldo > 0)).sum()),
-            "mora": int((activo & estado.eq("mora")).sum()),
-            "prox_7": int((activo & prox.notna() & prox.between(hoy, hoy + pd.Timedelta(days=7))).sum())}
+    r = pl.resumen(pl.normalizar(df), hoy.date())
+    if not r["hay"]:
+        return {"hay": False}
+    return {"hay": True, "saldo": r["pendiente"], "activos": r["activos"], "mora": r["con_atraso"],
+            "atrasado": r["atrasado"], "cuota_mes": r["cuota_mes"], "cuota_mes_pagada": r["cuota_mes_pagada"],
+            "prox_7": 0}
 
 
 def cuenta_corriente(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
@@ -387,7 +389,8 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
             f"{v['vencidos']}" + (f" · {pesos(v['vencidos_importe'], 0)}" if v.get("vencidos_importe") else ""), "Vencimientos")
     pl = m["planes"]
     if pl.get("mora"):
-        add("alta", "Planes de pago en mora", f"{pl['mora']} plan(es)", "Planes de pagos y préstamos")
+        add("alta", "Planes de pago con cuotas impagas o atrasadas",
+            f"{pl['mora']} plan(es) · {pesos(pl.get('atrasado', 0.0), 0)}", "Planes de pagos y préstamos")
     for e, c in m["cc"].items():
         if c.get("pagar_vencido", 0) > 0.5:
             add("media", f"Cuenta corriente {e}: pagos vencidos", pesos(c["pagar_vencido"], 0), f"Cuenta Corriente {e}")
@@ -553,7 +556,8 @@ def html_tarjetas(m: dict[str, Any]) -> str:
               if i.get("hay") else _sin_datos(f"Deudas impositivas {e}", i))
     pl = m["planes"]
     c += (_linea("Planes de pago y préstamos", pesos(pl["saldo"], 0), sub_k=_plural(pl["activos"], "activo"),
-                 sub_v=(f"{pl['mora']} en mora" if pl["mora"] else ""), alerta_sub=bool(pl["mora"]))
+                 sub_v=(f"{pl['mora']} con atraso" if pl["mora"] else
+                        f"Cuotas del mes {pesos(pl.get('cuota_mes', 0.0), 0)}"), alerta_sub=bool(pl["mora"]))
           if pl.get("hay") else _sin_datos("Planes de pago y préstamos", pl))
     for e, cc in m["cc"].items():
         c += (_linea(f"Cuenta corriente {e}", f"A pagar {pesos(cc['a_pagar'], 0)}",

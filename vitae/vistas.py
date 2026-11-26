@@ -21117,10 +21117,14 @@ def render_facturacion_pro(
         or ("plan" in identity_planes and ("pago" in identity_planes or "prestamo" in identity_planes))
     )
     if is_planes_module:
-        render_planes_pagos_prestamos_pro(
-            df_original=df_base.copy(),
-            table=table,
-            module_name=module_name,
+        # Como la planilla «DEUDAS ASUMIDAS MES A MES» (vitae/modulos/planes.py).
+        from vitae.modulos.planes import render_planes
+
+        render_planes(
+            df_base.copy(),
+            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+            selector=_vitae_lazy_selector,
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"planes:{table}"),
         )
         return
 
@@ -23110,6 +23114,14 @@ def total_mod(nombre, dfs):
     if str(nombre).strip().lower() in ("caja vmr", "caja vm", "banco galicia vm", "banco macro vmr"):
         try:
             return float(_caja_saldo_actual(df, "ARS", dolar_por_texto=str(nombre).strip().lower() == "caja vmr"))
+        except Exception:
+            pass
+    # Planes de pago y préstamos: lo que falta pagar (no la suma de todas las columnas).
+    if str(nombre).strip().lower() in ("planes de pagos y préstamos", "planes de pagos y prestamos"):
+        try:
+            from vitae.modulos import planes as _planes
+
+            return float(_planes.resumen(_planes.normalizar(df))["pendiente"])
         except Exception:
             pass
     # Pagos pendientes: cada planilla mensual repite lo impago del mes anterior;
