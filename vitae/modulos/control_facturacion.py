@@ -95,12 +95,14 @@ def preparar(raw: pd.DataFrame | None, hoy: date | None = None) -> tuple[pd.Data
     data["_dias_plazo"] = (data["_plazo"] - h).dt.days
     # REGLA: sin N° de factura no hay factura. La fecha de factura o el vencimiento solos (por ejemplo,
     # autocompletados al cargar) no la hacen facturada, ni vencida, ni cobrada.
+    # «Completo» = pagado (manda sobre todo): una fila Completa nunca está sin facturar ni con saldo.
+    completo = data["_completo"] if "_completo" in data.columns else False
     if cols.get("numero_factura"):
-        data["_facturada"] = data["_numero_factura"].astype(str).str.strip() != ""
+        data["_facturada"] = (data["_numero_factura"].astype(str).str.strip() != "") | completo
         data["_fecha_sin_numero"] = ~data["_facturada"] & ~data["_cancelado"] & (
             data["_fecha_factura"].notna() | data["_vencimiento"].notna())
     else:  # planilla sin columna de N° de factura: manda la fecha de factura
-        data["_facturada"] = data["_fecha_factura"].notna()
+        data["_facturada"] = data["_fecha_factura"].notna() | completo
         data["_fecha_sin_numero"] = False
     data["_vencido"] = data["_vencido"] & data["_facturada"]
     for clave, nombre in COLS_DEBITO.items():

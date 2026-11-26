@@ -288,10 +288,10 @@ def filtrar(d: pd.DataFrame, filtro: str) -> pd.DataFrame:
     if d.empty:
         return d
     et = d.apply(etapa, axis=1)
-    if filtro == "Para facturar":
-        return d[et == "cargado"]
-    if filtro == "Plazo vencido":
-        return d[(et == "cargado") & (d["_dias_plazo"] < 0)]
+    if filtro in ("Para facturar", "Plazo vencido"):
+        # La misma definición que 2 · Facturar (control_facturacion.controles → «sin_facturar»)
+        sf = d[~d["_cancelado"] & ~d["_facturada"] & ~d["_sin_cargo"] & ~d["_incluida"]]
+        return sf if filtro == "Para facturar" else sf[sf["_dias_plazo"] < 0]
     if filtro == "Por cobrar":
         return d[et == "facturado"]
     if filtro == "Vencidas":

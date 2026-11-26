@@ -112,7 +112,8 @@ def guardar_req(req: pd.DataFrame | None, empresa: str, editada: pd.DataFrame) -
 def sin_facturar(d: pd.DataFrame) -> pd.DataFrame:
     if d.empty:
         return d
-    return d[~d["_cancelado"] & ~d["_facturada"] & (d["_monto"] > 0)]
+    # La misma definición que 2 · Facturar y Registros («sin_facturar» del control).
+    return d[~d["_cancelado"] & ~d["_facturada"] & ~d["_sin_cargo"] & ~d["_incluida"]]
 
 
 def por_obra_social(d: pd.DataFrame, req: pd.DataFrame | None, empresa: str) -> pd.DataFrame:
