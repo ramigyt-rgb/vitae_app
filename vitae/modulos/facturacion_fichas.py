@@ -79,6 +79,8 @@ def aviso(r: pd.Series, hoy: date | None = None) -> tuple[str, str]:
     if e == "sin_cargo":
         return "no se factura", "gris"
     if e == "incluida":
+        if r.get("_te_aspiracion", False):
+            return "va en la aspiración folicular", "gris"
         return "importe en la factura conjunta", "gris"
     if e == "cargado":
         dias = r.get("_dias_plazo")
@@ -158,8 +160,92 @@ def dias_vencimiento(d: pd.DataFrame, obra_social: str) -> int:
     return int(a["_dif"].median()) if len(a) >= 3 else 30
 
 
-def importe_sugerido(d: pd.DataFrame, procedimiento: str, obra_social: str) -> float | None:
-    """El importe más reciente para ese procedimiento y obra social (o sólo el procedimiento)."""
+# Obras sociales que se facturan con los valores de otra (regla interna). En VMR, AVALIAN usa los de IPS:
+# se toma el importe del procedimiento similar de IPS con la fecha más cercana, a 45 días como máximo.
+VALORES_DE = {"VMR": {"AVALIAN": "IPS"}}
+DIAS_REFERENCIA = 45
+
+
+def _compacto(v: Any) -> str:
+    from vitae.modulos.pagos_pendientes import _sin_acentos
+
+    return "".join(ch for ch in _sin_acentos(_texto(v)).upper() if ch.isalnum())
+
+
+def referencia_valores(empresa: str | None, obra_social: Any) -> str | None:
+    """La obra social cuyos valores se usan para ``obra_social`` (ej.: AVALIAN → IPS en VMR), o None."""
+    c = _compacto(obra_social)
+    for os_, ref in VALORES_DE.get(str(empresa or "").upper(), {}).items():
+        if os_ in c:
+            return ref
+    return None
+
+
+def _proc_tokens(v: Any) -> frozenset[str]:
+    from vitae.modulos.pagos_pendientes import _sin_acentos
+
+    return frozenset(t for t in "".join(ch if ch.isalnum() else " " for ch in _sin_acentos(_texto(v)).lower()).split() if t)
+
+
+def importe_referencia(d: pd.DataFrame, procedimiento: str, obra_ref: str, fecha: Any = None,
+                       dias: int = DIAS_REFERENCIA) -> tuple[float | None, pd.Timestamp | None]:
+    """El importe de ``obra_ref`` para el procedimiento similar con la fecha de prestación más cercana a
+    ``fecha`` (a ``dias`` días como máximo). Devuelve (importe, fecha de esa prestación) o (None, None)."""
+    if d is None or d.empty or not _texto(procedimiento):
+        return None, None
+    f0 = pd.Timestamp(fecha) if fecha is not None and pd.notna(pd.Timestamp(fecha)) else pd.Timestamp(date.today())
+    ref = _compacto(obra_ref)
+    a = d[~d["_cancelado"] & (d["_monto"] > 0) & d["_prestacion"].notna()
+          & d["_obra_social"].map(lambda o: _compacto(o).startswith(ref))]
+    if a.empty:
+        return None, None
+    t = _proc_tokens(procedimiento)
+    toks = a["_procedimiento"].map(_proc_tokens)
+    igual = toks == t
+    similar = toks.map(lambda x: bool(x) and bool(t) and (x <= t or t <= x))
+    for m in (igual, similar):
+        x = a[m]
+        if x.empty:
+            continue
+        dif = (x["_prestacion"] - f0).abs().dt.days
+        x = x.assign(_dif=dif)[dif <= dias]
+        if x.empty:
+            continue
+        x = x.sort_values(["_dif", "_prestacion"], ascending=[True, False])
+        return float(x["_monto"].iloc[0]), x["_prestacion"].iloc[0]
+    return None, None
+
+
+def te_sin_valor(d: pd.DataFrame, procedimiento: Any, obra_social: Any, paciente: Any, fecha: Any = None) -> bool:
+    """IPS / AVALIAN: la TE de una paciente con aspiración folicular (±45 días) no lleva valor."""
+    import vitae.modulos.facturacion as fx
+
+    if d is None or d.empty or not _texto(paciente) or not fx._es_te(procedimiento):
+        return False
+    os_n = fx._norm(obra_social)
+    if not any(os_n == g or g in os_n.split("_") for g in fx.OS_TE_EN_ASPIRACION):
+        return False
+    clave = " ".join(sorted(t for t in fx._norm(paciente).split("_") if t))
+    pac = d["_paciente"].map(lambda p: " ".join(sorted(t for t in fx._norm(p).split("_") if t)))
+    asp = d[(pac == clave) & ~d["_cancelado"] & d["_procedimiento"].map(fx._es_aspiracion)]
+    if asp.empty:
+        return False
+    if fecha is None:
+        return True
+    f0 = pd.Timestamp(fecha)
+    return any(pd.isna(x) or abs((x - f0).days) <= fx.DIAS_TE_ASPIRACION for x in asp["_prestacion"])
+
+
+def importe_sugerido(d: pd.DataFrame, procedimiento: str, obra_social: str, *, empresa: str | None = None,
+                     fecha: Any = None, paciente: Any = None) -> float | None:
+    """El importe más reciente para ese procedimiento y obra social (o sólo el procedimiento). Si la obra
+    social usa los valores de otra (``VALORES_DE``), el de esa otra a ±45 días; si no hay, ninguno. En IPS /
+    AVALIAN, la TE de una paciente con aspiración folicular no lleva valor (0)."""
+    if te_sin_valor(d, procedimiento, obra_social, paciente, fecha):
+        return 0.0
+    ref = referencia_valores(empresa, obra_social)
+    if ref:
+        return importe_referencia(d, procedimiento, ref, fecha)[0]
     if d.empty or not procedimiento:
         return None
     a = d[~d["_cancelado"] & (d["_monto"] > 0)]
@@ -170,6 +256,21 @@ def importe_sugerido(d: pd.DataFrame, procedimiento: str, obra_social: str) -> f
             x = x.sort_values("_prestacion", na_position="first")
             return float(x["_monto"].tail(5).median())
     return None
+
+
+def ayuda_importe(d: pd.DataFrame, procedimiento: str, obra_social: str, *, empresa: str | None = None,
+                  fecha: Any = None, paciente: Any = None) -> str | None:
+    """El texto de ayuda del importe sugerido."""
+    if te_sin_valor(d, procedimiento, obra_social, paciente, fecha):
+        return "Sin valor: el importe va en la aspiración folicular de esta paciente."
+    ref = referencia_valores(empresa, obra_social)
+    if ref:
+        v, f = importe_referencia(d, procedimiento, ref, fecha)
+        if v is None:
+            return f"Sin valor de {ref} para este procedimiento a {DIAS_REFERENCIA} días o menos."
+        return f"Valor de {ref}: {pesos(v, 0)} (prestación del {_f(f)})."
+    sug = importe_sugerido(d, procedimiento, obra_social)
+    return f"Sugerido: {pesos(sug, 0)} (lo último de este procedimiento)." if sug else None
 
 
 def opciones(d: pd.DataFrame, col: str, vacio: str) -> list[str]:
@@ -231,6 +332,8 @@ def pendiente_pago(x: pd.DataFrame) -> pd.Series:
         m = m | sin_imp
     if "_sin_cargo" in x.columns:
         m = m & ~x["_sin_cargo"]
+    if "_incluida" in x.columns:
+        m = m & ~x["_incluida"]
     return m & ~x["_cancelado"]
 
 
@@ -405,10 +508,11 @@ def dialogo(st: Any, accion_: str, fila: int, ctx: dict[str, Any], guardar: Call
         med = c1.selectbox("Médico (opcional)", _con(opciones(d, "_medico", "SIN MÉDICO"), r["_medico"], "SIN MÉDICO"),
                            key=f"{k}_md", accept_new_options=True,
                            help="Criopreservaciones y mantenimientos no llevan médico: dejalo en «SIN MÉDICO».")
-        sug = importe_sugerido(d, proc or "", os_ or "")
+        sug = importe_sugerido(d, proc or "", os_ or "", empresa=ctx.get("empresa"), fecha=prest, paciente=pac)
         imp = c2.number_input("Importe", min_value=0.0, value=float(r["_monto"]) or float(sug or 0), step=1000.0,
                               format="%.2f", key=f"{k}_im",
-                              help=f"Sugerido: {pesos(sug, 0)} (lo último de este procedimiento)." if sug else None)
+                              help=ayuda_importe(d, proc or "", os_ or "", empresa=ctx.get("empresa"), fecha=prest,
+                                                 paciente=pac))
         with st.expander("Factura, cobro y débito", expanded=bool(r["_facturada"])):
             c1, c2, c3 = st.columns(3)
             num = c1.text_input("N° de factura", value=r["_numero_factura"], key=f"{k}_n")
@@ -507,10 +611,11 @@ def dialogo_nuevo(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame]
         med = c1.selectbox("Médico (opcional)", _con(md_l, _texto(cir.get("Médico")), ""), key=f"{k}_md",
                            accept_new_options=True, index=0 if cir.get("Médico") else None,
                            placeholder="Ninguno (criopreservación, mantenimiento…)")
-        sug = importe_sugerido(d, proc or "", os_ or "")
+        sug = importe_sugerido(d, proc or "", os_ or "", empresa=ctx.get("empresa"), fecha=prest, paciente=pac)
         imp = c2.number_input("Importe", min_value=0.0, value=float(sug or 0), step=1000.0, format="%.2f",
-                              key=f"{k}_im_{proc}_{os_}",
-                              help=f"Sugerido: {pesos(sug, 0)} (lo último de este procedimiento)." if sug else None)
+                              key=f"{k}_im_{proc}_{os_}_{prest}",
+                              help=ayuda_importe(d, proc or "", os_ or "", empresa=ctx.get("empresa"), fecha=prest,
+                                                 paciente=pac))
         g, s = _botones(st, k)
         if g or s:
             if not _texto(pac):

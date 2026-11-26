@@ -286,7 +286,7 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
                                    "incompletos", "fecha_sin_numero")} | {"agenda": agenda, "salteados": vacio}
     h = _hoy(hoy)
     a = d[~d["_cancelado"]]
-    sin_f = a[~a["_facturada"] & ~a["_sin_cargo"]]
+    sin_f = a[~a["_facturada"] & ~a["_sin_cargo"] & ~a["_incluida"]]
     fact = a[a["_facturada"]]
     pend = fact[fact["_pendiente"] > 0.004]
     rep = a["_numero_factura"].astype(str).str.strip()

@@ -156,7 +156,7 @@ def _total(x: pd.DataFrame) -> str:
 def resumen_txt(x: pd.DataFrame) -> str:
     vivos = x[~x["_cancelado"]]
     partes = [f"{len(vivos)} paciente(s)"]
-    sf = vivos[~vivos["_facturada"] & ~vivos["_sin_cargo"]]
+    sf = vivos[~vivos["_facturada"] & ~vivos["_sin_cargo"] & ~vivos["_incluida"]]
     if len(sf):
         partes.append(f"{len(sf)} sin facturar ({pesos(float(sf['_monto'].sum()), 0)})")
         pv = int((sf["_dias_plazo"] < 0).sum())
@@ -405,7 +405,8 @@ def filas_solicitudes(ctx: dict[str, Any], ag: pd.DataFrame) -> pd.DataFrame:
     """Todas las solicitudes → la planilla con sus filas nuevas (importe sugerido, estado Pendiente)."""
     nuevo, d, hoy = ctx["raw"], ctx["d"], ctx["hoy"]
     for _, r in ag.iterrows():
-        imp = ff.importe_sugerido(d, _texto(r["Procedimiento"]), _texto(r["Obra social"])) if len(d) else None
+        imp = ff.importe_sugerido(d, _texto(r["Procedimiento"]), _texto(r["Obra social"]), empresa=ctx["empresa"],
+                                  fecha=r.get("Fecha"), paciente=r.get("Paciente")) if len(d) else None
         nuevo = cf.nueva_fila(nuevo, ctx["cols"], r.to_dict(), ff._txt_imp(imp), hoy,
                               observaciones="Cargada desde la Agenda de Quirófano")
     return nuevo
@@ -694,7 +695,8 @@ def celdas_registro(r: pd.Series, hoy: date) -> list[tuple[str, dict[str, Any]]]
         (_texto(r["_numero_factura"]) or "—", {"tenue": tenue}),
         (_f(r.get("_fecha_factura")) if r["_facturada"] else "", {"tenue": tenue}),
         (_f(r.get("_vencimiento")) if r["_facturada"] else "", {"tenue": tenue, "color": COLOR["rojo"] if venc_rojo else ""}),
-        (pesos(r["_monto"]) if r["_monto"] else ("en el total" if r.get("_incluida", False) else "—"),
+        (pesos(r["_monto"]) if r["_monto"] else ("en la aspiración" if r.get("_te_aspiracion", False) else
+                                                 "en el total" if r.get("_incluida", False) else "—"),
          {"num": True, "tenue": tenue}),
         (pesos(saldo) if saldo is not None else "", {"num": True, "tenue": tenue,
                                                     "color": "#9A6200" if saldo is not None and not r["_facturada"] else ""}),

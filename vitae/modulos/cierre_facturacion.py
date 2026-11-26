@@ -203,7 +203,7 @@ def numeros(d: pd.DataFrame, mes: str | None = None, anio: int | None = None) ->
 
     fact = g[g["_facturada"]]
     return {
-        "prestaciones": int(len(g)), "facturadas": int(len(fact)), "sin_facturar": int((~g["_facturada"] & ~g["_sin_cargo"]).sum()),
+        "prestaciones": int(len(g)), "facturadas": int(len(fact)), "sin_facturar": int((~g["_facturada"] & ~g["_sin_cargo"] & ~g["_incluida"]).sum()),
         "facturado": float(g["_monto"].sum()), "cobrado": float(g["_cobrado"].sum()),
         "por_cobrar": float(fact["_pendiente"].sum()), "vencido": float(fact.loc[fact["_vencido"], "_pendiente"].sum()),
         "debitos": float(g["_debito"].sum()), "debitos_abiertos": float(g.loc[g["_debito_abierto"], "_debito"].sum()),

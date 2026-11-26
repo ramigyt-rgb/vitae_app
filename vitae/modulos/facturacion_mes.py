@@ -145,7 +145,7 @@ def resumen(x: pd.DataFrame) -> dict[str, Any]:
         return {"prestaciones": 0, "pacientes": 0, "importe": 0.0, "sin_facturar": 0, "importe_sin_facturar": 0.0,
                 "facturado": 0.0, "cobrado": 0.0, "saldo": 0.0, "vencido": 0.0, "debitos": 0.0, "no_factura": 0,
                 "pendientes": 0}
-    sf = a[~a["_facturada"] & ~a["_sin_cargo"]]
+    sf = a[~a["_facturada"] & ~a["_sin_cargo"] & ~a["_incluida"]]
     fact = a[a["_facturada"]]
     return {"prestaciones": int(len(a)), "pacientes": int(a["_paciente"].nunique()),
             "importe": float(a["_monto"].sum()), "sin_facturar": int(len(sf)), "importe_sin_facturar": float(sf["_monto"].sum()),
@@ -199,7 +199,7 @@ def html_obras(x: pd.DataFrame) -> str:
     filas = []
     for os_, g in a.groupby("_obra_social"):
         fact = g[g["_facturada"]]
-        sf = g[~g["_facturada"] & ~g["_sin_cargo"]]
+        sf = g[~g["_facturada"] & ~g["_sin_cargo"] & ~g["_incluida"]]
         filas.append({"os": os_, "n": len(g), "imp": float(g["_monto"].sum()), "sf": float(sf["_monto"].sum()),
                       "nsf": len(sf), "fac": float(fact["_monto"].sum()), "cob": float(fact["_cobrado"].sum()),
                       "sal": float(fact["_pendiente"].sum()), "ven": bool(fact["_vencido"].any()),
