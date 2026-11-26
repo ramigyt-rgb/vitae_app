@@ -39,6 +39,7 @@ GRUPOS: list[tuple[str, list[tuple[str, str]]]] = [
         ("Agenda Quirófano", ":material/calendar_month:"),
         ("Farmacia", ":material/medication:"),
         ("Gine Vitae", ":material/female:"),
+        ("Mamografía", ":material/medical_services:"),
     ]),
     ("Contratos y tareas", [
         ("Contratos", ":material/contract:"),

@@ -63,7 +63,7 @@ TABLAS = {
     "cuenta_corriente_vm": "Cuenta Corriente VM", "deuda_total_manual": "Deuda total",
     "gastos_comunes": "Gastos comunes", "agenda_quirofano": "Agenda Quirófano", "gine_vitae": "Gine Vitae",
     gf.TABLA: "Gine Vitae · Formularios", "tareas_pendientes": "Tareas Pendientes", "vencimientos": "Vencimientos",
-    "contratos": "Contratos", "valores_alquileres": "Valores Alquileres",
+    "contratos": "Contratos", "valores_alquileres": "Valores Alquileres", "mamografia": "Mamografía",
 }
 
 
@@ -315,6 +315,18 @@ def vencimientos(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
     return r if r.get("hay") else {"hay": False}
 
 
+def mamografia(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
+    """Mismo cálculo que el módulo Mamografía (unidad de negocio)."""
+    from vitae.modulos import mamografia as mg
+
+    if _vacio(df):
+        return {"hay": False}
+    r = mg.resumen(mg.normalizar(df), hoy.date())
+    if not r.get("hay"):
+        return {"hay": False}
+    return {k: v for k, v in r.items() if k != "por_mes"}
+
+
 def alquileres(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
     """Mismo cálculo que el módulo Valores Alquileres (alquileres de consultorios)."""
     from vitae.modulos import alquileres as alq
@@ -378,6 +390,7 @@ def calcular(dfs: dict[str, pd.DataFrame], mes: str, hoy: pd.Timestamp | None = 
     m["vencimientos"] = _seguro(lambda: vencimientos(g("vencimientos"), hoy))
     m["contratos"] = _seguro(lambda: contratos(g("contratos"), g("valores_alquileres"), hoy))
     m["alquileres"] = _seguro(lambda: alquileres(g("valores_alquileres"), hoy))
+    m["mamografia"] = _seguro(lambda: mamografia(g("mamografia"), hoy))
     m["alertas"] = alertas(m)
     return m
 
@@ -433,6 +446,10 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
     if aq.get("falta_mes"):
         add("baja", f"Alquileres: falta cargar {nombre_mes(aq['proximo']).lower()}", "Usá «Nuevo mes»",
             "Valores Alquileres")
+    mg_ = m.get("mamografia", {})
+    if mg_.get("hay") and mg_.get("resultado_mes_anterior") is not None and mg_["resultado_mes_anterior"] < -0.5:
+        add("media", "Mamografía: el mes pasado se gastó más de lo que entró",
+            f"Resultado {pesos(mg_['resultado_mes_anterior'], 0)}", "Mamografía")
     for e, c in m["cc"].items():
         if c.get("pagar_vencido", 0) > 0.5:
             add("media", f"Cuenta corriente {e}: pagos vencidos", pesos(c["pagar_vencido"], 0), f"Cuenta Corriente {e}")
@@ -665,6 +682,12 @@ def html_tarjetas(m: dict[str, Any]) -> str:
     if ct.get("hay"):
         o += _linea("Contratos y alquileres", f"{ct['vencen_60']} vencen en 60 días",
                     sub_v=f"{ct['aumentos_30']} aumentos en 30 días")
+    mg_ = m.get("mamografia", {})
+    if mg_.get("hay"):
+        o += _linea("Mamografía", f"Resultado {pesos(mg_['resultado_mes'], 0)}",
+                    sub_k=f"Entró {pesos(mg_['ingresos_mes'], 0)} · se gastó {pesos(mg_['gastos_mes'], 0)}",
+                    sub_v=f"CMS por cobrar {pesos(mg_['pendiente_cms'], 0)} · OSDE {pesos(mg_['pendiente_osde'], 0)}",
+                    alerta_sub=False, clase_v="pg-mal" if mg_["resultado_mes"] < -0.5 else "")
     tarjetas.append(_tarjeta("Operación", f"{mes_txt} y próximos días", VERDE, o))
     return _CSS + '<div class="pg-grid">' + "".join(tarjetas) + "</div>"
 

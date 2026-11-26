@@ -20,7 +20,8 @@ from vitae.ia.acciones import (_escribir_fecha, _escribir_importe, _escribir_mes
                                _texto)
 
 MAX_FILAS = 100            # una sola acción no toca más de esto
-_PROHIBIDAS = {"usuarios_vitae", "luz_memoria", "luz_chat", "ia_conocimiento", "pacientes", "pacientes_accesos"}
+_PROHIBIDAS = {"usuarios_vitae", "luz_memoria", "luz_chat", "ia_conocimiento", "pacientes", "pacientes_accesos",
+               "mamografia"}
 TIPOS = ("datos_alta", "datos_cambio", "datos_baja")
 
 _PISTAS_FECHA = ("fecha", "vencim", "vto", "nacim", "ingreso", "egreso", "desde", "hasta")
