@@ -259,14 +259,25 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
     }
 
 
+def facturas_conjuntas(a: pd.DataFrame) -> pd.Series:
+    """N° de factura → cantidad de prestaciones, para las facturas que llevan varios pacientes de la misma obra
+    social (lo habitual en varias obras sociales). Sin anuladas."""
+    if a is None or a.empty:
+        return pd.Series(dtype=int)
+    x = a[~a["_cancelado"]] if "_cancelado" in a.columns else a
+    num = x["_numero_factura"].astype(str).str.strip()
+    x = x[num != ""]
+    num = num[num != ""]
+    if x.empty:
+        return pd.Series(dtype=int)
+    g = pd.DataFrame({"num": num, "os": x["_obra_social"].map(_sin_acentos)})
+    t = g.groupby("num").agg(n=("os", "size"), os=("os", "nunique"))
+    return t.loc[(t["n"] > 1) & (t["os"] == 1), "n"]
+
+
 def _repetidas(a: pd.DataFrame, rep: pd.Series) -> pd.DataFrame:
-    """Números de factura repetidos; no cuenta los de una misma presentación (una factura para el lote)."""
-    dup = a[(rep != "") & rep.duplicated(keep=False)]
-    if dup.empty or "_presentacion" not in dup.columns:
-        return dup
-    g = dup.groupby(dup["_numero_factura"].astype(str).str.strip())["_presentacion"]
-    mismo_lote = g.transform(lambda s: s.ne("").all() and s.nunique() == 1)
-    return dup[~mismo_lote]
+    """Repetidos de verdad (misma regla que la Calidad: ``facturacion._mascara_repetida``)."""
+    return a[fx._mascara_repetida(a)]
 
 
 CONTROLES = [
@@ -280,7 +291,8 @@ CONTROLES = [
     ("vencidas", "Facturas vencidas sin cobrar", "Reclamar a la obra social.", "alta"),
     ("debitos", "Débitos para reclamar", "La obra social pagó de menos y todavía no se resolvió.", "alta"),
     ("parcial_sin_debito", "Cobros parciales sin el débito anotado", "Anotá cuánto debitaron y por qué.", "media"),
-    ("repetidas", "Números de factura repetidos", "Puede ser un error de carga o una factura duplicada.", "media"),
+    ("repetidas", "Números de factura repetidos", "El mismo N° en obras sociales distintas o la misma prestación dos "
+     "veces (varios pacientes de una obra social en una factura no es error).", "media"),
     ("por_vencer", f"Facturas que vencen en {POR_VENCER} días", "Seguimiento preventivo.", "baja"),
     ("sin_vencimiento", "Facturas sin fecha de vencimiento", "Sin vencimiento no se puede controlar la cobranza.", "media"),
     ("incompletos", "Registros con datos incompletos", "Falta obra social, procedimiento, médico o importe.", "media"),

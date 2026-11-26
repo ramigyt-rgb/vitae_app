@@ -630,11 +630,35 @@ def _priority_queue(df: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values(["Impacto", "Pendiente"], ascending=False)
 
 
+def _mascara_repetida(a: pd.DataFrame) -> pd.Series:
+    """Factura repetida de verdad: el mismo N° en obras sociales distintas, o la misma prestación (paciente y
+    fecha) dos veces. Varios pacientes de una misma obra social con el mismo N° son una factura conjunta (lo
+    habitual en varias obras sociales): no es error. Tampoco un lote presentado con una sola factura."""
+    out = pd.Series(False, index=a.index)
+    if a.empty:
+        return out
+    num = a["_numero_factura"].astype(str).str.strip()
+    dup = (num != "") & num.duplicated(keep=False)
+    if not dup.any():
+        return out
+    x, n = a[dup], num[dup]
+    os_distintas = x["_obra_social"].map(_norm).groupby(n).transform("nunique") > 1
+    if "_presentacion" in x.columns:
+        mismo_lote = x["_presentacion"].astype(str).groupby(n).transform(lambda s: s.ne("").all() and s.nunique() == 1)
+    else:
+        mismo_lote = pd.Series(False, index=x.index)
+    pac = x["_paciente"].map(lambda p: " ".join(sorted(t for t in _norm(p).split("_") if t)))
+    fecha = (x["_prestacion"] if "_prestacion" in x.columns else x["_fecha_base"]).astype(str)
+    misma_prestacion = (n + "|" + pac + "|" + fecha).duplicated(keep=False)
+    out.loc[x.index] = ((os_distintas & ~mismo_lote.astype(bool)) | misma_prestacion).values
+    return out
+
+
 def _quality(df: pd.DataFrame, cols: dict[str, str | None]) -> tuple[pd.DataFrame, float]:
     active = df[~df["_cancelado"]].copy()
     n = max(len(active), 1)
     invoice_nonempty = active["_numero_factura"].astype(str).str.strip() != ""
-    duplicate_invoice = invoice_nonempty & active["_numero_factura"].duplicated(keep=False)
+    duplicate_invoice = invoice_nonempty & _mascara_repetida(active)
     checks = [
         ("Sin importe", int((active["_monto"] <= 0).sum()), "Revisar filas con importe cero o no reconocido."),
         ("Sin fecha base", int(active["_fecha_base"].isna().sum()), "Impide análisis temporal y proyecciones."),
@@ -1224,7 +1248,8 @@ _DESCRIPCION_CONTROLES = {
     "Sin importe": "Filas con importe vacío, cero o que no se pudo leer.",
     "Sin fecha base": "Filas sin «mes»: no entran en ningún período ni gráfico mensual.",
     "Sin número de factura": "Filas con importe pero sin N° de factura.",
-    "Factura repetida": "El mismo N° de factura aparece en más de una fila.",
+    "Factura repetida": "El mismo N° en obras sociales distintas, o la misma prestación dos veces (varios pacientes "
+                        "de una obra social en una misma factura no es error: es una factura conjunta).",
     "Pendiente sin vencimiento": "Saldos pendientes sin fecha de vencimiento: no se puede saber si están vencidos.",
     "Cobrado sin fecha de pago": "Marcados como cobrados pero sin fecha de pago.",
     "Sin obra social": "Filas sin obra social.",
@@ -1239,7 +1264,7 @@ def _mascaras_calidad(f: pd.DataFrame) -> dict[str, pd.Series]:
         "Sin importe": a["_monto"] <= 0,
         "Sin fecha base": a["_fecha_base"].isna(),
         "Sin número de factura": ~con_factura & (a["_monto"] > 0),
-        "Factura repetida": con_factura & a["_numero_factura"].duplicated(keep=False),
+        "Factura repetida": con_factura & _mascara_repetida(a),
         "Pendiente sin vencimiento": (a["_pendiente"] > 0) & a["_vencimiento"].isna(),
         "Cobrado sin fecha de pago": (a["_cobrado"] > 0) & a["_fecha_pago"].isna(),
         "Sin obra social": a["_obra_social"] == "SIN OBRA SOCIAL",

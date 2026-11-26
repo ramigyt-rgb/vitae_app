@@ -259,8 +259,8 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                 ff.dialogo_nuevo(st, ctx, guardar, key)
         orden = st.selectbox("Orden", ff.ORDENES, key=f"{key}_ff_orden", label_visibility="collapsed")
         x = ff.ordenar(ff.filtrar(d, filtro), orden)
-        ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}",
-                         vacio="No hay registros en este grupo.")
+        ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}",
+                        vacio="No hay registros en este grupo.")
         return
 
     # ---- Hoy ---------------------------------------------------------------------------
@@ -313,7 +313,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
         else:
             x, _, _ = cf.grupo(c, "Facturar")
-            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="facturar")
+            ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista="facturar", vista="Por paciente")
         if len(c["repetidas"]) or not c["salteados"].empty:
             with st.expander("Numeración: repetidos y salteados", icon=":material/pin:"):
                 if len(c["repetidas"]):
@@ -344,7 +344,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if x.empty:
             st.markdown('<div class="fp-ok">✅ Nada vencido ni por vencer esta semana.</div>', unsafe_allow_html=True)
         else:
-            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="cobrar")
+            ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista="cobrar")
         st.markdown('<div class="cf-tit">Seguimiento de la cobranza</div>', unsafe_allow_html=True)
         fx._seccion_cobranza(data, fx._metrics(data), f"{key}_cob")
         siguiente("cobrar")
@@ -368,7 +368,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if x.empty:
             st.markdown('<div class="fp-ok">✅ No hay débitos para reclamar.</div>', unsafe_allow_html=True)
         else:
-            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="debitos")
+            ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista="debitos")
         if len(todos):
             st.markdown('<div class="cf-tit">Débitos por obra social</div>', unsafe_allow_html=True)
             t = todos.assign(_e=todos["_debito_estado"].replace("", "A reclamar")).pivot_table(
