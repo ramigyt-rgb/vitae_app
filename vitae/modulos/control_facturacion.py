@@ -415,14 +415,16 @@ def _escribir(raw: pd.DataFrame, fila: int, col: str, valor: Any, tipo: str, hoy
 def aplicar(raw: pd.DataFrame, cols: dict[str, str | None], cambios: list[dict[str, Any]],
             hoy: date | None = None) -> pd.DataFrame:
     """cambios: [{"fila": índice, "campo": numero_factura|fecha_factura|vencimiento|fecha_pago|estado|
-    obra_social|procedimiento|medico|monto|debito|debito_estado|debito_motivo, "valor": ...}]"""
+    obra_social|procedimiento|medico|monto|debito|debito_estado|debito_motivo|paciente|mes|observaciones,
+    "valor": ...}]"""
     out = raw.copy().astype(object)
     nombres = {"numero_factura": "numero_factura", "fecha_factura": "fecha_factura", "vencimiento": "vencimiento",
                "fecha_pago": "fecha_pago", "estado": "estado", "obra_social": "obra_social",
                "procedimiento": "procedimiento", "medico": "medico_responsable", "monto": "valor_pesos",
-               "debito": "debito", "debito_estado": "debito_estado", "debito_motivo": "debito_motivo"}
+               "debito": "debito", "debito_estado": "debito_estado", "debito_motivo": "debito_motivo",
+               "paciente": "afiliado", "mes": "mes", "observaciones": "observaciones"}
     tipos = {"fecha_factura": "fecha", "vencimiento": "fecha", "fecha_pago": "fecha", "monto": "importe",
-             "debito": "importe"}
+             "debito": "importe", "mes": "fecha"}
     for c in cambios:
         campo = c["campo"]
         col = cols.get(campo) or nombres[campo]

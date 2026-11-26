@@ -14,7 +14,8 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
 - Cierre: los meses del año con su estado; el control de cada mes; cerrar (se guarda en
   ``facturacion_cierres``) y el PDF del mes y del año.
 - Análisis: lo de antes (resumen, cobranza, producción, calidad) con filtros.
-- Planilla: registros, cargar a mano, importar y exportar.
+- Fichas: todos los registros como tarjetas (filtros, búsqueda, nuevo registro).
+- Tabla (la planilla tipo Excel, por si hace falta), Importar y Exportar.
 """
 from __future__ import annotations
 
@@ -27,16 +28,15 @@ import pandas as pd
 import vitae.modulos.cierre_facturacion as cfx
 import vitae.modulos.control_facturacion as cf
 import vitae.modulos.facturacion as fx
+import vitae.modulos.facturacion_fichas as ff
 from vitae.modulos.pagos_pendientes import pesos
 
 PASOS = ["hoy", "cargar", "facturar", "cobrar", "debitos", "cierre"]
-EXTRAS = ["analisis", "registros", "cargar_mano", "importar", "exportar"]
+EXTRAS = ["fichas", "analisis", "tabla", "importar", "exportar"]
 NOMBRES = {"hoy": "Hoy", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "cobrar": "3 · Cobrar",
-           "debitos": "4 · Débitos", "cierre": "5 · Cierre", "analisis": "Análisis", "registros": "Registros",
-           "cargar_mano": "Cargar a mano", "importar": "Importar", "exportar": "Exportar"}
-ICONOS = {"analisis": ":material/insights:", "registros": ":material/table_view:", "cargar_mano": ":material/add_circle:",
-          "importar": ":material/upload_file:", "exportar": ":material/download:"}
-LEGACY = {"registros": "Editar tabla", "cargar_mano": "Cargar", "importar": "Importar"}
+           "debitos": "4 · Débitos", "cierre": "5 · Cierre", "fichas": "Fichas", "analisis": "Análisis",
+           "tabla": "Tabla", "importar": "Importar", "exportar": "Exportar"}
+LEGACY = {"tabla": "Editar tabla", "importar": "Importar"}
 ANALISIS = ["Resumen", "Cobranza", "Producción", "Calidad"]
 
 _CSS = """<style>
@@ -240,6 +240,26 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             fx._seccion_calidad(filtrado, cols, key)
         return
 
+    # ---- Fichas: todos los registros -----------------------------------------------------
+    if vista == "fichas":
+        d = ctx["d"]
+        st.markdown(_titulo("", "Fichas", "Todos los pacientes cargados, como tarjetas. Filtrá, buscá y tocá el botón "
+                            "de cada uno para avanzar."), unsafe_allow_html=True)
+        cnt = ff.cuentas_filtros(d)
+        c1, c2 = st.columns([4, 1.3])
+        with c1:
+            filtro = st.pills("Mostrar", ff.FILTROS, default="Para facturar", key=f"{key}_ff_filtro",
+                              format_func=lambda f_: f"{f_} {cnt.get(f_, 0)}", label_visibility="collapsed") or "Todas"
+        with c2:
+            if st.button("Nuevo registro", key=f"{key}_nuevo", type="primary", use_container_width=True,
+                         icon=":material/add:"):
+                ff.dialogo_nuevo(st, ctx, guardar, key)
+        orden = st.selectbox("Orden", ff.ORDENES, key=f"{key}_ff_orden", label_visibility="collapsed")
+        x = ff.ordenar(ff.filtrar(d, filtro), orden)
+        ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}",
+                         vacio="No hay registros en este grupo.")
+        return
+
     # ---- Hoy ---------------------------------------------------------------------------
     if vista == "hoy":
         _hoy(st, ctx, key=key, ir=ir, leer_tabla=leer_tabla, guardar_tabla=guardar_tabla)
@@ -253,14 +273,18 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if c["agenda"].empty and not n["cargar"]:
             st.markdown('<div class="fp-ok">✅ Todas las cirugías realizadas están cargadas y los datos están completos.'
                         '</div>', unsafe_allow_html=True)
-        cf.render_agenda(ctx, guardar=guardar, key=f"{key}_cf")
+        ff.render_agenda_fichas(st, ctx, guardar=guardar, key=key)
         x, _, _ = cf.grupo(c, "Completar datos")
         if len(x):
             st.markdown(f'<div class="cf-tit">Datos para completar · {len(x)}</div>', unsafe_allow_html=True)
-            cf.render_grupo(ctx, "Completar datos", guardar=guardar, key=f"{key}_cf", en_expander=False)
+            rep_ = c["repetidas"].index if len(c["repetidas"]) else []
+            notas = {i: f"N° {x.loc[i, '_numero_factura']} repetido" for i in x.index if i in rep_}
+            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="completar", forzar_incompleta=True,
+                             notas=notas)
+        if st.button("Nuevo registro", key=f"{key}_nuevo_cargar", icon=":material/add_circle:"):
+            ff.dialogo_nuevo(st, ctx, guardar, key)
         with st.expander("Calidad de la planilla (qué columnas se leen y qué falta)", icon=":material/verified:"):
             fx._seccion_calidad(data, cols, f"{key}_cal")
-        st.button("Cargar un registro a mano", key=f"{key}_a_mano", on_click=ir("cargar_mano"), icon=":material/add_circle:")
         siguiente("cargar")
         return
 
@@ -281,9 +305,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
         else:
             x, _, _ = cf.grupo(c, "Facturar")
-            plazo = pd.Series([_dias_txt(v, "quedan {} días", "venció hace {} días") for v in x["_dias_plazo"]],
-                              index=x.index)
-            cf.render_grupo(ctx, "Facturar", guardar=guardar, key=f"{key}_cf", en_expander=False, extra={"Plazo": plazo})
+            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="facturar")
         if len(c["repetidas"]) or not c["salteados"].empty:
             with st.expander("Numeración: repetidos y salteados", icon=":material/pin:"):
                 if len(c["repetidas"]):
@@ -314,14 +336,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if x.empty:
             st.markdown('<div class="fp-ok">✅ Nada vencido ni por vencer esta semana.</div>', unsafe_allow_html=True)
         else:
-            h = pd.Timestamp(hoy_d)
-            sit = pd.Series([("vencida hace " + str(int((h - r["_vencimiento"]).days)) + " días") if r["_vencido"] and
-                             pd.notna(r["_vencimiento"]) else ("vencida" if r["_vencido"] else (
-                                 f"vence el {cf._fecha_txt(r['_vencimiento'])}" if pd.notna(r["_vencimiento"])
-                                 else "sin vencimiento")) for _, r in x.iterrows()], index=x.index)
-            saldo = pd.Series([pesos(v) for v in x["_pendiente"]], index=x.index)
-            cf.render_grupo(ctx, "Cobrar", guardar=guardar, key=f"{key}_cf", en_expander=False,
-                            extra={"Situación": sit, "Saldo": saldo})
+            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="cobrar")
         st.markdown('<div class="cf-tit">Seguimiento de la cobranza</div>', unsafe_allow_html=True)
         fx._seccion_cobranza(data, fx._metrics(data), f"{key}_cob")
         siguiente("cobrar")
@@ -345,7 +360,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if x.empty:
             st.markdown('<div class="fp-ok">✅ No hay débitos para reclamar.</div>', unsafe_allow_html=True)
         else:
-            cf.render_grupo(ctx, "Débitos", guardar=guardar, key=f"{key}_cf", en_expander=False)
+            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="debitos")
         if len(todos):
             st.markdown('<div class="cf-tit">Débitos por obra social</div>', unsafe_allow_html=True)
             t = todos.assign(_e=todos["_debito_estado"].replace("", "A reclamar")).pivot_table(
