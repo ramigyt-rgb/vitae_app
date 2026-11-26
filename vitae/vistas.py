@@ -376,6 +376,40 @@ def _auth_role_permissions(role: str) -> list[str]:
     return []
 
 
+# Usuarios con acceso fijo: sólo estos módulos (ver, editar y agregar) y nada más, aunque la
+# planilla de usuarios diga otra cosa (ni Administrador, ni Panel general, ni Configuración, ni
+# Luz, ni Pacientes). Se puede cambiar sin tocar el código con el secreto USUARIOS_RESTRINGIDOS:
+#   USUARIOS_RESTRINGIDOS = "jmartin: Planes de pagos y préstamos | Deudas Impositivas VMR | Deudas Impositivas VM"
+# (un usuario por línea).
+USUARIOS_RESTRINGIDOS_POR_DEFECTO = {
+    "jmartin": ["Planes de pagos y préstamos", "Deudas Impositivas VMR", "Deudas Impositivas VM"],
+}
+
+
+def _usuarios_restringidos() -> dict[str, list[str]]:
+    try:
+        from vitae.core.config import _secret
+
+        crudo = str(_secret("USUARIOS_RESTRINGIDOS", "") or "").strip()
+    except Exception:
+        crudo = ""
+    if not crudo:
+        return USUARIOS_RESTRINGIDOS_POR_DEFECTO
+    out: dict[str, list[str]] = {}
+    for linea in crudo.splitlines():
+        if ":" in linea:
+            u, mods = linea.split(":", 1)
+            out[u.strip().lower()] = [m.strip() for m in mods.split("|") if m.strip()]
+    return out or USUARIOS_RESTRINGIDOS_POR_DEFECTO
+
+
+def _auth_restriccion(user: dict[str, Any] | None) -> list[str] | None:
+    """Los módulos fijos del usuario, o None si no tiene acceso fijo."""
+    if not user:
+        return None
+    return _usuarios_restringidos().get(str(user.get("usuario", "")).strip().lower())
+
+
 def _auth_current_user() -> dict[str, Any] | None:
     user = st.session_state.get("vitae_auth_user")
     return user if isinstance(user, dict) and user.get("usuario") else None
@@ -383,6 +417,8 @@ def _auth_current_user() -> dict[str, Any] | None:
 
 def _auth_is_admin(user: dict[str, Any] | None = None) -> bool:
     user = user or _auth_current_user()
+    if _auth_restriccion(user) is not None:
+        return False
     return bool(user and str(user.get("rol", "")).strip().lower() == "administrador")
 
 
@@ -556,6 +592,9 @@ def _auth_user_permissions(user: dict[str, Any] | None = None) -> set[str]:
     user = user or _auth_current_user()
     if not user:
         return set()
+    fijos = _auth_restriccion(user)
+    if fijos is not None:
+        return {f"mod::{m}" for m in fijos if m in MODULES}
     if _auth_is_admin(user):
         return set(_auth_all_permissions())
     return set(_auth_unpack(user.get("permisos", "")))
@@ -565,6 +604,9 @@ def _auth_user_companies(user: dict[str, Any] | None = None) -> set[str]:
     user = user or _auth_current_user()
     if not user:
         return set()
+    fijos = _auth_restriccion(user)
+    if fijos is not None:  # las empresas de sus módulos, para que puedan abrirse
+        return {str(MODULES[m].get("empresa", "") or "").strip().upper() for m in fijos if m in MODULES} & set(_VITAE_EMPRESAS)
     if _auth_is_admin(user):
         return set(_VITAE_EMPRESAS)
     return {v.upper() for v in _auth_unpack(user.get("empresas", ""))}
@@ -1024,6 +1066,11 @@ def _auth_render_permissions_management() -> None:
         st.dataframe(pd.DataFrame({"Acceso": list(catalog.values()), "Estado": ["Permitido"] * len(catalog)}), use_container_width=True, hide_index=True)
         return
 
+    fijos = _auth_restriccion(row.to_dict())
+    if fijos is not None:
+        st.info(f"{selected} tiene acceso fijo (definido en la app): sólo " + ", ".join(fijos) +
+                " — puede ver, editar y agregar ahí, y no ve nada más. Lo que se cambie acá no se aplica.")
+        return
     current_permissions = set(_auth_unpack(row["permisos"]))
     current_companies = [c for c in _auth_unpack(row["empresas"]) if c in _VITAE_EMPRESAS]
     with st.container(border=True):
@@ -1517,6 +1564,8 @@ LUZ_USUARIOS_POR_DEFECTO = "Ramiro Char"
 
 
 def _auth_ve_luz(user: dict[str, Any] | None = None) -> bool:
+    if _auth_restriccion(user or _auth_current_user()) is not None:
+        return False
     return _auth_en_lista("LUZ_USUARIOS", LUZ_USUARIOS_POR_DEFECTO, user)
 
 
@@ -1529,7 +1578,7 @@ PACIENTES_USUARIOS_POR_DEFECTO = "rchar"
 def _auth_ve_pacientes(user: dict[str, Any] | None = None) -> bool:
     """Sólo el USUARIO exacto (no se compara con el nombre, para que nadie entre por llamarse parecido)."""
     user = user or _auth_current_user()
-    if not user:
+    if not user or _auth_restriccion(user) is not None:
         return False
     try:
         from vitae.core.config import _secret
