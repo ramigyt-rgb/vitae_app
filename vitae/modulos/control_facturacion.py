@@ -472,6 +472,158 @@ _CSS = """<style>
 </style>"""
 
 
+def contexto(raw: pd.DataFrame | None, *, empresa: str, agenda_raw: pd.DataFrame | None = None,
+             otras_facturaciones: list[pd.DataFrame] | None = None, hoy: date | None = None) -> dict[str, Any]:
+    """Todo lo que necesitan los pasos (Hoy, Cargar, Facturar, Cobrar, Débitos, Cierre), calculado una vez."""
+    hoy_d = hoy or date.today()
+    raw = raw.reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
+    d, cols = preparar(raw, hoy_d)
+    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy_d, empresa,
+                             _historial(raw, otras_facturaciones, empresa))
+    c = controles(d, ag, hoy_d)
+    return {"raw": raw, "d": d, "cols": cols, "c": c, "b": bandeja(c, hoy_d), "t": tabla_controles(c),
+            "hoy": hoy_d, "empresa": empresa, "agenda_raw": agenda_raw}
+
+
+def _sin_dup(x: pd.DataFrame) -> pd.DataFrame:
+    return x.loc[~x.index.duplicated()] if len(x) else x
+
+
+def grupo(c: dict[str, pd.DataFrame], nombre: str) -> tuple[pd.DataFrame, dict[str, str], str]:
+    """Las filas de cada grupo para resolver, sus columnas editables y la ayuda."""
+    if nombre == "Facturar":
+        resto = c["sin_facturar"].drop(index=list(c["sin_facturar_vencido"].index) + list(c["sin_facturar_proximo"].index),
+                                       errors="ignore")
+        x = pd.concat([c["sin_facturar_proximo"].sort_values("_dias_plazo"),
+                       c["sin_facturar_vencido"].sort_values("_dias_plazo", ascending=False),
+                       resto.sort_values("_dias_plazo")])
+        return (_sin_dup(x), {"N° factura": "numero_factura", "Fecha factura": "fecha_factura", "Vencimiento": "vencimiento"},
+                "Cargá el número y la fecha de factura (y el vencimiento si lo sabés). Arriba, lo que está por perder el "
+                "plazo; después, lo que ya lo pasó; al final, el resto.")
+    if nombre == "Cobrar":
+        x = pd.concat([c["vencidas"].sort_values("_pendiente", ascending=False), c["por_vencer"], c["sin_vencimiento"]])
+        return (_sin_dup(x), {"Vencimiento": "vencimiento", "Fecha de pago": "fecha_pago", "Estado": "estado",
+                              "Débito": "debito", "Motivo del débito": "debito_motivo"},
+                "Cuando cobres, poné la fecha de pago y el estado (Completo o Parcial). Si pagaron de menos, anotá el débito.")
+    if nombre == "Débitos":
+        x = pd.concat([c["debitos"].sort_values("_debito", ascending=False), c["parcial_sin_debito"]])
+        return (_sin_dup(x), {"Débito": "debito", "Estado del débito": "debito_estado", "Motivo del débito": "debito_motivo"},
+                "Estado del débito: A reclamar, Reclamado, Recuperado o Aceptado (no se recupera).")
+    if nombre == "Completar datos":
+        x = pd.concat([c["incompletos"], c["repetidas"]])
+        return (_sin_dup(x), {"Obra social": "obra_social", "Procedimiento": "procedimiento", "Médico": "medico",
+                              "Importe": "monto", "N° factura": "numero_factura"},
+                "Completá lo que falta o corregí el número repetido.")
+    raise KeyError(nombre)
+
+
+_ACTUALES = {"numero_factura": "_numero_factura", "fecha_factura": "_fecha_factura", "vencimiento": "_vencimiento",
+             "fecha_pago": "_fecha_pago", "estado": "_estado_original", "debito": "_debito",
+             "debito_estado": "_debito_estado", "debito_motivo": "_debito_motivo", "obra_social": "_obra_social",
+             "procedimiento": "_procedimiento", "medico": "_medico", "monto": "_monto"}
+
+
+def _valor_actual(r: pd.Series, campo: str) -> str:
+    v = r[_ACTUALES[campo]]
+    if isinstance(v, pd.Timestamp):
+        return _fecha_txt(v)
+    if campo in ("debito", "monto"):
+        return f"{float(v):.2f}".replace(".", ",") if float(v or 0) else ""
+    t_ = _texto(v)
+    return "" if t_.startswith("SIN ") else t_
+
+
+def _guardador(st: Any, key: str, guardar: Callable[[pd.DataFrame], Any]) -> tuple[int, Callable[[pd.DataFrame, str], None]]:
+    rev = int(st.session_state.get(f"{key}_rev", 0))
+
+    def _guardar(nuevo: pd.DataFrame, aviso: str) -> None:
+        try:
+            guardar(nuevo)
+        except Exception as exc:
+            st.error(f"No se pudo guardar: {exc}")
+            return
+        st.session_state[f"{key}_rev"] = rev + 1
+        st.toast(aviso, icon=":material/check_circle:")
+        st.rerun()
+
+    return rev, _guardar
+
+
+def render_agenda(ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any], key: str = "cf") -> None:
+    """Cirugías realizadas en la Agenda que faltan cargar: se agregan con el importe."""
+    import streamlit as st
+
+    c, raw, cols, empresa, hoy_d = ctx["c"], ctx["raw"], ctx["cols"], ctx["empresa"], ctx["hoy"]
+    if c["agenda"].empty:
+        return
+    rev, _guardar = _guardador(st, key, guardar)
+    st.markdown('<div class="cf-tit">Cirugías realizadas sin cargar en facturación</div>'
+                f'<div class="cf-sub">Sólo las de procedimientos de {html.escape(empresa)} (según lo que ya facturaste). '
+                'Tildá las que agregás, poné el importe y tocá «Agregar».</div>', unsafe_allow_html=True)
+    tab = c["agenda"].assign(Agregar=False, Importe="", Fecha=c["agenda"]["Fecha"].map(_fecha_txt))
+    ed = st.data_editor(tab[["Agregar", "Fecha", "Paciente", "Procedimiento", "Médico", "Obra social", "Importe"]],
+                        hide_index=True, use_container_width=True, key=f"{key}_ag_{rev}",
+                        disabled=["Fecha", "Paciente", "Procedimiento", "Médico"])
+    if st.button(f"Agregar a Facturación {empresa}", key=f"{key}_ag_ok", icon=":material/add:"):
+        nuevo = raw
+        for i, r in ed[ed["Agregar"]].iterrows():
+            cir = c["agenda"].iloc[i].to_dict() | {"Obra social": r["Obra social"]}
+            nuevo = nueva_fila(nuevo, cols, cir, r["Importe"], hoy_d)
+        if len(nuevo) > len(raw):
+            _guardar(nuevo, f"{len(nuevo) - len(raw)} cirugía(s) agregada(s)")
+        else:
+            st.info("Tildá al menos una cirugía.")
+
+
+def render_grupo(ctx: dict[str, Any], nombre: str, *, guardar: Callable[[pd.DataFrame], Any], key: str = "cf",
+                 en_expander: bool = True, extra: dict[str, pd.Series] | None = None) -> None:
+    """La lista de un grupo (Facturar, Cobrar, Débitos, Completar datos) para resolver ahí mismo."""
+    import streamlit as st
+
+    x, campos, ayuda = grupo(ctx["c"], nombre)
+    if x.empty:
+        return
+    raw, cols, hoy_d = ctx["raw"], ctx["cols"], ctx["hoy"]
+    rev, _guardar = _guardador(st, key, guardar)
+
+    def cuerpo() -> None:
+        st.caption(ayuda)
+        base = pd.DataFrame({"fila": x.index, "Paciente": x["_paciente"], "Obra social ": x["_obra_social"],
+                             "Procedimiento ": x["_procedimiento"], "Mes": x["_prestacion"].map(_fecha_txt),
+                             "Importe ": x["_monto"].map(lambda v: pesos(v) if v else "")})
+        for etiqueta, serie in (extra or {}).items():
+            base[etiqueta] = [serie.get(i, "") for i in x.index]
+        for etiqueta, campo in campos.items():
+            base[etiqueta] = [_valor_actual(r, campo) for _, r in x.iterrows()]
+        conf: dict[str, Any] = {"fila": None}
+        if "Estado" in campos:
+            conf["Estado"] = st.column_config.SelectboxColumn(options=["Pendiente", "Completo", "Parcial", "Vencido",
+                                                                       "Anulado"])
+        if "Estado del débito" in campos:
+            conf["Estado del débito"] = st.column_config.SelectboxColumn(options=ESTADOS_DEBITO)
+        fijas = ["Paciente", "Obra social ", "Procedimiento ", "Mes", "Importe "] + list(extra or {})
+        ed = st.data_editor(base.reset_index(drop=True), hide_index=True, use_container_width=True,
+                            key=f"{key}_{nombre}_{rev}", disabled=fijas, column_config=conf)
+        if st.button("Guardar", key=f"{key}_{nombre}_ok", type="primary", icon=":material/save:"):
+            cambios = []
+            for (_, nue), (_, ori) in zip(ed.iterrows(), base.reset_index(drop=True).iterrows()):
+                for etiqueta, campo in campos.items():
+                    if _texto(nue[etiqueta]) != _texto(ori[etiqueta]):
+                        cambios.append({"fila": int(nue["fila"]), "campo": campo, "valor": nue[etiqueta]})
+                        if campo == "debito" and _texto(nue[etiqueta]) and "Estado del débito" not in campos:
+                            cambios.append({"fila": int(nue["fila"]), "campo": "debito_estado", "valor": "A reclamar"})
+            if cambios:
+                _guardar(aplicar(raw, cols, cambios, hoy_d), f"{len(cambios)} dato(s) guardado(s)")
+            else:
+                st.info("No hay cambios para guardar.")
+
+    if en_expander:
+        with st.expander(f"{nombre} · {len(x)}", icon=":material/edit_note:"):
+            cuerpo()
+    else:
+        cuerpo()
+
+
 def render_control(raw: pd.DataFrame, *, empresa: str, guardar: Callable[[pd.DataFrame], Any],
                    agenda_raw: pd.DataFrame | None = None, otras_facturaciones: list[pd.DataFrame] | None = None,
                    key: str = "cf", hoy: date | None = None) -> None:
@@ -550,83 +702,7 @@ def render_control(raw: pd.DataFrame, *, empresa: str, guardar: Callable[[pd.Dat
         st.dataframe(vista_b, hide_index=True, use_container_width=True, height=min(38 + 35 * len(b), 420))
 
     # Resolver por grupo
-    if not c["agenda"].empty:
-        st.markdown('<div class="cf-tit">Cirugías realizadas sin cargar en facturación</div>'
-                    f'<div class="cf-sub">Sólo las de procedimientos de {html.escape(empresa)} (según lo que ya facturaste). '
-                    'Poné el importe y agregalas.</div>',
-                    unsafe_allow_html=True)
-        tab = c["agenda"].assign(Agregar=False, Importe="", Fecha=c["agenda"]["Fecha"].map(_fecha_txt))
-        ed = st.data_editor(tab[["Agregar", "Fecha", "Paciente", "Procedimiento", "Médico", "Obra social", "Importe"]],
-                            hide_index=True, use_container_width=True, key=f"{key}_ag_{rev}",
-                            disabled=["Fecha", "Paciente", "Procedimiento", "Médico"])
-        if st.button(f"Agregar a Facturación {empresa}", key=f"{key}_ag_ok", icon=":material/add:"):
-            nuevo = raw
-            for i, r in ed[ed["Agregar"]].iterrows():
-                cir = c["agenda"].iloc[i].to_dict() | {"Obra social": r["Obra social"]}
-                nuevo = nueva_fila(nuevo, cols, cir, r["Importe"], hoy_d)
-            if len(nuevo) > len(raw):
-                _guardar(nuevo, f"{len(nuevo) - len(raw)} cirugía(s) agregada(s)")
-
-    grupos = [
-        ("Facturar", pd.concat([c["sin_facturar_vencido"], c["sin_facturar_proximo"],
-                                c["sin_facturar"].drop(index=list(c["sin_facturar_vencido"].index) +
-                                                       list(c["sin_facturar_proximo"].index), errors="ignore")]),
-         {"N° factura": "numero_factura", "Fecha factura": "fecha_factura", "Vencimiento": "vencimiento"},
-         "Cargá el número y la fecha de factura (y el vencimiento si lo sabés)."),
-        ("Cobrar", pd.concat([c["vencidas"], c["por_vencer"], c["sin_vencimiento"]]).loc[lambda x: ~x.index.duplicated()],
-         {"Vencimiento": "vencimiento", "Fecha de pago": "fecha_pago", "Estado": "estado", "Débito": "debito",
-          "Motivo del débito": "debito_motivo"},
-         "Cuando cobres, poné la fecha de pago y el estado (Completo o Parcial). Si pagaron de menos, anotá el débito."),
-        ("Débitos", pd.concat([c["debitos"], c["parcial_sin_debito"]]).loc[lambda x: ~x.index.duplicated()],
-         {"Débito": "debito", "Estado del débito": "debito_estado", "Motivo del débito": "debito_motivo"},
-         "Estado del débito: A reclamar, Reclamado, Recuperado o Aceptado (no se recupera)."),
-        ("Completar datos", pd.concat([c["incompletos"], c["repetidas"]]).loc[lambda x: ~x.index.duplicated()],
-         {"Obra social": "obra_social", "Procedimiento": "procedimiento", "Médico": "medico", "Importe": "monto",
-          "N° factura": "numero_factura"},
-         "Completá lo que falta o corregí el número repetido."),
-    ]
-    actuales = {"numero_factura": "_numero_factura", "fecha_factura": "_fecha_factura", "vencimiento": "_vencimiento",
-                "fecha_pago": "_fecha_pago", "estado": "_estado_original", "debito": "_debito",
-                "debito_estado": "_debito_estado", "debito_motivo": "_debito_motivo", "obra_social": "_obra_social",
-                "procedimiento": "_procedimiento", "medico": "_medico", "monto": "_monto"}
-
-    def valor_actual(r: pd.Series, campo: str) -> str:
-        v = r[actuales[campo]]
-        if isinstance(v, pd.Timestamp):
-            return _fecha_txt(v)
-        if campo in ("debito", "monto"):
-            return f"{float(v):.2f}".replace(".", ",") if float(v or 0) else ""
-        t_ = _texto(v)
-        return "" if t_.startswith("SIN ") else t_
-
-    for nombre, x, campos, ayuda in grupos:
-        if x.empty:
-            continue
-        with st.expander(f"{nombre} · {len(x)}", icon=":material/edit_note:"):
-            st.caption(ayuda)
-            base = pd.DataFrame({"fila": x.index, "Paciente": x["_paciente"], "Obra social ": x["_obra_social"],
-                                 "Procedimiento ": x["_procedimiento"], "Mes": x["_prestacion"].map(_fecha_txt),
-                                 "Importe ": x["_monto"].map(lambda v: pesos(v) if v else "")})
-            for etiqueta, campo in campos.items():
-                base[etiqueta] = [valor_actual(r, campo) for _, r in x.iterrows()]
-            conf = {"fila": None}
-            if "Estado" in campos:
-                conf["Estado"] = st.column_config.SelectboxColumn(options=["Pendiente", "Completo", "Parcial",
-                                                                           "Vencido", "Anulado"])
-            if "Estado del débito" in campos:
-                conf["Estado del débito"] = st.column_config.SelectboxColumn(options=ESTADOS_DEBITO)
-            fijas = ["Paciente", "Obra social ", "Procedimiento ", "Mes", "Importe "]
-            ed = st.data_editor(base.reset_index(drop=True), hide_index=True, use_container_width=True,
-                                key=f"{key}_{nombre}_{rev}", disabled=fijas, column_config=conf)
-            if st.button("Guardar", key=f"{key}_{nombre}_ok", type="primary", icon=":material/save:"):
-                cambios = []
-                for (_, nue), (_, ori) in zip(ed.iterrows(), base.reset_index(drop=True).iterrows()):
-                    for etiqueta, campo in campos.items():
-                        if _texto(nue[etiqueta]) != _texto(ori[etiqueta]):
-                            cambios.append({"fila": int(nue["fila"]), "campo": campo, "valor": nue[etiqueta]})
-                            if campo == "debito" and _texto(nue[etiqueta]) and "Estado del débito" not in campos:
-                                cambios.append({"fila": int(nue["fila"]), "campo": "debito_estado", "valor": "A reclamar"})
-                if cambios:
-                    _guardar(aplicar(raw, cols, cambios, hoy_d), f"{len(cambios)} dato(s) guardado(s)")
-                else:
-                    st.info("No hay cambios para guardar.")
+    ctx = {"raw": raw, "d": d, "cols": cols, "c": c, "b": b, "t": t, "hoy": hoy_d, "empresa": empresa}
+    render_agenda(ctx, guardar=guardar, key=key)
+    for nombre in ("Facturar", "Cobrar", "Débitos", "Completar datos"):
+        render_grupo(ctx, nombre, guardar=guardar, key=key)
