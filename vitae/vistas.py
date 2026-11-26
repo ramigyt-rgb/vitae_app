@@ -418,6 +418,15 @@ def _vitae_exception_detail(exc: Exception, context: str = "") -> None:
             st.code(f"{type(exc).__name__}: {exc}", language="text")
 
 
+def _alq_lugar(exc: Exception) -> str:
+    """Archivo y línea de Vitae donde ocurrió el error (sin datos)."""
+    import traceback as _tb
+
+    marcos = [f for f in _tb.extract_tb(exc.__traceback__) if "vitae" in f.filename]
+    f = marcos[-1] if marcos else None
+    return f"{f.filename.rsplit('/', 1)[-1]}:{f.lineno}" if f else "?"
+
+
 def _vitae_render_error(message: str, exc: Exception | None = None, context: str = "") -> None:
     """Error visible, claro y aislado; el resto de la pantalla sigue operativo."""
     if exc is not None and type(exc).__name__ == "ErrorGuardadoSheets":
@@ -21075,13 +21084,21 @@ def render_facturacion_pro(
                     cajas[t_caja] = None
             return cajas
 
-        render_alquileres(
-            df_base.copy(),
-            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
-            leer_cajas=_leer_cajas_alq,
-            selector=_vitae_lazy_selector,
-            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"alquileres:{table}"),
-        )
+        try:
+            render_alquileres(
+                df_base.copy(),
+                guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+                leer_cajas=_leer_cajas_alq,
+                selector=_vitae_lazy_selector,
+                mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"alquileres:{table}"),
+            )
+        except Exception as exc:  # datos raros en la pestaña: aviso claro, la app sigue andando
+            if any(x in type(exc).__name__ for x in ("Rerun", "Stop")):
+                raise
+            _vitae_render_error(
+                "No pude mostrar Valores Alquileres con los datos que tiene la pestaña. "
+                "Probá traer la planilla de nuevo en «Importar».", exc, context=f"alquileres:{table}")
+            st.caption(f"Detalle: {type(exc).__name__} en {_alq_lugar(exc)}")
         return
 
     # CUENTA CORRIENTE VMR / VM: la planilla de proveedores (saldo por proveedor
