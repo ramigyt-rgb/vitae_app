@@ -21060,6 +21060,30 @@ def render_facturacion_pro(
         )
         return
 
+    # VALORES ALQUILERES: alquileres de consultorios por médico y mes, como la
+    # planilla (vitae/modulos/alquileres.py): cobros, nuevo mes con aumento,
+    # altas y bajas, servicio WPP y los cobros que ya figuran en las cajas.
+    if str(table).lower() == "valores_alquileres":
+        from vitae.modulos.alquileres import CAJAS as _CAJAS_ALQ, render_alquileres
+
+        def _leer_cajas_alq():
+            cajas = {}
+            for t_caja in _CAJAS_ALQ:
+                try:
+                    cajas[t_caja] = get_df(t_caja)
+                except Exception:
+                    cajas[t_caja] = None
+            return cajas
+
+        render_alquileres(
+            df_base.copy(),
+            guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+            leer_cajas=_leer_cajas_alq,
+            selector=_vitae_lazy_selector,
+            mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"alquileres:{table}"),
+        )
+        return
+
     # CUENTA CORRIENTE VMR / VM: la planilla de proveedores (saldo por proveedor
     # en pesos y en USD, detalle de facturas visibles, pagos) y la sincronización
     # con el Excel borrador (vitae/modulos/cuenta_corriente.py).
@@ -23122,6 +23146,14 @@ def total_mod(nombre, dfs):
             from vitae.modulos import planes as _planes
 
             return float(_planes.resumen(_planes.normalizar(df))["pendiente"])
+        except Exception:
+            pass
+    # Alquileres: lo que hay que cobrar en el mes (alquileres + servicio), como el módulo.
+    if str(nombre).strip().lower() == "valores alquileres":
+        try:
+            from vitae.modulos import alquileres as _alq
+
+            return float(_alq.resumen(_alq.normalizar(df)).get("a_cobrar", 0.0))
         except Exception:
             pass
     # Pagos pendientes: cada planilla mensual repite lo impago del mes anterior;

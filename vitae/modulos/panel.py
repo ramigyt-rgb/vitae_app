@@ -319,6 +319,20 @@ def vencimientos(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
             "prox_7": int((pendiente & v.between(hoy, hoy + pd.Timedelta(days=7))).sum())}
 
 
+def alquileres(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
+    """Mismo cálculo que el módulo Valores Alquileres (alquileres de consultorios)."""
+    from vitae.modulos import alquileres as alq
+
+    if _vacio(df):
+        return {"hay": False}
+    r = alq.resumen(alq.normalizar(df), hoy.date())
+    if not r.get("hay"):
+        return {"hay": False}
+    return {"hay": True, "mes": r["mes"], "a_cobrar": r["a_cobrar"], "cobrado": r["cobrado"],
+            "pendiente": r["pendiente"], "por_cobrar": r["por_cobrar_mes"], "adeudado": r["adeudado"],
+            "deudores": len(r["deudores"]), "falta_mes": r["falta_mes"], "proximo": r["proximo"]}
+
+
 def contratos(df_c: pd.DataFrame | None, df_a: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
     out: dict[str, Any] = {"hay": not (_vacio(df_c) and _vacio(df_a)), "vencen_60": 0, "vencidos": 0, "aumentos_30": 0}
     if not _vacio(df_c):
@@ -367,6 +381,7 @@ def calcular(dfs: dict[str, pd.DataFrame], mes: str, hoy: pd.Timestamp | None = 
     m["tareas"] = _seguro(lambda: tareas(g("tareas_pendientes"), hoy))
     m["vencimientos"] = _seguro(lambda: vencimientos(g("vencimientos"), hoy))
     m["contratos"] = _seguro(lambda: contratos(g("contratos"), g("valores_alquileres"), hoy))
+    m["alquileres"] = _seguro(lambda: alquileres(g("valores_alquileres"), hoy))
     m["alertas"] = alertas(m)
     return m
 
@@ -413,6 +428,13 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
     if pl.get("mora"):
         add("alta", "Planes de pago con cuotas impagas o atrasadas",
             f"{pl['mora']} plan(es) · {pesos(pl.get('atrasado', 0.0), 0)}", "Planes de pagos y préstamos")
+    aq = m.get("alquileres", {})
+    if aq.get("adeudado", 0) > 0.5:
+        add("media", "Alquileres: médicos que deben meses anteriores",
+            f"{aq['deudores']} médico(s) · {pesos(aq['adeudado'], 0)}", "Valores Alquileres")
+    if aq.get("falta_mes"):
+        add("baja", f"Alquileres: falta cargar {nombre_mes(aq['proximo']).lower()}", "Usá «Nuevo mes»",
+            "Valores Alquileres")
     for e, c in m["cc"].items():
         if c.get("pagar_vencido", 0) > 0.5:
             add("media", f"Cuenta corriente {e}: pagos vencidos", pesos(c["pagar_vencido"], 0), f"Cuenta Corriente {e}")
@@ -559,6 +581,13 @@ def html_tarjetas(m: dict[str, Any]) -> str:
          + f'<tr class="sep"><td>A cobrar (total)</td><td>{celda(fv, "a_cobrar")}</td><td>{celda(fm, "a_cobrar")}</td></tr>'
          + f'<tr><td>… vencido</td><td class="pg-mal">{celda(fv, "vencido")}</td><td class="pg-mal">{celda(fm, "vencido")}</td></tr>'
          + "</table>")
+    aq = m.get("alquileres", {})
+    if aq.get("hay"):
+        t += _linea(f"Alquileres de consultorios ({nombre_mes(aq['mes']).lower()})", pesos(aq["a_cobrar"], 0),
+                    sub_k=f"Cobrado {pesos(aq['cobrado'], 0)} · falta {pesos(aq['pendiente'], 0)}",
+                    sub_v=(f"{aq['deudores']} deben {pesos(aq['adeudado'], 0)} de meses anteriores"
+                           if aq["adeudado"] > 0.5 else "nadie debe meses anteriores"),
+                    alerta_sub=aq["adeudado"] > 0.5)
     tarjetas.append(_tarjeta("Facturación y cobranza", f"{mes_txt} · igual que Facturación VMR y VM", BORDO, t))
 
     # Obligaciones
@@ -662,6 +691,11 @@ def excel_resumen(m: dict[str, Any]) -> bytes:
             filas.append(("Obligaciones", f"Cuenta corriente {e} a cobrar", round(c["a_cobrar"], 2)))
     if m["deuda_total"].get("hay"):
         filas.append(("Obligaciones", f"Deuda total ARS ({m['deuda_total']['corte']})", round(m["deuda_total"]["ars"], 2)))
+    aq = m.get("alquileres", {})
+    if aq.get("hay"):
+        filas.append(("Alquileres", f"A cobrar ({nombre_mes(aq['mes'])})", round(aq["a_cobrar"], 2)))
+        filas.append(("Alquileres", "Cobrado", round(aq["cobrado"], 2)))
+        filas.append(("Alquileres", "Deben meses anteriores", round(aq["adeudado"], 2)))
     for a in m["alertas"]:
         filas.append(("Alertas", a["titulo"], a["detalle"]))
     df = pd.DataFrame(filas, columns=["Sección", "Indicador", "Valor"])
