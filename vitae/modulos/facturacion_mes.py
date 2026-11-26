@@ -83,7 +83,8 @@ def por_dia(x: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=cols)
     pp = ff.pendiente_pago(a)
     alerta = pp & ((~a["_facturada"] & (a["_dias_plazo"] < 0)) | a["_vencido"] | a["_debito_abierto"])
-    cobr = (a["_facturada"] & (a["_pendiente"] <= 0.004) & ~a["_debito_abierto"] & ~a["_sin_cargo"])
+    cobr = (a["_facturada"] & (a["_pendiente"] <= 0.004) & ~a["_debito_abierto"] & ~a["_sin_cargo"]
+            & ~a["_incluida"])
     t = pd.DataFrame({"dia": a["_prestacion"].dt.day, "importe": a["_monto"], "pend": pp, "alerta": alerta,
                       "cobr": cobr, "nf": a["_sin_cargo"]})
     g = t.groupby("dia").agg(pacientes=("importe", "size"), importe=("importe", "sum"), pendientes=("pend", "sum"),

@@ -259,7 +259,7 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         # El médico no es obligatorio: criopreservaciones y mantenimientos no llevan profesional.
         # Donantes, particulares y S/C no llevan importe (``_sin_cargo``).
         "incompletos": a[(a["_obra_social"] == "SIN OBRA SOCIAL") | (a["_procedimiento"] == "SIN PROCEDIMIENTO")
-                         | ((a["_monto"] <= 0) & ~a["_sin_cargo"])],
+                         | ((a["_monto"] <= 0) & ~a["_sin_cargo"] & ~a["_incluida"])],
         "salteados": numeros_salteados(d),
     }
 
@@ -358,7 +358,7 @@ def bandeja(c: dict[str, pd.DataFrame], hoy: date | None = None) -> pd.DataFrame
     add(REVISAR, "Completar datos", c["incompletos"], lambda r: "Falta: " + ", ".join(
         t for t, ok in (("obra social", r["_obra_social"] == "SIN OBRA SOCIAL"),
                         ("procedimiento", r["_procedimiento"] == "SIN PROCEDIMIENTO"),
-                        ("importe", r["_monto"] <= 0 and not r["_sin_cargo"])) if ok))
+                        ("importe", r["_monto"] <= 0 and not r["_sin_cargo"] and not r["_incluida"])) if ok))
     if not filas:
         return pd.DataFrame(columns=["Prioridad", "Tarea", "Paciente", "Obra social", "Procedimiento", "Importe",
                                      "Detalle", "_fila"])
