@@ -27,8 +27,10 @@ from vitae.vistas import (
     render_header,
     render_facturacion_pro as render_modulo,
     render_configuracion,
+    render_pacientes_pagina,
     require_vitae_login,
     _auth_can_access,
+    _auth_ve_pacientes,
 )
 from vitae.modulos.facturacion import render_facturacion_ultra_pro
 
@@ -89,6 +91,15 @@ def _armar_menu() -> dict[str, list]:
         menu["Inicio"] = inicio
 
     falta_inicio = not inicio  # sin Panel general, la primera página visible será la de inicio
+    # Pacientes: datos sensibles, sólo para quienes figuran en PACIENTES_USUARIOS (fuera de MODULES).
+    try:
+        ve_pacientes = _auth_ve_pacientes()
+    except Exception:
+        ve_pacientes = False
+    if ve_pacientes:
+        menu["Pacientes"] = [st.Page(render_pacientes_pagina, title="Pacientes", icon=":material/groups:",
+                                     url_path="pacientes", default=falta_inicio)]
+        falta_inicio = False
     ubicados: set[str] = set()
     for grupo, modulos in GRUPOS:
         paginas = []

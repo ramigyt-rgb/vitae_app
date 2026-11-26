@@ -16,3 +16,9 @@ venv/
 Thumbs.db
 .vscode/
 .idea/
+
+# Datos de pacientes: NUNCA al repositorio (es público)
+*Personas*.xls*
+*pacientes*.xls*
+*pacientes*.csv
+*Pacientes*.xls*
