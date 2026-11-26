@@ -128,15 +128,19 @@ def disponible(dfs: dict[str, pd.DataFrame], mes: str, hoy: pd.Timestamp) -> dic
         dolar_txt = tabla == "caja_vmr"
         fila = {"tabla": tabla, "nombre": TABLAS[tabla], "ars": 0.0, "usd": 0.0, "hay": not _vacio(df)}
         if not _vacio(df):
+            d = cj.preparar(df, dolar_por_texto=dolar_txt)
+            internas = cj.cajas_internas(tabla) if tabla.startswith("caja_") else []
             if actual:
                 fila["ars"] = cj.saldo_actual(df, "ARS", dolar_por_texto=dolar_txt)
                 fila["usd"] = cj.saldo_actual(df, "USD", dolar_por_texto=dolar_txt)
+                if len(internas) > 1:
+                    fila["internas"] = {c: cj.saldo_hoy(cj.de_caja(d, c), "ARS") for c in internas}
             else:
-                d = cj.preparar(df, dolar_por_texto=dolar_txt)
-                for moneda in ("ARS", "USD"):
-                    lb = cj.libro(d, moneda)
-                    lb = lb[lb["mes"] <= mes]
-                    fila["ars" if moneda == "ARS" else "usd"] = float(lb["saldo"].iloc[-1]) if not lb.empty else 0.0
+                # Cada caja interna con su propio libro (Caja VM: una sola).
+                fila["ars"] = cj.saldo_al_cierre(d, mes, "ARS")
+                fila["usd"] = cj.saldo_al_cierre(d, mes, "USD")
+                if len(internas) > 1:
+                    fila["internas"] = {c: cj.saldo_al_cierre(cj.de_caja(d, c), mes, "ARS") for c in internas}
         filas.append(fila)
     return {"filas": filas, "ars": sum(f["ars"] for f in filas), "usd": sum(f["usd"] for f in filas),
             "al": "hoy" if actual else f"cierre de {nombre_mes(mes).lower()}"}
@@ -508,6 +512,7 @@ def html_tarjetas(m: dict[str, Any]) -> str:
                 cuerpo += _linea(f["nombre"], "Sin datos", clase_v="pg-na")
                 continue
             cuerpo += _linea(f["nombre"], pesos(f["ars"]), sub_v=(cj.dinero(f["usd"], "USD") if abs(f["usd"]) > 0.004 else ""),
+                             sub_k=" · ".join(f"{c} {pesos(v, 0)}" for c, v in f.get("internas", {}).items()),
                              clase_v="pg-mal" if f["ars"] < -0.5 else "")
         cuerpo += _linea("Total en pesos", pesos(d["ars"]), tot=True,
                          sub_v=(f"+ {cj.dinero(d['usd'], 'USD')} en dólares" if abs(d["usd"]) > 0.004 else ""))
