@@ -3,7 +3,7 @@
 Datos sensibles (Ley 25.326, art. 2 y 8; Ley 26.529): por eso este módulo
 - vive FUERA de MODULES: no entra en la precarga general, ni en el Panel, ni en la IA
   (Luz y el Copiloto no pueden leerlo: ver _TABLAS_PROHIBIDAS en vitae/ia/motor.py);
-- sólo lo ven los usuarios de PACIENTES_USUARIOS (secret; por defecto, Ramiro Char);
+- sólo lo ven los usuarios de PACIENTES_USUARIOS (secret; por defecto, el usuario rchar);
 - guarda sólo datos administrativos: identidad, documento, sexo, nacimiento, estado civil,
   N° de historia clínica y origen. Las observaciones libres del sistema de origen (que pueden
   tener datos clínicos) NO se importan;
@@ -125,6 +125,11 @@ def fecha_de(valor: Any, hoy: date | None = None) -> date | None:
             return None
         return (pd.Timestamp("1899-12-30") + pd.Timedelta(days=float(valor))).date()
     t = _texto(valor)
+    if len(t) == 10 and t[4] == "-" and t[7] == "-":
+        try:
+            return date.fromisoformat(t)
+        except ValueError:
+            pass
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}.*", t):
         f = pd.to_datetime(t[:10], errors="coerce")
     else:
@@ -138,6 +143,14 @@ def edad(fecha_nac: Any, hoy: date | None = None) -> int | None:
         return None
     hoy = hoy or date.today()
     return hoy.year - f.year - ((hoy.month, hoy.day) < (f.month, f.day))
+
+
+def edades(fechas_iso: pd.Series, hoy: date | None = None) -> pd.Series:
+    """Edad (años cumplidos) de toda una columna de fechas AAAA-MM-DD a la vez (NaN si no hay)."""
+    hoy = hoy or date.today()
+    f = pd.to_datetime(fechas_iso.where(fechas_iso.astype(str).str.len() >= 10), format="%Y-%m-%d", errors="coerce")
+    cumplio = (f.dt.month < hoy.month) | ((f.dt.month == hoy.month) & (f.dt.day <= hoy.day))
+    return (hoy.year - f.dt.year - (~cumplio).astype(int)).where(f.notna())
 
 
 def texto_edad(fecha_nac: Any, hoy: date | None = None) -> str:
@@ -499,8 +512,9 @@ def completitud(df: pd.DataFrame) -> dict[str, float]:
 
 def tabla_edades(df: pd.DataFrame, hoy: date | None = None) -> pd.DataFrame:
     hoy = hoy or date.today()
-    edades = df["fecha_nac"].map(lambda f: edad(f, hoy) if f else None)
-    x = pd.DataFrame({"rango": edades.map(rango_edad), "sexo": df["sexo"].replace("", "Sin dato")})
+    eds = edades(df["fecha_nac"], hoy)
+    x = pd.DataFrame({"rango": eds.map(lambda e: rango_edad(None if pd.isna(e) else int(e))),
+                      "sexo": df["sexo"].replace("", "Sin dato")})
     orden = [r for _, _, r in RANGOS] + ["Sin dato"]
     t = x.groupby(["rango", "sexo"]).size().unstack(fill_value=0)
     return t.reindex([r for r in orden if r in t.index])
@@ -542,10 +556,10 @@ def exportar_anonimo(df: pd.DataFrame, hoy: date | None = None, semilla: int | N
     """Excel para investigación: SIN nombre, documento ni HC. Edad en rangos de 5 años."""
     hoy = hoy or date.today()
     base = preparar(df)
-    edades = base["fecha_nac"].map(lambda f: edad(f, hoy) if f else None)
+    eds = edades(base["fecha_nac"], hoy)
     anon = pd.DataFrame({
         "sexo": base["sexo"].replace("", "Sin dato"),
-        "rango_edad": edades.map(rango_edad),
+        "rango_edad": eds.map(lambda e: rango_edad(None if pd.isna(e) else int(e))),
         "origen": base["origen"].replace("", "Sin dato"),
         "año_primera_carga": base["primera_carga"].str[:4].replace("", "Sin dato"),
     })
@@ -993,11 +1007,11 @@ def render_pacientes(almacen: Any, leer_otras: Callable[[], dict[str, pd.DataFra
     except Exception as exc:
         st.error(f"No pude leer la base de pacientes: {exc}")
         return
-    vistas = ["Buscar", "Tablero", "Calidad de datos", "Importar"]
+    vistas = ["Inteligencia", "Buscar", "Tablero", "Calidad de datos", "Importar"]
     if df.empty:
         st.info("La base de pacientes está vacía. Empezá importando el Excel del sistema de turnos.")
         st.session_state.setdefault("pac_vista", "Importar")
-    st.session_state.setdefault("pac_vista", "Buscar")
+    st.session_state.setdefault("pac_vista", "Inteligencia")
     izq, der = st.columns([5, 1], vertical_alignment="center")
     with izq:
         try:
@@ -1007,8 +1021,12 @@ def render_pacientes(almacen: Any, leer_otras: Callable[[], dict[str, pd.DataFra
     with der:
         if st.button("Releer", key="pac_releer", icon=":material/refresh:", help="Vuelve a leer la base desde Google Sheets"):
             df = almacen.leer(refrescar=True)
-    vista = vista or "Buscar"
-    if vista == "Buscar":
+    vista = vista or "Inteligencia"
+    if vista == "Inteligencia":
+        from vitae.modulos.pacientes_analisis import render_inteligencia
+
+        render_inteligencia(st, almacen, df, leer_otras, hoy)
+    elif vista == "Buscar":
         _vista_buscar(st, almacen, df, leer_otras, hoy)
     elif vista == "Tablero":
         _vista_tablero(st, almacen, df, hoy)
