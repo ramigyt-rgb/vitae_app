@@ -64,6 +64,47 @@ def _txt(value: Any) -> str:
 EDITORES_FACTURACION = {"rchar"}
 
 
+# Obras sociales donde la TE no lleva valor si la misma paciente tiene aspiración folicular (el importe va
+# en la aspiración). AVALIAN usa los valores de IPS.
+OS_TE_EN_ASPIRACION = ("ips", "avalian")
+DIAS_TE_ASPIRACION = 45
+
+
+def _es_te(proc: Any) -> bool:
+    n = _norm(proc)
+    return "te" in n.split("_") or "transferencia_embrion" in n
+
+
+def _es_aspiracion(proc: Any) -> bool:
+    return "aspiracion_folic" in _norm(proc)
+
+
+def te_en_aspiracion(data: pd.DataFrame) -> pd.Series:
+    """TE de IPS/AVALIAN cuya misma paciente tiene aspiración folicular a ``DIAS_TE_ASPIRACION`` días o menos."""
+    out = pd.Series(False, index=data.index)
+    if data.empty or "_procedimiento" not in data.columns:
+        return out
+    os_n = data["_obra_social"].map(_norm)
+    del_grupo = os_n.map(lambda o: any(o == g or o.startswith(g + "_") or g in o.split("_") for g in OS_TE_EN_ASPIRACION))
+    if not del_grupo.any():
+        return out
+    pac = data["_paciente"].map(lambda p: " ".join(sorted(t for t in _norm(p).split("_") if t)))
+    fecha = data["_fecha_base"] if "_fecha_base" in data.columns else pd.Series(pd.NaT, index=data.index)
+    asp = data[del_grupo & data["_procedimiento"].map(_es_aspiracion)]
+    if asp.empty:
+        return out
+    asp_por_pac: dict[str, list[Any]] = {}
+    for i in asp.index:
+        asp_por_pac.setdefault(pac[i], []).append(fecha[i])
+    for i in data.index[del_grupo & data["_procedimiento"].map(_es_te)]:
+        fs = asp_por_pac.get(pac[i])
+        if not fs or not pac[i]:
+            continue
+        f = fecha[i]
+        out[i] = pd.isna(f) or any(pd.isna(x) or abs((f - x).days) <= DIAS_TE_ASPIRACION for x in fs)
+    return out
+
+
 def obra_sin_cargo(valor: Any) -> bool:
     """Donantes, particulares y S/C: no se les factura a una obra social (a las donantes les paga la
     institución; de las particulares todavía no hay registro), así que el importe no es obligatorio."""
@@ -296,6 +337,10 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     _con_imp = set(_num[(data["_monto"] > 0) & ~cancelled & (_num != "")])
     data["_incluida"] = (~cancelled & (data["_monto"] <= 0) & (_num != "") & _num.isin(_con_imp)
                          & (data["_paciente"].astype(str).str.strip() != "") & ~data["_sin_cargo"])
+    # IPS / AVALIAN: la TE de una paciente que tiene aspiración folicular (±45 días) no lleva valor: el
+    # importe va en la aspiración. Esa TE está completa (no es «sin importe»).
+    data["_te_aspiracion"] = te_en_aspiracion(data) & ~cancelled & (data["_monto"] <= 0) & ~data["_sin_cargo"]
+    data["_incluida"] = data["_incluida"] | data["_te_aspiracion"]
 
     today = pd.Timestamp.today().normalize()
     data["_dias_vencido"] = (today - data["_vencimiento"]).dt.days
@@ -313,6 +358,8 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
             return "Anulado"
         if row["_sin_cargo"]:
             return "No se factura"
+        if row["_te_aspiracion"]:
+            return "Va en aspiración folicular"
         if row["_incluida"]:
             return "En factura conjunta"
         if row["_pendiente"] <= 0 and row["_monto"] > 0:
@@ -466,7 +513,8 @@ def _filter_panel(data: pd.DataFrame, key: str) -> pd.DataFrame:
     obras = sorted(v for v in filtered["_obra_social"].dropna().astype(str).unique() if v)
     procs = sorted(v for v in filtered["_procedimiento"].dropna().astype(str).unique() if v)
     medicos = sorted(v for v in filtered["_medico"].dropna().astype(str).unique() if v)
-    estados = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura", "En factura conjunta"]
+    estados = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura", "En factura conjunta",
+               "Va en aspiración folicular"]
     obra = f1.selectbox("Obra social", ["Todas"] + obras, key=f"{key}_os")
     proc = f2.selectbox("Procedimiento", ["Todos"] + procs, key=f"{key}_proc")
     med = f3.selectbox("Médico", ["Todos"] + medicos, key=f"{key}_med")
@@ -898,7 +946,8 @@ _PERIODOS = [
     "Personalizado",
 ]
 
-_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura", "En factura conjunta"]
+_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura", "En factura conjunta",
+            "Va en aspiración folicular"]
 
 _COLOR_ESTADO = {
     "Cobrado": VITAE_GREEN,
