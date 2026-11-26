@@ -8,7 +8,7 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
 - Hoy: el plan para ponerse al día (por dónde empezar, en etapas), la tanda del día y cómo viene
   bajando lo pendiente (se anota un renglón por día en ``facturacion_avance``).
 - Cargar: cirugías de la Agenda que faltan, datos incompletos o repetidos y la calidad de la planilla.
-- Facturar: lo que falta facturar, ordenado por el plazo de 60 días; números salteados.
+- Facturar: lo que falta facturar, por obra social (presentaciones) o todo junto, por el plazo de 60 días.
 - Cobrar: vencidas, por vencer y sin vencimiento; antigüedad, por obra social y a quién cobrar primero.
 - Débitos: a reclamar, reclamados, recuperados y aceptados; cobros parciales sin el débito.
 - Cierre: los meses del año con su estado; el control de cada mes; cerrar (se guarda en
@@ -315,18 +315,6 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             x, _, _ = cf.grupo(c, "Facturar")
             fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="facturar", vista="Todo junto",
                             titulo="Sin facturar")
-        if len(c["repetidas"]) or not c["salteados"].empty:
-            with st.expander("Numeración: repetidos y salteados", icon=":material/pin:"):
-                if len(c["repetidas"]):
-                    st.caption("Números de factura que aparecen más de una vez (se corrigen en 1 · Cargar → Datos para "
-                               "completar).")
-                    st.dataframe(pd.DataFrame({"N° factura": c["repetidas"]["_numero_factura"],
-                                               "Paciente": c["repetidas"]["_paciente"],
-                                               "Obra social": c["repetidas"]["_obra_social"]}),
-                                 hide_index=True, use_container_width=True)
-                if not c["salteados"].empty:
-                    st.caption("Huecos en la numeración: revisá si son de otra facturación o si se perdieron.")
-                    st.dataframe(c["salteados"], hide_index=True, use_container_width=True)
         siguiente("facturar")
         return
 
