@@ -107,7 +107,7 @@ def accion(r: pd.Series, incompleta: bool = False) -> tuple[str, str]:
 
 def incompleta(r: pd.Series) -> bool:
     return (r["_obra_social"] == "SIN OBRA SOCIAL" or r["_procedimiento"] == "SIN PROCEDIMIENTO"
-            or r["_medico"] == "SIN MÉDICO" or r["_monto"] <= 0)
+            or r["_monto"] <= 0)
 
 
 # ---------------------------------------------------------------------------
@@ -378,8 +378,9 @@ def dialogo(st: Any, accion_: str, fila: int, ctx: dict[str, Any], guardar: Call
         proc = c2.selectbox("Procedimiento", _con(opciones(d, "_procedimiento", "SIN PROCEDIMIENTO"), r["_procedimiento"],
                                                   "SIN PROCEDIMIENTO"), key=f"{k}_pc", accept_new_options=True)
         c1, c2 = st.columns(2)
-        med = c1.selectbox("Médico", _con(opciones(d, "_medico", "SIN MÉDICO"), r["_medico"], "SIN MÉDICO"), key=f"{k}_md",
-                           accept_new_options=True)
+        med = c1.selectbox("Médico (opcional)", _con(opciones(d, "_medico", "SIN MÉDICO"), r["_medico"], "SIN MÉDICO"),
+                           key=f"{k}_md", accept_new_options=True,
+                           help="Criopreservaciones y mantenimientos no llevan médico: dejalo en «SIN MÉDICO».")
         sug = importe_sugerido(d, proc or "", os_ or "")
         imp = c2.number_input("Importe", min_value=0.0, value=float(r["_monto"]) or float(sug or 0), step=1000.0,
                               format="%.2f", key=f"{k}_im",
@@ -479,8 +480,9 @@ def dialogo_nuevo(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame]
                             placeholder="Elegí o escribí")
         c1, c2 = st.columns(2)
         md_l = opciones(d, "_medico", "SIN MÉDICO")
-        med = c1.selectbox("Médico", _con(md_l, _texto(cir.get("Médico")), ""), key=f"{k}_md", accept_new_options=True,
-                           index=0 if cir.get("Médico") else None, placeholder="Elegí o escribí")
+        med = c1.selectbox("Médico (opcional)", _con(md_l, _texto(cir.get("Médico")), ""), key=f"{k}_md",
+                           accept_new_options=True, index=0 if cir.get("Médico") else None,
+                           placeholder="Ninguno (criopreservación, mantenimiento…)")
         sug = importe_sugerido(d, proc or "", os_ or "")
         imp = c2.number_input("Importe", min_value=0.0, value=float(sug or 0), step=1000.0, format="%.2f",
                               key=f"{k}_im_{proc}_{os_}",

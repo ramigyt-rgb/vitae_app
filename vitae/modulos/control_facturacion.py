@@ -14,7 +14,7 @@ Controles, cada uno con cantidad e importe (en cero = todo bien):
 - Débitos: lo que la obra social pagó de menos (columnas ``debito``, ``debito_estado``,
   ``debito_motivo``), y cobros parciales sin el débito anotado.
 - Facturas repetidas y números salteados (por punto de venta, sólo para revisar).
-- Datos incompletos: sin obra social, procedimiento, médico o importe.
+- Datos incompletos: sin obra social, procedimiento o importe (el médico es opcional).
 
 La bandeja de hoy junta todo por urgencia, y cada grupo se resuelve ahí mismo (se escribe en la
 misma planilla de Facturación, respetando el formato de cada columna). El cierre de mes da un
@@ -253,8 +253,9 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         "debitos": a[a["_debito_abierto"]],
         "parcial_sin_debito": a[a["_parcial"] & (a["_debito"] <= 0.004)],
         "repetidas": _repetidas(a, rep),
+        # El médico no es obligatorio: criopreservaciones y mantenimientos no llevan profesional.
         "incompletos": a[(a["_obra_social"] == "SIN OBRA SOCIAL") | (a["_procedimiento"] == "SIN PROCEDIMIENTO")
-                         | (a["_medico"] == "SIN MÉDICO") | (a["_monto"] <= 0)],
+                         | (a["_monto"] <= 0)],
         "salteados": numeros_salteados(d),
     }
 
@@ -295,7 +296,7 @@ CONTROLES = [
      "veces (varios pacientes de una obra social en una factura no es error).", "media"),
     ("por_vencer", f"Facturas que vencen en {POR_VENCER} días", "Seguimiento preventivo.", "baja"),
     ("sin_vencimiento", "Facturas sin fecha de vencimiento", "Sin vencimiento no se puede controlar la cobranza.", "media"),
-    ("incompletos", "Registros con datos incompletos", "Falta obra social, procedimiento, médico o importe.", "media"),
+    ("incompletos", "Registros con datos incompletos", "Falta obra social, procedimiento o importe.", "media"),
     ("salteados", "Números de factura salteados", "Revisá si son de otra facturación (no de quirófano) o se perdieron.",
      "baja"),
 ]
@@ -359,7 +360,7 @@ def bandeja(c: dict[str, pd.DataFrame], hoy: date | None = None) -> pd.DataFrame
     add(REVISAR, "Completar datos", c["incompletos"], lambda r: "Falta: " + ", ".join(
         t for t, ok in (("obra social", r["_obra_social"] == "SIN OBRA SOCIAL"),
                         ("procedimiento", r["_procedimiento"] == "SIN PROCEDIMIENTO"),
-                        ("médico", r["_medico"] == "SIN MÉDICO"), ("importe", r["_monto"] <= 0)) if ok))
+                        ("importe", r["_monto"] <= 0)) if ok))
     if not filas:
         return pd.DataFrame(columns=["Prioridad", "Tarea", "Paciente", "Obra social", "Procedimiento", "Importe",
                                      "Detalle", "_fila"])
