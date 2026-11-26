@@ -21069,6 +21069,26 @@ def render_facturacion_pro(
         )
         return
 
+    # MAMOGRAFÍA: unidad de negocio propia (factura por el Círculo Médico de Salta):
+    # facturación CMS, OSDE, presentaciones, ingresos, gastos y resultado.
+    if str(table).lower() == "mamografia":
+        from vitae.modulos.mamografia import render_mamografia
+
+        try:
+            render_mamografia(
+                df_base.copy(),
+                guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+                selector=_vitae_lazy_selector,
+                mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"mamografia:{table}"),
+            )
+        except Exception as exc:
+            if any(x in type(exc).__name__ for x in ("Rerun", "Stop")):
+                raise
+            _vitae_render_error("No pude mostrar Mamografía con los datos que tiene la pestaña.", exc,
+                                context=f"mamografia:{table}")
+            st.caption(f"Detalle: {type(exc).__name__} en {_alq_lugar(exc)}")
+        return
+
     # VENCIMIENTOS: documentos, habilitaciones, pólizas, mantenimientos y dominios
     # con su fecha, semáforo, renovar y calendario (vitae/modulos/vencimientos.py).
     if str(table).lower() == "vencimientos":
