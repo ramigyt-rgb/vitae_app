@@ -186,6 +186,31 @@ def _series_number(df: pd.DataFrame, col: str | None) -> pd.Series:
     return raw.map(parse_one).astype(float)
 
 
+# Columnas donde puede estar el importe de una fila, en orden de prioridad.
+COLUMNAS_IMPORTE = ("valor_pesos", "importe", "monto", "valor", "importe_facturado", "facturado", "total")
+
+
+def _monto_filas(df: pd.DataFrame, principal: str | None) -> pd.Series:
+    """El importe de cada fila: el de la columna principal; si en esa fila está vacío o en 0, el de la siguiente
+    columna de importe que tenga valor (también si la planilla repite el encabezado). Así no se pierde un
+    importe cargado en otra columna."""
+    out = pd.Series(0.0, index=df.index, dtype="float64")
+    prioridad = {c: k for k, c in enumerate(COLUMNAS_IMPORTE)}
+    posiciones = []
+    for j, c in enumerate(df.columns):
+        n = _norm(c)
+        if c == principal:
+            posiciones.append((-1, j))
+        elif n in prioridad:
+            posiciones.append((prioridad[n], j))
+    for _, j in sorted(posiciones):
+        vals = _series_number(df.iloc[:, [j]], df.columns[j]) if df.columns.duplicated().any() else \
+            _series_number(df, df.columns[j])
+        vals = vals.clip(lower=0)
+        out = out.where(out > 0, vals)
+    return out
+
+
 def _series_date(df: pd.DataFrame, col: str | None) -> pd.Series:
     if col is None or col not in df.columns:
         return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
@@ -288,7 +313,7 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
         data["_fecha_mes"] = pd.NaT
 
     data["_fecha_base"] = data["_fecha_factura"].combine_first(data["_fecha_servicio"]).combine_first(data["_fecha_mes"])
-    data["_monto"] = _series_number(data, cols["monto"]).clip(lower=0)
+    data["_monto"] = _monto_filas(data, cols["monto"]).clip(lower=0)
 
     cancel_words = ("anulad", "cancelad", "rechazad", "baja")
     cancelled = data["_estado_norm"].map(lambda x: any(w in x for w in cancel_words))
