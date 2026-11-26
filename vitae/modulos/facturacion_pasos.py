@@ -1,6 +1,6 @@
 """Facturación VMR / VM paso a paso.
 
-    Mes → 1 Cargar → 2 Facturar → 3 Cobrar → 4 Débitos → 5 Cierre          (y aparte: Análisis · Planilla)
+    Registros → 1 Cargar → 2 Facturar → 3 Cobrar → 4 Débitos → 5 Cierre → Mes   (aparte: Análisis · Tabla…)
 
 Arriba, siempre los mismos indicadores (para facturar, por cobrar, vencido, débitos). Cada paso dice
 qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente paso».
@@ -11,8 +11,8 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
 
 REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son dos facturaciones distintas; cada módulo sólo lee y
 controla su propia planilla. La Agenda era un respaldo: no se compara contra Facturación.
-- Cargar: datos incompletos o repetidos, nuevo registro, editar cualquier registro
-  cargado y la calidad de la planilla.
+- Cargar: datos incompletos o repetidos, nuevo registro y la calidad de la planilla (para ver o editar
+  cualquier registro: Registros).
 - Facturar: lo que falta facturar, por obra social (presentaciones) o todo junto, por el plazo de 60 días.
 - Cobrar: vencidas, por vencer y sin vencimiento; antigüedad, por obra social y a quién cobrar primero.
 - Débitos: a reclamar, reclamados, recuperados y aceptados; cobros parciales sin el débito.
@@ -39,8 +39,10 @@ import vitae.modulos.facturacion_mes as fm
 import vitae.modulos.facturacion_planilla as fz
 from vitae.modulos.pagos_pendientes import pesos
 
-PASOS = ["hoy", "cargar", "facturar", "cobrar", "debitos", "cierre"]
-EXTRAS = ["fichas", "analisis", "tabla", "importar", "exportar"]
+# Registros primero (donde estaba Mes); Mes al final, después del Cierre.
+PASOS = ["fichas", "cargar", "facturar", "cobrar", "debitos", "cierre", "hoy"]
+EXTRAS = ["analisis", "tabla", "importar", "exportar"]
+INICIO = "fichas"
 NOMBRES = {"hoy": "Mes", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "cobrar": "3 · Cobrar",
            "debitos": "4 · Débitos", "cierre": "5 · Cierre", "fichas": "Registros", "analisis": "Análisis",
            "tabla": "Tabla", "importar": "Importar", "exportar": "Exportar"}
@@ -83,7 +85,7 @@ def cuentas(ctx: dict[str, Any]) -> dict[str, int]:
 
     hoy_ = ctx["hoy"]
     del_mes = fm.registros(ctx["d"], f"{hoy_.year:04d}-{hoy_.month:02d}")
-    return {"hoy": int(ff.pendiente_pago(del_mes).sum()) if len(del_mes) else 0, "cargar": n("incompletos", "repetidas"),
+    return {"cargar": n("incompletos", "repetidas"),
             "facturar": n("sin_facturar"), "cobrar": n("vencidas", "por_vencer", "sin_vencimiento"),
             "debitos": n("debitos", "parcial_sin_debito")}
 
@@ -159,7 +161,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     # ---- Navegación: pasos numerados y, aparte, Análisis y Planilla -------------------
     k_v, k_p, k_e = f"{key}_vista", f"{key}_pasos", f"{key}_extras"
     if k_v not in st.session_state:
-        st.session_state[k_v] = "hoy"
+        st.session_state[k_v] = INICIO
     vista = st.session_state[k_v]
 
     def ir(destino: str) -> Callable[[], None]:
@@ -180,7 +182,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             st.session_state[f"{key}_movil"] = vista
         elegido = st.selectbox("Paso", todas, key=f"{key}_movil", label_visibility="collapsed",
                                format_func=lambda v: etiqueta(v) if v in PASOS else f"Más · {NOMBRES[v]}")
-        vista = elegido or "hoy"
+        vista = elegido or INICIO
         st.session_state[k_v] = vista
     else:
         if k_p not in st.session_state:
@@ -211,7 +213,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         with c2:
             st.segmented_control("Más", EXTRAS, key=k_e, format_func=lambda v: NOMBRES[v], on_change=_al_extra,
                                  label_visibility="collapsed")
-        vista = st.session_state.get(k_v, "hoy")
+        vista = st.session_state.get(k_v, INICIO)
 
     def siguiente(actual_: str) -> None:
         i = PASOS.index(actual_)
@@ -263,12 +265,13 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     # ---- Registros: todos, en planilla ------------------------------------------------------
     if vista == "fichas":
         d = ctx["d"]
-        st.markdown(_titulo("", "Registros", "Todos los pacientes cargados, en planilla por obra social. Para avanzar, "
-                            "elegí el paciente o la factura en la barra de arriba."), unsafe_allow_html=True)
+        st.markdown(_titulo("", "Registros", "Todos los pacientes cargados, en planilla por obra social (lo pendiente "
+                            "de pago, arriba). Elegí el paciente o la factura en la barra para avanzar o editar "
+                            "cualquier dato."), unsafe_allow_html=True)
         cnt = ff.cuentas_filtros(d)
         c1, c2 = st.columns([4, 1.3])
         with c1:
-            filtro = st.pills("Mostrar", ff.FILTROS, default="Para facturar", key=f"{key}_ff_filtro",
+            filtro = st.pills("Mostrar", ff.FILTROS, default="Todas", key=f"{key}_ff_filtro",
                               format_func=lambda f_: f"{f_} {cnt.get(f_, 0)}", label_visibility="collapsed") or "Todas"
         with c2:
             if st.button("Nuevo registro", key=f"{key}_nuevo", type="primary", use_container_width=True,
@@ -302,13 +305,8 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                             notas=notas, vista="Por paciente", titulo="Datos para completar")
         if st.button("Nuevo registro", key=f"{key}_nuevo_cargar", icon=":material/add_circle:"):
             ff.dialogo_nuevo(st, ctx, guardar, key)
-        st.markdown('<div class="cf-tit">Registros cargados</div><div class="fp-sub">Para corregir cualquier dato '
-                    '(paciente, fecha, obra social, procedimiento, médico, importe, factura, pago, estado o anular): '
-                    'elegilo en la barra y tocá «Editar». Lo más reciente primero.</div>', unsafe_allow_html=True)
-        todos = ctx["d"]
-        fz.render_lista(st, ctx, todos, guardar=guardar, key=key, lista="cargados", vista="Por paciente",
-                        titulo="Cargados", solo_editar=True, orden="Más recientes",
-                        vacio="Todavía no hay registros cargados.")
+        st.button("Ver o editar todos en Registros", key=f"{key}_ir_registros", on_click=ir("fichas"),
+                  icon=":material/table_rows:")
         with st.expander("Calidad de la planilla (qué columnas se leen y qué falta)", icon=":material/verified:"):
             fx._seccion_calidad(data, cols, f"{key}_cal")
         siguiente("cargar")

@@ -56,6 +56,8 @@ def etapa(r: pd.Series) -> str:
         return "anulado"
     if r.get("_sin_cargo", False):
         return "sin_cargo"
+    if r.get("_incluida", False):
+        return "incluida"
     if not r["_facturada"]:
         return "cargado"
     return "facturado" if r["_pendiente"] > 0.004 else "cobrado"
@@ -73,6 +75,8 @@ def aviso(r: pd.Series, hoy: date | None = None) -> tuple[str, str]:
         return "anulado", "gris"
     if e == "sin_cargo":
         return "no se factura", "gris"
+    if e == "incluida":
+        return "importe en la factura conjunta", "gris"
     if e == "cargado":
         dias = r.get("_dias_plazo")
         if dias is None or pd.isna(dias):
@@ -111,7 +115,7 @@ def accion(r: pd.Series, incompleta: bool = False) -> tuple[str, str]:
 
 def incompleta(r: pd.Series) -> bool:
     return (r["_obra_social"] == "SIN OBRA SOCIAL" or r["_procedimiento"] == "SIN PROCEDIMIENTO"
-            or (r["_monto"] <= 0 and not r.get("_sin_cargo", False)))
+            or (r["_monto"] <= 0 and not r.get("_sin_cargo", False) and not r.get("_incluida", False)))
 
 
 # ---------------------------------------------------------------------------

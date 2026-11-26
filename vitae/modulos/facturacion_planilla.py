@@ -75,7 +75,7 @@ def _estado(r: pd.Series, hoy: date, forzar_incompleta: bool, nota: str) -> tupl
     if forzar_incompleta and ff.incompleta(r):
         falta = [t for t, ok in (("obra social", r["_obra_social"] == "SIN OBRA SOCIAL"),
                                  ("procedimiento", r["_procedimiento"] == "SIN PROCEDIMIENTO"),
-                                 ("importe", r["_monto"] <= 0 and not r["_sin_cargo"])) if ok]
+                                 ("importe", r["_monto"] <= 0 and not r["_sin_cargo"] and not r["_incluida"])) if ok]
         return "falta " + ", ".join(falta), "ambar"
     texto, tono = ff.aviso(r, hoy)
     return texto, tono
@@ -90,7 +90,7 @@ def _saldo(r: pd.Series) -> float | None:
 def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, columna_os: bool,
           forzar_incompleta: bool, nota: str) -> str:
     texto, tono = _estado(r, hoy, forzar_incompleta, nota)
-    cobrada = ff.etapa(r) in ("cobrado", "anulado", "sin_cargo") and not r["_debito_abierto"]
+    cobrada = ff.etapa(r) in ("cobrado", "anulado", "sin_cargo", "incluida") and not r["_debito_abierto"]
     detalle = " · ".join(x for x in (
         "" if r["_procedimiento"] == "SIN PROCEDIMIENTO" else r["_procedimiento"],
         "" if r["_medico"] == "SIN MÉDICO" else r["_medico"],
@@ -116,7 +116,7 @@ def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, colum
             f'{f"<small>{_e(detalle)}</small>" if detalle else ""}</div>'
             f'<div class="fz-c">{_e(_f(r.get("_prestacion")))}</div>'
             f'<div class="fz-c{" fz-venc" if es_venc else ""}">{_e(venc)}</div>'
-            f'<div class="fz-n fz-dt">{pesos(r["_monto"]) if r["_monto"] else "—"}</div>'
+            f'<div class="fz-n fz-dt">{pesos(r["_monto"]) if r["_monto"] else ("en el total" if r["_incluida"] else "—")}</div>'
             f'<div class="fz-n fz-x">{pesos(saldo) if saldo is not None else ""}</div>'
             f'<div class="fz-e fz-x" style="color:{COLOR[tono]}">{_e(texto)}</div>'
             f'<div class="fz-meta">{_e(meta)}</div></div>')

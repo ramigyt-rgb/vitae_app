@@ -286,6 +286,12 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     data["_cancelado"] = cancelled
     # Donantes, particulares y S/C sin importe: registro completo, no hay nada para facturar ni cobrar.
     data["_sin_cargo"] = data["_obra_social"].map(obra_sin_cargo) & (data["_monto"] <= 0) & ~cancelled
+    # Factura en conjunto: un renglón sin importe con el N° de una factura que sí tiene importe en otro renglón
+    # (y con el nombre del paciente) va incluido en esa factura: no es «sin importe».
+    _num = data["_numero_factura"].astype(str).str.strip()
+    _con_imp = set(_num[(data["_monto"] > 0) & ~cancelled & (_num != "")])
+    data["_incluida"] = (~cancelled & (data["_monto"] <= 0) & (_num != "") & _num.isin(_con_imp)
+                         & (data["_paciente"].astype(str).str.strip() != "") & ~data["_sin_cargo"])
 
     today = pd.Timestamp.today().normalize()
     data["_dias_vencido"] = (today - data["_vencimiento"]).dt.days
@@ -299,6 +305,8 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
             return "Anulado"
         if row["_sin_cargo"]:
             return "No se factura"
+        if row["_incluida"]:
+            return "En factura conjunta"
         if row["_pendiente"] <= 0 and row["_monto"] > 0:
             return "Cobrado"
         if row["_vencido"]:
@@ -450,7 +458,7 @@ def _filter_panel(data: pd.DataFrame, key: str) -> pd.DataFrame:
     obras = sorted(v for v in filtered["_obra_social"].dropna().astype(str).unique() if v)
     procs = sorted(v for v in filtered["_procedimiento"].dropna().astype(str).unique() if v)
     medicos = sorted(v for v in filtered["_medico"].dropna().astype(str).unique() if v)
-    estados = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura"]
+    estados = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura", "En factura conjunta"]
     obra = f1.selectbox("Obra social", ["Todas"] + obras, key=f"{key}_os")
     proc = f2.selectbox("Procedimiento", ["Todos"] + procs, key=f"{key}_proc")
     med = f3.selectbox("Médico", ["Todos"] + medicos, key=f"{key}_med")
@@ -663,7 +671,13 @@ def _mascara_repetida(a: pd.DataFrame) -> pd.Series:
         mismo_lote = pd.Series(False, index=x.index)
     pac = x["_paciente"].map(lambda p: " ".join(sorted(t for t in _norm(p).split("_") if t)))
     fecha = (x["_prestacion"] if "_prestacion" in x.columns else x["_fecha_base"]).astype(str)
-    misma_prestacion = (n + "|" + pac + "|" + fecha).duplicated(keep=False)
+    proc = x["_procedimiento"].map(_norm) if "_procedimiento" in x.columns else ""
+    # Misma prestación dos veces (paciente, fecha y procedimiento), entre los renglones con importe: un
+    # renglón sin importe de la misma factura conjunta no es repetido.
+    clave = n + "|" + pac + "|" + fecha + "|" + proc
+    con_imp = x["_monto"] > 0
+    misma_prestacion = pd.Series(False, index=x.index)
+    misma_prestacion[con_imp] = clave[con_imp].duplicated(keep=False)
     out.loc[x.index] = ((os_distintas & ~mismo_lote.astype(bool)) | misma_prestacion).values
     return out
 
@@ -674,8 +688,9 @@ def _quality(df: pd.DataFrame, cols: dict[str, str | None]) -> tuple[pd.DataFram
     invoice_nonempty = active["_numero_factura"].astype(str).str.strip() != ""
     duplicate_invoice = invoice_nonempty & _mascara_repetida(active)
     checks = [
-        ("Sin importe", int(((active["_monto"] <= 0) & ~active["_sin_cargo"]).sum()),
-         "Revisar filas con importe cero o no reconocido (donantes, particulares y S/C no cuentan)."),
+        ("Sin importe", int(((active["_monto"] <= 0) & ~active["_sin_cargo"] & ~active["_incluida"]).sum()),
+         "Revisar filas con importe cero o no reconocido (donantes, particulares, S/C y renglones de una factura "
+         "conjunta no cuentan)."),
         ("Sin fecha base", int(active["_fecha_base"].isna().sum()), "Impide análisis temporal y proyecciones."),
         ("Sin número de factura", int((~invoice_nonempty & (active["_monto"] > 0)).sum()), "Reduce trazabilidad administrativa."),
         ("Factura repetida", int(duplicate_invoice.sum()), "Validar duplicados antes de consolidar totales."),
@@ -875,7 +890,7 @@ _PERIODOS = [
     "Personalizado",
 ]
 
-_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura"]
+_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura", "En factura conjunta"]
 
 _COLOR_ESTADO = {
     "Cobrado": VITAE_GREEN,
@@ -1276,7 +1291,7 @@ def _mascaras_calidad(f: pd.DataFrame) -> dict[str, pd.Series]:
     a = f[~f["_cancelado"]]
     con_factura = a["_numero_factura"].astype(str).str.strip() != ""
     return {
-        "Sin importe": (a["_monto"] <= 0) & ~a["_sin_cargo"],
+        "Sin importe": (a["_monto"] <= 0) & ~a["_sin_cargo"] & ~a["_incluida"],
         "Sin fecha base": a["_fecha_base"].isna(),
         "Sin número de factura": ~con_factura & (a["_monto"] > 0),
         "Factura repetida": con_factura & _mascara_repetida(a),
