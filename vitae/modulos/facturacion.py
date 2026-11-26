@@ -1275,7 +1275,9 @@ def _mascaras_calidad(f: pd.DataFrame) -> dict[str, pd.Series]:
 def _detalle_registros(df: pd.DataFrame) -> pd.DataFrame:
     def fecha(s: pd.Series) -> pd.Series:
         return pd.to_datetime(s, errors="coerce").dt.strftime("%d/%m/%Y").fillna("")
-    d = df.sort_values("_fecha_base", ascending=False)
+    # Regla de Facturación: lo pendiente de pago arriba, aunque sea viejo.
+    pp = (~((df["_pendiente"] > 0.004) & ~df["_cancelado"])).astype(int) if len(df) else 0
+    d = df.assign(_pp=pp).sort_values(["_pp", "_fecha_base"], ascending=[True, False], kind="stable")
     return pd.DataFrame({
         "Mes": fecha(d["_fecha_base"]),
         "Paciente / afiliado": d["_paciente"],

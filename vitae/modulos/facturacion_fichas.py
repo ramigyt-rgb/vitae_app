@@ -199,23 +199,37 @@ def buscar(x: pd.DataFrame, texto: str) -> pd.DataFrame:
     return x[blob.str.contains(t, regex=False, na=False)]
 
 
+def pendiente_pago(x: pd.DataFrame) -> pd.Series:
+    """Regla de Facturación: lo que todavía no se cobró (sin facturar, facturado con saldo o con débito abierto),
+    sin importar lo viejo que sea. Siempre va arriba de lo cobrado y lo anulado."""
+    if x.empty:
+        return pd.Series(dtype=bool)
+    m = (x["_pendiente"] > 0.004) | x["_debito_abierto"]
+    if "_facturada" in x.columns:
+        m = m | ~x["_facturada"]
+    return m & ~x["_cancelado"]
+
+
 def ordenar(x: pd.DataFrame, orden: str) -> pd.DataFrame:
+    """Ordena siempre con lo pendiente de pago primero; dentro de cada parte, por el orden pedido."""
     if x.empty:
         return x
+    pp = (~pendiente_pago(x)).astype(int)
     if orden == "Más recientes":
-        return x.sort_values("_prestacion", ascending=False, na_position="last", kind="stable")
+        return x.assign(_pp=pp).sort_values(["_pp", "_prestacion"], ascending=[True, False], na_position="last",
+                                            kind="stable").drop(columns="_pp")
     if orden == "Mayor importe":
-        return x.sort_values("_monto", ascending=False, kind="stable")
+        return x.assign(_pp=pp).sort_values(["_pp", "_monto"], ascending=[True, False], kind="stable").drop(columns="_pp")
     if orden == "Paciente (A-Z)":
-        return x.sort_values("_paciente", kind="stable")
+        return x.assign(_pp=pp).sort_values(["_pp", "_paciente"], kind="stable").drop(columns="_pp")
     # Más urgentes: plazo vencido / vencidas / débitos primero, después lo que vence antes
     urg = pd.Series(3, index=x.index)
     urg[(~x["_facturada"]) & (x["_dias_plazo"] < 0)] = 0
     urg[x["_vencido"] | x["_debito_abierto"]] = 1
     urg[(~x["_facturada"]) & x["_dias_plazo"].between(0, cf.AVISO_PRESENTACION)] = 2
     clave = x["_dias_plazo"].where(~x["_facturada"], (x["_vencimiento"] - pd.Timestamp.today()).dt.days)
-    return x.assign(_u=urg, _c=clave.fillna(9999)).sort_values(["_u", "_c", "_monto"], ascending=[True, True, False],
-                                                                kind="stable").drop(columns=["_u", "_c"])
+    return x.assign(_pp=pp, _u=urg, _c=clave.fillna(9999)).sort_values(
+        ["_pp", "_u", "_c", "_monto"], ascending=[True, True, True, False], kind="stable").drop(columns=["_pp", "_u", "_c"])
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +549,7 @@ def resumen_obras(x: pd.DataFrame) -> pd.DataFrame:
                                      "Débitos", "Conjuntas", "Urgencia"])
     conj = cf.facturas_conjuntas(x)
     u = _urgencia(x)
+    pp = pendiente_pago(x)
     filas = []
     for os_, g in x.groupby("_obra_social"):
         num = g["_numero_factura"].astype(str).str.strip()
@@ -542,25 +557,34 @@ def resumen_obras(x: pd.DataFrame) -> pd.DataFrame:
                       "Para facturar": int((~g["_facturada"] & ~g["_cancelado"]).sum()),
                       "Pendiente": float(g.loc[g["_facturada"], "_pendiente"].sum()),
                       "Vencidas": int(g["_vencido"].sum()), "Débitos": float(g.loc[g["_debito_abierto"], "_debito"].sum()),
-                      "Conjuntas": int(num[num.isin(conj.index)].nunique()), "Urgencia": int(u[g.index].min())})
-    return pd.DataFrame(filas).sort_values(["Urgencia", "Importe"], ascending=[True, False]).reset_index(drop=True)
+                      "Conjuntas": int(num[num.isin(conj.index)].nunique()), "Urgencia": int(u[g.index].min()),
+                      "_pp": 0 if bool(pp[g.index].any()) else 1})
+    return pd.DataFrame(filas).sort_values(["_pp", "Urgencia", "Importe"], ascending=[True, True, False],
+                                           kind="stable").drop(columns="_pp").reset_index(drop=True)
 
 
 def grupos_factura(x: pd.DataFrame) -> list[tuple[str, list[int]]]:
-    """[(N° de factura, filas)] en orden de urgencia; las filas sin N° van aparte con clave ''."""
+    """[(N° de factura, filas)]: primero lo pendiente de pago (por urgencia), después lo cobrado y lo anulado.
+    Las filas sin N° van con clave ''."""
     if x.empty:
         return []
     num = x["_numero_factura"].astype(str).str.strip()
     u = _urgencia(x)
+    pp = pendiente_pago(x)
     grupos = []
     for n_, g in x[num != ""].groupby(num[num != ""]):
-        grupos.append((n_, list(g.index), int(u[g.index].min()), float(g["_monto"].sum())))
-    grupos.sort(key=lambda t: (t[2], -t[3]))
-    out = [(n_, idx) for n_, idx, _, _ in grupos]
-    sin = list(x[num == ""].index)
-    if sin:
-        out.append(("", sin))
-    return out
+        grupos.append((n_, list(g.index), 0 if bool(pp[g.index].any()) else 1, int(u[g.index].min()),
+                       float(g["_monto"].sum())))
+    sin = x[num == ""]
+    if len(sin):
+        # Sin N°: lo pendiente (falta facturar) entra con lo pendiente; lo anulado va al final.
+        vivos, anulados = sin[pp[sin.index]], sin[~pp[sin.index]]
+        if len(vivos):
+            grupos.append(("", list(vivos.index), 0, int(u[vivos.index].min()), float(vivos["_monto"].sum())))
+        if len(anulados):
+            grupos.append(("", list(anulados.index), 2, 9, 0.0))
+    grupos.sort(key=lambda t: (t[2], t[3], -t[4]))
+    return [(n_, idx) for n_, idx, _, _, _ in grupos]
 
 
 def aviso_factura(g: pd.DataFrame, hoy: date | None = None) -> tuple[str, str]:

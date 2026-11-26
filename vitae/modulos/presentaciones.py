@@ -223,7 +223,9 @@ def presentaciones(pres: pd.DataFrame | None, d: pd.DataFrame, empresa: str) -> 
                                     "vencido": venc, "estado": estado})
     t = pd.DataFrame(filas)
     t["_f"] = pd.to_datetime(t["fecha"], dayfirst=True, errors="coerce")
-    return t.sort_values("_f", ascending=False).drop(columns="_f").reset_index(drop=True)
+    t["_pp"] = (t["pendiente"] <= 0.5).astype(int)  # lo que falta cobrar, arriba
+    return t.sort_values(["_pp", "_f"], ascending=[True, False], kind="stable").drop(columns=["_f", "_pp"]) \
+        .reset_index(drop=True)
 
 
 def cambios_cobro_lote(d: pd.DataFrame, pid: str, fecha: Any) -> list[dict[str, Any]]:
