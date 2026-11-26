@@ -1,4 +1,4 @@
-"""Caja VM y Caja VMR: la planilla mensual de efectivo.
+"""Caja VM, Caja VMR y Banco Galicia VM: la planilla mensual (efectivo o cuenta bancaria).
 
 Se ve como la planilla que se completa a mano: por mes, saldo inicial,
 cada movimiento con su fecha, descripción, entrada o salida y de quién es,
@@ -77,6 +77,17 @@ FONDO_RUBRO = {ALQUILERES: "#E4F1D8", GASTOS_COMUNES: "#FBE4D8", GENERAL: "trans
 BORDE_RUBRO = {ALQUILERES: "#9CC47A", GASTOS_COMUNES: "#E9A383", GENERAL: "#D9D2D6"}
 MONEDAS = ["ARS", "USD"]
 SECCIONES = ["Planilla", "Cargar movimiento", "Editar", "Historial", "Importar"]
+
+
+def etiquetas(tabla: str) -> dict[str, str]:
+    """Textos de la pantalla: la misma planilla sirve para cajas y para bancos."""
+    if str(tabla).startswith("banco_"):
+        return {"quien": "Observación", "pesos": "Cuenta en pesos", "dolares": "Cuenta en dólares",
+                "buscar": "Descripción u observación", "quien_ej": "Ej.: SALMORAL N, CORNEJO POR SOLER…",
+                "unidad": "la cuenta", "planilla": "planilla del banco"}
+    return {"quien": "Quién", "pesos": "Caja en pesos", "dolares": "Caja en dólares",
+            "buscar": "Descripción, quién u observación", "quien_ej": "Ej.: SOLER, AGUIRRE…",
+            "unidad": "la caja", "planilla": "planilla de caja"}
 SIN_FECHA = "Sin fecha"
 
 _TAG = re.compile(r"^\s*\[(USD|ARS)\]\s*", re.I)
@@ -311,13 +322,22 @@ def resumen_mes(d: pd.DataFrame, mes: str, moneda: str = "ARS") -> dict[str, flo
             "movimientos": int(len(m))}
 
 
+def saldo_planilla(d: pd.DataFrame, mes: str | None = None, moneda: str = "ARS") -> float:
+    """EL saldo: el SALDO de la planilla del mes (todo lo cargado en ese mes, aunque tenga fecha
+    posterior a hoy; sin los movimientos sin fecha). Es el número que muestran el módulo y el
+    Panel general, para que nunca digan cosas distintas. Sin mes = el mes actual."""
+    mes = mes or str(pd.Period(date.today(), freq="M"))
+    return saldo_al_cierre(d, mes, moneda)
+
+
 def saldo_actual(raw: pd.DataFrame | None, moneda: str = "ARS", *, dolar_por_texto: bool = False) -> float:
-    """Saldo de la caja hoy (para el Panel general): último mes hasta hoy, más
-    los movimientos sin fecha."""
+    """Saldo de hoy para el Panel general y otros resúmenes: el de la planilla del mes actual."""
     d = preparar(raw, dolar_por_texto=dolar_por_texto)
-    if d.empty:
-        return 0.0
-    return round(sum(saldo_hoy(de_caja(d, c), moneda) for c in sorted(set(d["_cuenta"]))), 2)
+    return 0.0 if d.empty else saldo_planilla(d, None, moneda)
+
+
+def sin_fecha(d: pd.DataFrame) -> int:
+    return int((_movs(d)["_mes"] == SIN_FECHA).sum()) if not d.empty else 0
 
 
 def saldo_hoy(d: pd.DataFrame, moneda: str = "ARS") -> float:
@@ -461,7 +481,7 @@ def fila_nueva(raw: pd.DataFrame, *, fecha: Any, concepto: str, entrada: float =
     fila[cols["ingreso"]] = _monto_texto(entrada)
     fila[cols["egreso"]] = _monto_texto(salida)
     fila[cols["moneda"]] = moneda
-    fila[cols["rubro"]] = "" if rubro == GENERAL else rubro
+    fila[cols["rubro"]] = rubro or GENERAL  # explícito: si no, «ALQUILER LOCAL…» se volvería Alquileres al releer
     fila[cols["quien"]] = quien.strip()
     fila[cols["observaciones"]] = observaciones.strip()
     fila[cols["categoria"]] = categoria or ("Saldo inicial" if inicial else ("Ingreso" if entrada else "Egreso"))
@@ -680,7 +700,9 @@ def leer_planilla(filas: list[list[Any]], colores: list[list[str]] | None = None
         color = colores[r][jd] if r < len(colores) and jd < len(colores[r]) else ""
         if not color and cab["fecha"] is not None and r < len(colores) and cab["fecha"] < len(colores[r]):
             color = colores[r][cab["fecha"]]
-        rubro = leyenda.get(color) or _tono(color) or _rubro_inferido(desc)
+        # Si la planilla trae colores (referencias ALQUILERES / CAJA GASTOS COMUNES), manda el color:
+        # una fila blanca es General aunque diga «alquiler» (p. ej. ALQUILER LOCAL MAMOGRAFO, que se paga).
+        rubro = leyenda.get(color) or _tono(color) or (GENERAL if leyenda else _rubro_inferido(desc))
         quien = _texto(celda("quien"))
         if _sin_acentos(quien) in textos_leyenda:
             quien = ""
@@ -988,7 +1010,7 @@ def _fila(fecha: str, desc: str, ent: str, sal: str, sdo: str, quien: str, *, cl
 
 
 def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str | None = None,
-                  buscar: str = "", titulo: str = "") -> str:
+                  buscar: str = "", titulo: str = "", col_quien: str = "Quién") -> str:
     r = resumen_mes(d, mes, moneda)
     m_ = _movs(d)
     filas = m_[(m_["_mes"] == mes) & (m_["_moneda"] == moneda) & (~m_["_inicial"])].sort_values(
@@ -1007,7 +1029,7 @@ def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str 
                       f'<span>{r["movimientos"]} movimientos · saldo {din(r["saldo"])}</span></div>')
     partes.append('<div class="cj-cols"><div>Fecha</div><div>Descripción</div><div style="text-align:right">Entrada</div>'
                   '<div style="text-align:right">Salida</div><div style="text-align:right">Saldo</div>'
-                  '<div style="text-align:right">Quién</div></div>')
+                  f'<div style="text-align:right">{html.escape(col_quien)}</div></div>')
     inicio = pd.Period(mes, freq="M").start_time if mes != SIN_FECHA else None
     corrido = r["inicial"]
     if not filtrado and mes != SIN_FECHA:
@@ -1088,6 +1110,7 @@ def render_caja(
         st.rerun()
 
     st.markdown(_CSS, unsafe_allow_html=True)
+    et = etiquetas(tabla)
 
     cajas = cajas_internas(tabla)
     multi = len(cajas) > 1
@@ -1139,14 +1162,25 @@ def render_caja(
             ("Saldo inicial", pesos(r["inicial"]), f"1/{int(mes[5:])}/{mes[:4]}", "#8A7F85"),
             ("Entradas", pesos(r["entradas"]), nombre_mes(mes), "#2F7D4F"),
             ("Salidas", pesos(r["salidas"]), f"{r['movimientos']} movimientos", "#A33B4C"),
-            ("Saldo", pesos(r["saldo"]), "Al cierre del mes" if mes < hoy_mes else "Hasta hoy", "#8C2853"),
+            ("Saldo", pesos(r["saldo"]), "Al cierre del mes" if mes < hoy_mes else "Como la planilla del mes",
+             "#8C2853"),
         ])
+        if mes == hoy_mes:
+            # Movimientos ya cargados con fecha posterior a hoy (sueldos, gastos de fin de mes…).
+            hoy_fin = pd.Timestamp.today().normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+            futuros = _movs(dv)
+            futuros = futuros[(futuros["_mes"] == mes) & (futuros["_moneda"] == "ARS") & (futuros["_fecha"] > hoy_fin)
+                              & (~futuros["_inicial"])] if not futuros.empty else futuros
+            if len(futuros):
+                a_hoy = r["saldo"] - float(futuros["_entrada"].sum() - futuros["_salida"].sum())
+                st.caption(f":material/event_upcoming: {len(futuros)} movimiento(s) con fecha posterior a hoy. "
+                           f"Sin ellos, el saldo a hoy es {pesos(a_hoy)}.")
         if multi and not es_total and (r.get("transf_entrada") or r.get("transf_salida")):
             st.caption(f":material/swap_horiz: Las entradas y salidas incluyen transferencias con otras cajas: "
                        f"entró {pesos(r['transf_entrada'])} · salió {pesos(r['transf_salida'])}.")
         ru = _resumen("USD")
         if ru["movimientos"] or abs(ru["inicial"]) > 0.004:
-            st.caption(f":material/attach_money: Caja en dólares: saldo **{dinero(ru['saldo'], 'USD')}** "
+            st.caption(f":material/attach_money: {et['dolares']}: saldo **{dinero(ru['saldo'], 'USD')}** "
                        f"(entró {dinero(ru['entradas'], 'USD')} · salió {dinero(ru['salidas'], 'USD')}).")
         for c_ in (cajas if es_total else [vista if multi else None]):
             lb = libro(de_caja(d, c_) if c_ else d, "ARS")
@@ -1180,7 +1214,7 @@ def render_caja(
             return
         if es_total and mes != SIN_FECHA:
             # Una planilla por caja interna, cada una con su saldo corrido.
-            buscar_t = st.text_input("Buscar", key=f"{k}buscar_total", placeholder="Descripción, quién u observación")
+            buscar_t = st.text_input("Buscar", key=f"{k}buscar_total", placeholder=et["buscar"])
             for c_ in cajas:
                 dc = de_caja(d, c_)
                 rc = resumen_mes(dc, mes, "ARS")
@@ -1188,11 +1222,12 @@ def render_caja(
                     st.markdown(f'<div class="cj-usd-vacio"><b>{html.escape(c_)}</b> · sin movimientos este mes · '
                                 f'saldo {pesos(rc["saldo"])}</div>', unsafe_allow_html=True)
                     continue
-                st.markdown(planilla_html(dc, mes, "ARS", buscar=buscar_t, titulo=c_), unsafe_allow_html=True)
+                st.markdown(planilla_html(dc, mes, "ARS", buscar=buscar_t, titulo=c_, col_quien=et["quien"]),
+                            unsafe_allow_html=True)
                 ru_c = resumen_mes(dc, mes, "USD")
                 if ru_c["movimientos"] or abs(ru_c["inicial"]) > 0.004:
-                    st.markdown(planilla_html(dc, mes, "USD", buscar=buscar_t, titulo=f"{c_} · dólares"),
-                                unsafe_allow_html=True)
+                    st.markdown(planilla_html(dc, mes, "USD", buscar=buscar_t, titulo=f"{c_} · dólares",
+                                              col_quien=et["quien"]), unsafe_allow_html=True)
             return
         d_full = d
         d = dv  # desde acá, la planilla de la caja interna elegida
@@ -1204,17 +1239,19 @@ def render_caja(
         with f1:
             rubro = st.pills("Rubro", ["Todos"] + RUBROS, default="Todos", key=f"{k}rubro") or "Todos"
         with f2:
-            buscar = st.text_input("Buscar", key=f"{k}buscar", placeholder="Descripción, quién u observación")
+            buscar = st.text_input("Buscar", key=f"{k}buscar", placeholder=et["buscar"])
         st.markdown(planilla_html(d, mes, "ARS", rubro=None if rubro == "Todos" else rubro, buscar=buscar,
-                                  titulo=f"{vista} · pesos" if multi else "Caja en pesos"), unsafe_allow_html=True)
+                                  titulo=f"{vista} · pesos" if multi else et["pesos"], col_quien=et["quien"]),
+                    unsafe_allow_html=True)
         lb_usd = libro(d, "USD")
         ru = resumen_mes(d, mes, "USD")
         if ru["movimientos"] or abs(ru["inicial"]) > 0.004:
             st.markdown(planilla_html(d, mes, "USD", rubro=None if rubro == "Todos" else rubro, buscar=buscar,
-                                      titulo=f"{vista} · dólares" if multi else "Caja en dólares"), unsafe_allow_html=True)
+                                      titulo=f"{vista} · dólares" if multi else et["dolares"], col_quien=et["quien"]),
+                        unsafe_allow_html=True)
         elif mes != SIN_FECHA:
             ultimo = dinero(lb_usd["saldo"].iloc[-1], "USD") if not lb_usd.empty else "US$ 0,00"
-            st.markdown(f'<div class="cj-usd-vacio"><b>Caja en dólares</b> · sin movimientos este mes · saldo {ultimo}</div>',
+            st.markdown(f'<div class="cj-usd-vacio"><b>{et["dolares"]}</b> · sin movimientos este mes · saldo {ultimo}</div>',
                         unsafe_allow_html=True)
         if multi:
             mov_fr = d_full[(d_full["_cuenta"] == vista) & d_full["_es_frasco"] & (d_full["_mes"] == mes)]
@@ -1355,13 +1392,13 @@ def render_caja(
             with c1:
                 rubro = st.segmented_control("Rubro", RUBROS, default=GENERAL, key=claves["rubro"]) or GENERAL
             with c2:
-                quien = st.text_input("Quién", key=claves["quien"], placeholder="Ej.: SOLER, AGUIRRE…")
+                quien = st.text_input(et["quien"], key=claves["quien"], placeholder=et["quien_ej"])
             with st.expander("Más datos", icon=":material/more_horiz:"):
                 medio = st.selectbox("Medio", ["Efectivo", "Transferencia", "Tarjeta", "Cheque", "Otro"], key=claves["medio"])
                 obs = st.text_input("Observaciones", key=claves["obs"])
         else:
             rubro, quien, medio, obs = GENERAL, "", "Efectivo", ""
-            st.caption("El saldo inicial es con lo que arranca la caja ese mes. No se cuenta como entrada; "
+            st.caption(f"El saldo inicial es con lo que arranca {et['unidad']} ese mes. No se cuenta como entrada; "
                        "los meses siguientes se calculan solos.")
         listo = importe > 0 and (tipo == "Saldo inicial" or desc.strip())
         etiqueta = {"Entrada": "Guardar entrada", "Salida": "Guardar salida", "Saldo inicial": "Guardar saldo inicial"}[tipo]
@@ -1400,7 +1437,7 @@ def render_caja(
                 "salida": st.column_config.NumberColumn("Salida", min_value=0.0, format="localized"),
                 "moneda": st.column_config.SelectboxColumn("Moneda", options=MONEDAS, required=True, width="small"),
                 "rubro": st.column_config.SelectboxColumn("Rubro", options=RUBROS, required=True),
-                "quien": st.column_config.TextColumn("Quién"),
+                "quien": st.column_config.TextColumn(et["quien"]),
                 "medio": st.column_config.SelectboxColumn("Medio", options=["Efectivo", "Transferencia", "Tarjeta",
                                                                              "Cheque", "Otro", ""]),
                 "observaciones": st.column_config.TextColumn("Observaciones"),
@@ -1434,7 +1471,7 @@ def render_caja(
                     st.info("Todavía no hay movimientos.")
                 continue
             din = lambda v, m=moneda: dinero(v, m)  # noqa: E731
-            st.markdown(f"**{(vista + ' · ') if multi else ''}{'Caja en pesos' if moneda == 'ARS' else 'Caja en dólares'}**")
+            st.markdown(f"**{(vista + ' · ') if multi else ''}{et['pesos'] if moneda == 'ARS' else et['dolares']}**")
             tabla_h = pd.DataFrame({
                 "Mes": lb["mes"].map(nombre_mes),
                 "Saldo inicial": lb["inicial"].map(din),
@@ -1463,9 +1500,9 @@ def render_caja(
         if multi:
             st.caption(":material/info: La planilla que se importa es la de **Efectivo**: Mercado Pago, Medicación y "
                        "los frascos no se tocan.")
-        st.caption("Subí la planilla de caja (mejor .xlsx, que conserva los colores). Se reconocen los bloques de cada "
-                   "mes: FECHA, DESCRIPCION, ENTRADA, SALIDA y la columna de quién, el SALDO INICIAL, el SALDO y la "
-                   "caja en dólares. El color verde o salmón define Alquileres o Caja gastos comunes.")
+        st.caption(f"Subí la {et['planilla']} (mejor .xlsx, que conserva los colores). Se reconocen los bloques de cada "
+                   f"mes: FECHA, DESCRIPCION, ENTRADA, SALIDA y la columna de {et['quien'].lower()}, el SALDO INICIAL, "
+                   "el SALDO y lo que esté en dólares. El color verde o salmón define Alquileres o Caja gastos comunes.")
         archivo = st.file_uploader("Planilla", type=["xlsx", "csv"], key=f"{k}archivo", label_visibility="collapsed")
         if archivo is None:
             return
@@ -1522,7 +1559,8 @@ def render_caja(
             st.dataframe(pd.DataFrame(vista_c), hide_index=True, use_container_width=True)
         dn = preparar(nuevo, dolar_por_texto=dolar_txt)
         with st.expander(f"Vista previa · {nombre_mes(sel[0])}", expanded=True, icon=":material/visibility:"):
-            st.markdown(planilla_html(dn, sel[0], "ARS", titulo="Caja en pesos"), unsafe_allow_html=True)
+            st.markdown(planilla_html(dn, sel[0], "ARS", titulo=et["pesos"], col_quien=et["quien"]),
+                        unsafe_allow_html=True)
         if st.button(f"Importar {len(sel)} mes(es)", type="primary", key=f"{k}imp_ok", icon=":material/upload_file:"):
             _guardar(nuevo, "Planilla importada", sel[0])
         return
