@@ -6,7 +6,8 @@ Circuito de cada registro de Facturación (pacientes que ingresaron a quirófano
                                                                                     ↘ Débito
 
 Controles, cada uno con cantidad e importe (en cero = todo bien):
-- Cirugías realizadas en la Agenda que no están en ninguna facturación (VMR ni VM).
+- Cirugías realizadas en la Agenda que no están en ninguna facturación (VMR ni VM). Cada una va a la
+  empresa de su procedimiento (``empresa_procedimiento``): en VMR sólo las de VMR; el resto, en VM.
 - Para facturar: sin N° de factura. Plazo de presentación: 60 días desde la prestación
   (``PLAZO_PRESENTACION``); avisa antes de que venza.
 - Por cobrar: vencidas (30/60/90+) y por vencer en 7 días; facturas sin vencimiento.
@@ -114,10 +115,61 @@ def _tokens(nombre: Any) -> frozenset[str]:
     return frozenset(tokens_nombre(nombre))
 
 
+# Procedimientos propios de reproducción (VMR). Sólo se usan si el procedimiento nunca se facturó:
+# lo que ya está cargado en Facturación VMR o VM manda.
+_CLAVES_VMR = (
+    # palabras completas (siglas)
+    "fiv", "icsi", "iiu", "pgt", "pgd", "pgta", "tec", "tesa", "tese", "crio", "ovo",
+    # partes de palabras
+    "in vitro", "fecundacion", "fertilizacion", "puncion ovar", "puncion folic", "puncion transvag",
+    "aspiracion folic", "aspiracion de ovoc", "ovocit", "ovulo", "transferencia", "ovodon", "ovulodon",
+    "criopreserv", "vitrific", "desvitrif", "insemin", "embrion", "biopsia testic", "microtese", "micro tese",
+    "recuperacion espermat", "espermatoz", "reproduc",
+)
+
+
+def _proc_norm(v: Any) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z0-9]+", " ", _sin_acentos(_texto(v)))).strip()
+
+
+def historial_procedimientos(facturaciones: dict[str, pd.DataFrame | None]) -> dict[str, str]:
+    """Procedimiento (normalizado) → empresa donde más se facturó. Ej.: {"VMR": raw_vmr, "VM": raw_vm}."""
+    cuenta: dict[str, dict[str, int]] = {}
+    for emp, df in facturaciones.items():
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            continue
+        d, cols = fx._prepare_facturacion(df)
+        if not cols.get("procedimiento"):
+            continue
+        for p in d.loc[~d["_cancelado"], "_procedimiento"]:
+            n = _proc_norm(p)
+            if n and n != "sin procedimiento":
+                cuenta.setdefault(n, {}).setdefault(emp, 0)
+                cuenta[n][emp] += 1
+    return {p: max(c.items(), key=lambda kv: (kv[1], kv[0] == "VMR"))[0] for p, c in cuenta.items()}
+
+
+def empresa_procedimiento(procedimiento: Any, historial: dict[str, str] | None = None) -> str:
+    """De qué empresa es una cirugía: lo que ya se facturó manda; si es nuevo, VMR sólo si es de
+    reproducción; el resto, VM."""
+    n = _proc_norm(procedimiento)
+    hist = historial or {}
+    if n in hist:
+        return hist[n]
+    palabras = set(n.split())
+    if any((k in palabras) if " " not in k and len(k) <= 5 else (k in n) for k in _CLAVES_VMR):
+        return "VMR"
+    return "VM"
+
+
 def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.DataFrame],
-                        hoy: date | None = None) -> pd.DataFrame:
+                        hoy: date | None = None, empresa: str | None = None,
+                        historial: dict[str, str] | None = None) -> pd.DataFrame:
     """Cirugías «Realizado» de la Agenda (últimos ``VENTANA_AGENDA`` días) que no aparecen en ninguna
-    facturación: mismo paciente (nombre en cualquier orden) y fecha a menos de 60 días."""
+    facturación: mismo paciente (nombre en cualquier orden) y fecha a menos de 60 días.
+
+    Cada una lleva su «Empresa» (``empresa_procedimiento``). Con ``empresa`` sólo quedan las de esa
+    empresa: en Facturación VMR no aparecen las cirugías que no son procedimientos de VMR."""
     if agenda_raw is None or not isinstance(agenda_raw, pd.DataFrame) or agenda_raw.empty:
         return pd.DataFrame()
     from vitae.modulos import quirofano as qx
@@ -145,8 +197,12 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
         esta = any(len(t & r) >= 2 and (pd.isna(f) or abs((f - c["_fecha_dt"]).days) <= 62) for r, f in registros)
         if not esta:
             faltan.append({"Fecha": c["_fecha_dt"], "Paciente": c["paciente"], "Procedimiento": c["procedimiento"],
-                           "Médico": c["medico"], "Obra social": c["obra_social"]})
-    return pd.DataFrame(faltan)
+                           "Médico": c["medico"], "Obra social": c["obra_social"],
+                           "Empresa": empresa_procedimiento(c["procedimiento"], historial)})
+    out = pd.DataFrame(faltan)
+    if empresa and not out.empty:
+        out = out[out["Empresa"] == str(empresa).upper()].reset_index(drop=True)
+    return out
 
 
 def numeros_salteados(d: pd.DataFrame, maximo_hueco: int = 15) -> pd.DataFrame:
@@ -200,8 +256,8 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
 
 CONTROLES = [
     # clave, título, por qué, nivel si hay casos
-    ("agenda", "Cirugías realizadas sin cargar en facturación", "En la Agenda figuran como realizadas y no están ni en VMR "
-     "ni en VM.", "alta"),
+    ("agenda", "Cirugías realizadas sin cargar en facturación", "En la Agenda figuran como realizadas, son procedimientos "
+     "de esta empresa y no están ni en VMR ni en VM.", "alta"),
     ("sin_facturar_vencido", f"Sin facturar con el plazo de {PLAZO_PRESENTACION} días vencido",
      "Pasaron más de 60 días desde la prestación.", "alta"),
     ("sin_facturar_proximo", f"Sin facturar: vence el plazo en {AVISO_PRESENTACION} días o menos",
@@ -315,11 +371,19 @@ def cierre_mensual(d: pd.DataFrame, hoy: date | None = None, meses: int = 6) -> 
     return pd.DataFrame(filas).sort_values("_mes", ascending=False).reset_index(drop=True)
 
 
+def _historial(raw: pd.DataFrame | None, otras: list[pd.DataFrame] | None, empresa: str | None) -> dict[str, str]:
+    otra = "VM" if str(empresa or "").upper() == "VMR" else "VMR"
+    return historial_procedimientos({str(empresa or "").upper(): raw, otra: (list(otras or []) or [None])[0]})
+
+
 def resumen(raw: pd.DataFrame | None, agenda_raw: pd.DataFrame | None = None,
-            otras_facturaciones: list[pd.DataFrame] | None = None, hoy: date | None = None) -> dict[str, Any]:
-    """Para el Panel general y Luz."""
+            otras_facturaciones: list[pd.DataFrame] | None = None, hoy: date | None = None,
+            empresa: str | None = None) -> dict[str, Any]:
+    """Para el Panel general y Luz. Con ``empresa`` ("VMR"/"VM") las cirugías sin cargar son sólo
+    las de esa empresa; ``otras_facturaciones[0]`` es la facturación de la otra empresa."""
     d, _ = preparar(raw, hoy)
-    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy) if agenda_raw is not None \
+    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy, empresa,
+                             _historial(raw, otras_facturaciones, empresa)) if agenda_raw is not None \
         else pd.DataFrame()
     c = controles(d, ag, hoy)
     t = tabla_controles(c)
@@ -419,7 +483,8 @@ def render_control(raw: pd.DataFrame, *, empresa: str, guardar: Callable[[pd.Dat
     st.markdown(_CSS, unsafe_allow_html=True)
     raw = raw.reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
     d, cols = preparar(raw, hoy_d)
-    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy_d)
+    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy_d, empresa,
+                             _historial(raw, otras_facturaciones, empresa))
     c = controles(d, ag, hoy_d)
     b = bandeja(c, hoy_d)
     t = tabla_controles(c)
@@ -487,7 +552,8 @@ def render_control(raw: pd.DataFrame, *, empresa: str, guardar: Callable[[pd.Dat
     # Resolver por grupo
     if not c["agenda"].empty:
         st.markdown('<div class="cf-tit">Cirugías realizadas sin cargar en facturación</div>'
-                    f'<div class="cf-sub">Tildá las que son de {html.escape(empresa)}, poné el importe y agregalas.</div>',
+                    f'<div class="cf-sub">Sólo las de procedimientos de {html.escape(empresa)} (según lo que ya facturaste). '
+                    'Poné el importe y agregalas.</div>',
                     unsafe_allow_html=True)
         tab = c["agenda"].assign(Agregar=False, Importe="", Fecha=c["agenda"]["Fecha"].map(_fecha_txt))
         ed = st.data_editor(tab[["Agregar", "Fecha", "Paciente", "Procedimiento", "Médico", "Obra social", "Importe"]],
