@@ -356,6 +356,82 @@ def render_lista(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Call
 
 
 # ---------------------------------------------------------------------------
+# Solicitudes de la Agenda (sólo las de esta empresa, por la regla del procedimiento)
+# ---------------------------------------------------------------------------
+_GRID_AG = "minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 90px"
+
+
+def html_solicitudes(ag: pd.DataFrame, empresa: str) -> str:
+    partes = [CSS, f'<div class="fz-bloque"><div class="fz-tit"><b>Solicitudes de la Agenda</b>'
+              f'<span>{len(ag)} realizada(s) · procedimientos de {_e(empresa)}</span></div>'
+              f'<div class="fz-cols" style="grid-template-columns:{_GRID_AG}"><div>Paciente</div><div>Obra social</div>'
+              '<div>Procedimiento</div><div>Médico</div><div style="text-align:center">Fecha</div></div>']
+    for _, r in ag.iterrows():
+        partes.append(f'<div class="fz-row" style="grid-template-columns:{_GRID_AG}">'
+                      f'<div class="fz-p">{_e(_texto(r["Paciente"]))}</div><div class="fz-p fz-x">{_e(_texto(r["Obra social"]))}</div>'
+                      f'<div class="fz-p fz-x">{_e(_texto(r["Procedimiento"]))}</div><div class="fz-p fz-x">{_e(_texto(r["Médico"]))}</div>'
+                      f'<div class="fz-c">{_e(cf._fecha_txt(r["Fecha"]))}</div>'
+                      f'<div class="fz-meta">{_e(" · ".join(_texto(v) for v in (r["Obra social"], r["Procedimiento"], r["Médico"]) if _texto(v)))}'
+                      '</div></div>')
+    partes.append("</div>")
+    return "".join(partes)
+
+
+def filas_solicitudes(ctx: dict[str, Any], ag: pd.DataFrame) -> pd.DataFrame:
+    """Todas las solicitudes → la planilla con sus filas nuevas (importe sugerido, estado Pendiente)."""
+    nuevo, d, hoy = ctx["raw"], ctx["d"], ctx["hoy"]
+    for _, r in ag.iterrows():
+        imp = ff.importe_sugerido(d, _texto(r["Procedimiento"]), _texto(r["Obra social"])) if len(d) else None
+        nuevo = cf.nueva_fila(nuevo, ctx["cols"], r.to_dict(), ff._txt_imp(imp), hoy,
+                              observaciones="Cargada desde la Agenda de Quirófano")
+    return nuevo
+
+
+def render_solicitudes(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any],
+                       guardar_tabla: Callable[[str, pd.DataFrame], Any] | None, descartadas: pd.DataFrame | None,
+                       key: str, usuario: str = "") -> None:
+    """Cirugías realizadas en la Agenda que son de esta empresa y todavía no están: agregar o descartar."""
+    ag = ctx["c"].get("agenda")
+    if ag is None or ag.empty:
+        return
+    ag = ag.reset_index(drop=True)
+    st.markdown('<div class="cf-tit">Solicitudes de la Agenda</div><div class="fp-sub">Realizadas en quirófano con '
+                f'procedimientos de {_e(ctx["empresa"])} que todavía no están cargadas. Agregalas (revisás el importe) o '
+                'descartalas si ya están o no se facturan.</div>', unsafe_allow_html=True)
+
+    def ok(aviso: str) -> None:
+        st.session_state[f"{key}_cf_rev"] = int(st.session_state.get(f"{key}_cf_rev", 0)) + 1
+        st.toast(aviso, icon=":material/check_circle:")
+        st.rerun()
+
+    with st.container(border=True):
+        c = st.columns([3.2, 1.1, 1.1, 1.4], vertical_alignment="bottom")
+        i = c[0].selectbox("Solicitud", list(ag.index), index=None, key=f"{key}_fz_sol",
+                           format_func=lambda j: " · ".join(_texto(v) for v in (
+                               ag.loc[j, "Paciente"], ag.loc[j, "Obra social"], ag.loc[j, "Procedimiento"],
+                               cf._fecha_txt(ag.loc[j, "Fecha"])) if _texto(v)),
+                           placeholder="Elegí la cirugía para agregarla o descartarla…")
+        if c[1].button("Agregar", key=f"{key}_fz_sol_add", type="primary", disabled=i is None,
+                       use_container_width=True, icon=":material/add:"):
+            ff.dialogo_nuevo(st, ctx, guardar, key, ag.loc[i].to_dict())
+        if c[2].button("Descartar", key=f"{key}_fz_sol_desc", disabled=i is None or guardar_tabla is None,
+                       use_container_width=True, icon=":material/block:",
+                       help="Ya está cargada o no se factura: no vuelve a aparecer."):
+            guardar_tabla(cf.TABLA_DESCARTADAS, cf.descartar(descartadas, [ag.loc[i].to_dict()], ctx["empresa"],
+                                                             "Descartada", usuario, ctx["hoy"]))
+            ok(f"Solicitud de {_texto(ag.loc[i, 'Paciente'])} descartada")
+        if len(ag) > 1 and c[3].button(f"Agregar las {len(ag)}", key=f"{key}_fz_sol_todas", use_container_width=True,
+                                       icon=":material/playlist_add:", help="Con el importe sugerido."):
+            try:
+                guardar(filas_solicitudes(ctx, ag))
+            except Exception as exc:
+                st.error(f"No se pudo guardar: {exc}")
+                return
+            ok(f"{len(ag)} cirugía(s) agregada(s)")
+    st.markdown(html_solicitudes(ag, ctx["empresa"]), unsafe_allow_html=True)
+
+
+# ---------------------------------------------------------------------------
 # Presentaciones (facturar por obra social)
 # ---------------------------------------------------------------------------
 _GRID_PR = "minmax(0,1.3fr) 90px minmax(0,1.2fr) 150px 120px 150px"

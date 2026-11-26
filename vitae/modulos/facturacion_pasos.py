@@ -9,9 +9,12 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
   (qué falta y dónde se resuelve), por obra social y sus registros por obra social o por paciente
   (``facturacion_mes``).
 
-REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son dos facturaciones distintas; cada módulo sólo lee y
-controla su propia planilla. La Agenda era un respaldo: no se compara contra Facturación.
-- Cargar: datos incompletos o repetidos, nuevo registro y la calidad de la planilla (para ver o editar
+REGLA PRINCIPAL (a muerte): VMR (fertilidad) y VM (quirófano) son dos facturaciones distintas; cada módulo
+sólo lee y controla su propia planilla. Son de VMR: FIV, FIV OVO, FIV OVO SDA, FIV SDA, TE, TEC, aspiración
+folicular, crio, criopreservación de semen e IIU; todo lo demás, de VM. De la Agenda, cada módulo ve como
+solicitud sólo las cirugías realizadas de su empresa.
+- Cargar: solicitudes de la Agenda (de esta empresa), datos incompletos o repetidos, nuevo registro y la
+  calidad de la planilla (para ver o editar
   cualquier registro: Registros).
 - Facturar: lo que falta facturar, por obra social (presentaciones) o todo junto, por el plazo de 60 días.
 - Cobrar: vencidas, por vencer y sin vencimiento; antigüedad, por obra social y a quién cobrar primero.
@@ -49,10 +52,11 @@ NOMBRES = {"hoy": "Mes", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "
 LEGACY = {"tabla": "Editar tabla", "importar": "Importar"}
 ANALISIS = ["Resumen", "Cobranza", "Producción", "Calidad"]
 # Regla principal: dos empresas, dos facturaciones que no se mezclan.
-REGLA = {"VMR": "VMR es la empresa de fertilidad: acá van sólo las pacientes de procedimientos de reproducción. "
-                "Lo de quirófano que no es de reproducción va en Facturación VM.",
-         "VM": "VM es el quirófano: acá va lo que no es de reproducción. Las pacientes de procedimientos de "
-               "reproducción (aunque se registren en la Agenda de VM) van en Facturación VMR."}
+REGLA = {"VMR": "VMR es fertilidad: acá van sólo FIV, FIV OVO, FIV OVO SDA, FIV SDA, TE, TEC, aspiración folicular, "
+                "crio, criopreservación de semen e IIU. Todo lo demás va en Facturación VM.",
+         "VM": "VM es el quirófano: acá va todo lo que no es de fertilidad. FIV, FIV OVO, FIV SDA, TE, TEC, aspiración "
+               "folicular, crio, criopreservación de semen e IIU van en Facturación VMR (aunque se registren en la "
+               "Agenda)."}
 
 _CSS = """<style>
 .fp-paso{display:flex;align-items:baseline;gap:.6rem;margin:.6rem 0 .1rem}
@@ -85,7 +89,7 @@ def cuentas(ctx: dict[str, Any]) -> dict[str, int]:
 
     hoy_ = ctx["hoy"]
     del_mes = fm.registros(ctx["d"], f"{hoy_.year:04d}-{hoy_.month:02d}")
-    return {"cargar": n("incompletos", "repetidas"),
+    return {"cargar": int(len(c["agenda"])) + n("incompletos", "repetidas"),
             "facturar": n("sin_facturar"), "cobrar": n("vencidas", "por_vencer", "sin_vencimiento"),
             "debitos": n("debitos", "parcial_sin_debito")}
 
@@ -142,7 +146,9 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     hoy_d = hoy or date.today()
     # REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son distintas y no se mezclan: cada una se controla
     # sólo con su planilla (no se lee la de la otra empresa). La Agenda era un respaldo: no se compara.
-    ctx = cf.contexto(raw, empresa=empresa, hoy=hoy_d)
+    descartadas = leer_tabla(cf.TABLA_DESCARTADAS)
+    ctx = cf.contexto(raw, empresa=empresa, agenda_raw=leer_tabla("agenda_quirofano"), hoy=hoy_d,
+                      descartadas=descartadas)
     from vitae.modulos import presentaciones as pr
 
     ctx["requisitos"] = leer_tabla(pr.TABLA_REQ)
@@ -301,8 +307,10 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                             "procedimiento e importe). Lo que no está cargado no se factura."), unsafe_allow_html=True)
         c = ctx["c"]
         if not n["cargar"]:
-            st.markdown('<div class="fp-ok">✅ Los datos de todo lo cargado están completos.</div>',
-                        unsafe_allow_html=True)
+            st.markdown('<div class="fp-ok">✅ Sin solicitudes de la Agenda y con los datos de todo lo cargado '
+                        'completos.</div>', unsafe_allow_html=True)
+        fz.render_solicitudes(st, ctx, guardar=guardar, guardar_tabla=guardar_tabla, descartadas=descartadas, key=key,
+                              usuario=usuario)
         x, _, _ = cf.grupo(c, "Completar datos")
         if len(x):
             rep_ = c["repetidas"].index if len(c["repetidas"]) else []

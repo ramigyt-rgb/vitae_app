@@ -171,7 +171,11 @@ def situacion(ctx: dict[str, Any], mes: str) -> list[dict[str, Any]]:
     def imp(x: pd.DataFrame, col: str) -> float:
         return float(x[col].sum()) if len(x) and col in x.columns else 0.0
 
+    ag = c.get("agenda")
+    ag_mes = ag[_mes(pd.to_datetime(ag["Fecha"], errors="coerce")) == mes] if ag is not None and not ag.empty else []
     return [
+        {"punto": "Solicitudes de la Agenda", "casos": len(ag_mes), "importe": 0.0, "paso": "cargar",
+         "detalle": "Realizadas en quirófano (de esta empresa) que todavía no están cargadas.", "grave": False},
         {"punto": "Datos para completar", "casos": len(inc), "importe": 0.0, "paso": "cargar",
          "detalle": "Falta obra social, procedimiento o importe, o el N° de factura está repetido.", "grave": False},
         {"punto": "Sin facturar", "casos": len(sf), "importe": imp(sf, "_monto"), "paso": "facturar",

@@ -123,17 +123,12 @@ def _tokens(nombre: Any) -> frozenset[str]:
     return frozenset(tokens_nombre(nombre))
 
 
-# Procedimientos propios de reproducción (VMR). Sólo se usan si el procedimiento nunca se facturó:
-# lo que ya está cargado en Facturación VMR o VM manda.
-_CLAVES_VMR = (
-    # palabras completas (siglas)
-    "fiv", "icsi", "iiu", "pgt", "pgd", "pgta", "tec", "tesa", "tese", "crio", "ovo",
-    # partes de palabras
-    "in vitro", "fecundacion", "fertilizacion", "puncion ovar", "puncion folic", "puncion transvag",
-    "aspiracion folic", "aspiracion de ovoc", "ovocit", "ovulo", "transferencia", "ovodon", "ovulodon",
-    "criopreserv", "vitrific", "desvitrif", "insemin", "embrion", "biopsia testic", "microtese", "micro tese",
-    "recuperacion espermat", "espermatoz", "reproduc",
-)
+# REGLA PRINCIPAL (se respeta a muerte): VMR es fertilidad y VM es quirófano. Son de VMR sólo estos
+# procedimientos: FIV, FIV OVO, FIV OVO SDA, FIV SDA, TE, TEC, aspiración folicular, crio, criopreservación
+# (de semen) e IIU, escritos con sus siglas o completos. TODO lo demás es de VM. No lo decide lo que se haya
+# cargado antes: VMR y VM no se mezclan, ni en lo que se lee ni en lo que se carga.
+_SIGLAS_VMR = frozenset({"fiv", "ovo", "sda", "te", "tec", "iiu", "crio"})
+_FRASES_VMR = ("aspiracion folic", "criopreserv", "transferencia embrion", "inseminacion intrauterin")
 
 
 def _proc_norm(v: Any) -> str:
@@ -158,26 +153,61 @@ def historial_procedimientos(facturaciones: dict[str, pd.DataFrame | None]) -> d
 
 
 def empresa_procedimiento(procedimiento: Any, historial: dict[str, str] | None = None) -> str:
-    """De qué empresa es una cirugía: lo que ya se facturó manda; si es nuevo, VMR sólo si es de
-    reproducción; el resto, VM."""
+    """De qué empresa es una cirugía (regla principal): VMR si el procedimiento es uno de fertilidad
+    (``_SIGLAS_VMR`` / ``_FRASES_VMR``); todo lo demás, VM. ``historial`` se acepta por compatibilidad pero
+    no cambia nada: lo cargado antes no decide."""
     n = _proc_norm(procedimiento)
-    hist = historial or {}
-    if n in hist:
-        return hist[n]
-    palabras = set(n.split())
-    if any((k in palabras) if " " not in k and len(k) <= 5 else (k in n) for k in _CLAVES_VMR):
+    if set(n.split()) & _SIGLAS_VMR or any(f in n for f in _FRASES_VMR):
         return "VMR"
     return "VM"
 
 
+TABLA_DESCARTADAS = "facturacion_agenda_descartadas"
+COLS_DESCARTADAS = ["clave", "empresa", "paciente", "fecha", "procedimiento", "motivo", "usuario", "registrado"]
+
+
+def clave_agenda(paciente: Any, fecha: Any, procedimiento: Any) -> str:
+    """Identifica una cirugía de la Agenda (para descartarla una vez)."""
+    f = pd.Timestamp(fecha) if fecha is not None and not (isinstance(fecha, float) and pd.isna(fecha)) else pd.NaT
+    return (f"{' '.join(sorted(_tokens(paciente)))}|{f.strftime('%Y-%m-%d') if pd.notna(f) else ''}|"
+            f"{_proc_norm(procedimiento)}")
+
+
+def claves_descartadas(tabla: pd.DataFrame | None, empresa: str) -> set[str]:
+    if tabla is None or not isinstance(tabla, pd.DataFrame) or tabla.empty or "clave" not in tabla.columns:
+        return set()
+    t = tabla[tabla["empresa"].astype(str).str.upper() == str(empresa).upper()] if "empresa" in tabla.columns else tabla
+    return set(t["clave"].astype(str))
+
+
+def descartar(tabla: pd.DataFrame | None, filas: list[dict[str, Any]], empresa: str, motivo: str, usuario: str = "",
+              hoy: date | None = None) -> pd.DataFrame:
+    """Las solicitudes de la Agenda que no van («ya está cargada», «no se factura»): no vuelven a aparecer."""
+    base = tabla.copy() if isinstance(tabla, pd.DataFrame) and not tabla.empty else pd.DataFrame(columns=COLS_DESCARTADAS)
+    for c in COLS_DESCARTADAS:
+        if c not in base.columns:
+            base[c] = ""
+    nuevas = []
+    for fila in filas:
+        clave = clave_agenda(fila.get("Paciente"), fila.get("Fecha"), fila.get("Procedimiento"))
+        base = base[~((base["clave"].astype(str) == clave) & (base["empresa"].astype(str).str.upper() == empresa.upper()))]
+        f = fila.get("Fecha")
+        nuevas.append({"clave": clave, "empresa": empresa.upper(), "paciente": _texto(fila.get("Paciente")),
+                       "fecha": pd.Timestamp(f).strftime("%d/%m/%Y") if f is not None and pd.notna(f) else "",
+                       "procedimiento": _texto(fila.get("Procedimiento")), "motivo": motivo, "usuario": usuario,
+                       "registrado": pd.Timestamp(hoy or date.today()).strftime("%d/%m/%Y")})
+    return pd.concat([base[COLS_DESCARTADAS], pd.DataFrame(nuevas, columns=COLS_DESCARTADAS)],
+                     ignore_index=True).astype(str)
+
+
 def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.DataFrame],
                         hoy: date | None = None, empresa: str | None = None,
-                        historial: dict[str, str] | None = None) -> pd.DataFrame:
-    """Cirugías «Realizado» de la Agenda (últimos ``VENTANA_AGENDA`` días) que no aparecen en ninguna
-    facturación: mismo paciente (nombre en cualquier orden) y fecha a menos de 60 días.
+                        historial: dict[str, str] | None = None, descartadas: set[str] | None = None) -> pd.DataFrame:
+    """Solicitudes de la Agenda: cirugías «Realizado» (últimos ``VENTANA_AGENDA`` días) que todavía no están
+    en la facturación (mismo paciente, nombre en cualquier orden, y fecha a menos de 60 días) ni se descartaron.
 
-    Cada una lleva su «Empresa» (``empresa_procedimiento``). Con ``empresa`` sólo quedan las de esa
-    empresa: en Facturación VMR no aparecen las cirugías que no son procedimientos de VMR."""
+    Con ``empresa`` (regla principal): sólo las cirugías de esa empresa por su procedimiento, comparadas sólo
+    contra SU facturación (``facturaciones[0]``): en VMR nunca aparece nada de VM, ni al revés."""
     if agenda_raw is None or not isinstance(agenda_raw, pd.DataFrame) or agenda_raw.empty:
         return pd.DataFrame()
     from vitae.modulos import quirofano as qx
@@ -188,6 +218,12 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
             & (ag["_fecha_dt"] >= h - pd.Timedelta(days=VENTANA_AGENDA)) & (ag["paciente"].str.strip() != "")]
     if ag.empty:
         return pd.DataFrame()
+    if empresa:
+        ag = ag[ag["procedimiento"].map(lambda p_: empresa_procedimiento(p_) == str(empresa).upper())]
+        facturaciones = list(facturaciones or [])[:1]
+        if ag.empty:
+            return pd.DataFrame()
+    fuera = descartadas or set()
     registros: list[tuple[frozenset[str], pd.Timestamp]] = []
     for df in facturaciones:
         if not isinstance(df, pd.DataFrame) or df.empty:
@@ -200,13 +236,13 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
     faltan = []
     for _, c in ag.iterrows():
         t = _tokens(c["paciente"])
-        if len(t) < 2:
+        if len(t) < 2 or clave_agenda(c["paciente"], c["_fecha_dt"], c["procedimiento"]) in fuera:
             continue
         esta = any(len(t & r) >= 2 and (pd.isna(f) or abs((f - c["_fecha_dt"]).days) <= 62) for r, f in registros)
         if not esta:
             faltan.append({"Fecha": c["_fecha_dt"], "Paciente": c["paciente"], "Procedimiento": c["procedimiento"],
                            "Médico": c["medico"], "Obra social": c["obra_social"],
-                           "Empresa": empresa_procedimiento(c["procedimiento"], historial)})
+                           "Empresa": empresa_procedimiento(c["procedimiento"])})
     out = pd.DataFrame(faltan)
     if empresa and not out.empty:
         out = out[out["Empresa"] == str(empresa).upper()].reset_index(drop=True)
@@ -506,14 +542,17 @@ _CSS = """<style>
 
 
 def contexto(raw: pd.DataFrame | None, *, empresa: str, agenda_raw: pd.DataFrame | None = None,
-             otras_facturaciones: list[pd.DataFrame] | None = None, hoy: date | None = None) -> dict[str, Any]:
+             otras_facturaciones: list[pd.DataFrame] | None = None, hoy: date | None = None,
+             descartadas: pd.DataFrame | None = None) -> dict[str, Any]:
     """Todo lo que necesitan los pasos (Hoy, Cargar, Facturar, Cobrar, Débitos, Cierre), calculado una vez."""
     hoy_d = hoy or date.today()
     raw = raw.reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
     d, cols = preparar(raw, hoy_d)
-    # REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son distintas; cada una se controla sólo con su
-    # planilla. La Agenda era un respaldo: no se compara contra Facturación (``agenda`` queda vacía).
-    ag = pd.DataFrame()
+    # REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son distintas; cada una sólo con su planilla
+    # (``otras_facturaciones`` ya no se usa). ``agenda``: las solicitudes de la Agenda de ESTA empresa.
+    ag = agenda_sin_facturar(agenda_raw, [raw], hoy_d, empresa,
+                             descartadas=claves_descartadas(descartadas, empresa)) if agenda_raw is not None \
+        else pd.DataFrame()
     c = controles(d, ag, hoy_d)
     return {"raw": raw, "d": d, "cols": cols, "c": c, "b": bandeja(c, hoy_d), "t": tabla_controles(c),
             "hoy": hoy_d, "empresa": empresa, "agenda_raw": agenda_raw}

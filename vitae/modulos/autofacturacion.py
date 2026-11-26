@@ -1,11 +1,16 @@
-"""Agenda de Quirófano → Facturación, sola.
+"""Agenda de Quirófano → Facturación.
 
-Cuando en la Agenda una cirugía pasa a «Realizado» (o se carga directamente como realizada), se crea
-su ficha en la facturación de la empresa que corresponde a su procedimiento (VMR o VM, igual que el
-control): paciente, fecha, obra social, procedimiento, médico, importe sugerido (lo último de ese
-procedimiento y obra social), estado Pendiente y la documentación que ya figura en la Agenda
-(autorización, consentimiento firmado). Si ya está en la facturación de su empresa, no se duplica.
-Regla principal: reproducción → VMR; todo lo demás → VM (``control_facturacion.empresa_procedimiento``).
+REGLA PRINCIPAL (a muerte): lo decide el procedimiento (``control_facturacion.empresa_procedimiento``).
+FIV, FIV OVO, FIV OVO SDA, FIV SDA, TE, TEC, aspiración folicular, crio, criopreservación de semen e IIU
+son de VMR (fertilidad); todo lo demás es de VM (quirófano). VMR y VM no se mezclan: ni se lee ni se carga
+nada de una en la otra.
+
+Cuando en la Agenda una cirugía pasa a «Realizado»:
+- si es de VM, se carga sola en Facturación VM (paciente, fecha, obra social, procedimiento, médico,
+  importe sugerido, estado Pendiente y la documentación que ya figura en la Agenda). Si ya está en
+  Facturación VM, no se duplica;
+- si es de VMR, NO se escribe nada: queda como solicitud en Facturación VMR (1 · Cargar → «Solicitudes
+  de la Agenda»), donde se agrega o se descarta.
 
 Sólo las recién realizadas (las que pasan a «Realizado» al guardar): lo viejo de la Agenda no se revisa,
 porque la Agenda era un respaldo. No se duplica lo que ya está en la facturación de su empresa.
@@ -22,6 +27,7 @@ import vitae.modulos.control_facturacion as cf
 from vitae.modulos.pagos_pendientes import _sin_acentos, _texto
 
 TABLAS = {"VMR": "facturacion_vmr", "VM": "facturacion_vm"}
+DIRECTO = {"VM"}  # se cargan solas; las de VMR quedan como solicitud en su módulo
 
 
 def _clave(r: pd.Series) -> str:
@@ -73,6 +79,8 @@ def a_facturacion(cirugias: pd.DataFrame, facturaciones: dict[str, pd.DataFrame 
     base_agenda = agenda_raw.loc[cirugias.index] if isinstance(agenda_raw, pd.DataFrame) else None
     out: dict[str, tuple[pd.DataFrame, list[str]]] = {}
     for empresa, tabla in TABLAS.items():
+        if empresa not in raws:
+            continue
         raw = raws.get(empresa, pd.DataFrame())
         if base_agenda is not None:
             # Sólo contra la facturación de su empresa: VMR y VM no se mezclan.
@@ -115,10 +123,17 @@ def al_guardar_agenda(antes: pd.DataFrame | None, despues: pd.DataFrame, leer: C
     nuevas = recien_realizadas(antes, despues)
     if nuevas.empty:
         return []
-    facts = {e: leer(t) for e, t in TABLAS.items()}
-    cambios = a_facturacion(nuevas, facts, hoy, agenda_raw=despues)
+    emp = nuevas["procedimiento"].map(cf.empresa_procedimiento)
     avisos = []
-    for empresa, (df, pacientes) in cambios.items():
-        guardar(TABLAS[empresa], df)
-        avisos.append(f"Cargada en Facturación {empresa}: " + ", ".join(pacientes))
+    # VM: se carga sola (sólo se lee y se escribe Facturación VM)
+    vm = nuevas[emp == "VM"]
+    if len(vm):
+        cambios = a_facturacion(vm, {"VM": leer(TABLAS["VM"])}, hoy, agenda_raw=despues)
+        for empresa, (df, pacientes) in cambios.items():
+            guardar(TABLAS[empresa], df)
+            avisos.append(f"Cargada en Facturación {empresa}: " + ", ".join(pacientes))
+    # VMR: no se escribe nada; queda como solicitud en Facturación VMR
+    vmr = nuevas[emp == "VMR"]
+    if len(vmr):
+        avisos.append("Solicitud en Facturación VMR (1 · Cargar): " + ", ".join(_texto(p) for p in vmr["paciente"]))
     return avisos
