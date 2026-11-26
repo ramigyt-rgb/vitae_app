@@ -266,8 +266,11 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     if vista == "fichas":
         d = ctx["d"]
         st.markdown(_titulo("", "Registros", "Todos los pacientes cargados, en planilla por obra social (lo pendiente "
-                            "de pago, arriba). Elegí el paciente o la factura en la barra para avanzar o editar "
-                            "cualquier dato."), unsafe_allow_html=True)
+                            "de pago, arriba). «Ver y avanzar»: elegí el paciente o la factura en la barra. «Editar en "
+                            "tabla»: cambiá cualquier dato y guardá todo junto."), unsafe_allow_html=True)
+        d, periodo = filtro_periodo(st, d, ctx["hoy"], key=f"{key}_reg")
+        modo = st.segmented_control("Modo", ["Ver y avanzar", "Editar en tabla"], default="Ver y avanzar",
+                                    key=f"{key}_reg_modo", label_visibility="collapsed") or "Ver y avanzar"
         cnt = ff.cuentas_filtros(d)
         c1, c2 = st.columns([4, 1.3])
         with c1:
@@ -278,8 +281,11 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                          icon=":material/add:"):
                 ff.dialogo_nuevo(st, ctx, guardar, key)
         x = ff.filtrar(d, filtro)
-        fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}", titulo=filtro,
-                        vacio="No hay registros en este grupo.")
+        if modo == "Editar en tabla":
+            fz.render_edicion(st, ctx, x, guardar=guardar, key=key)
+            return
+        fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}_{periodo}",
+                        titulo=f"{filtro} · {periodo}", vacio=f"No hay registros en este grupo ({periodo}).")
         return
 
     # ---- Hoy ---------------------------------------------------------------------------
@@ -633,6 +639,36 @@ def _presentaciones(st: Any, ctx: dict[str, Any], *, key: str, guardar: Callable
         if st.button("Guardar documentación", key=f"{key}_req_ok", icon=":material/save:"):
             guardar_tabla(pr.TABLA_REQ, pr.guardar_req(req, empresa, ed))
             _ok("Documentación por obra social guardada")
+
+
+TODOS_ANIOS = "Todos los años"
+TODO_EL_ANIO = "Todo el año"
+
+
+def filtro_periodo(st: Any, d: pd.DataFrame, hoy: date, *, key: str) -> tuple[pd.DataFrame, str]:
+    """Año y mes (por fecha de prestación). Abre en el mes actual. Devuelve (filas, texto del período)."""
+    import vitae.modulos.cierre_facturacion as cfx_
+
+    f = d["_prestacion"] if len(d) else pd.Series(dtype="datetime64[ns]")
+    anios = sorted({int(a) for a in f.dropna().dt.year} | {hoy.year}, reverse=True)
+    c1, c2, _ = st.columns([1, 1.4, 2.6], vertical_alignment="bottom")
+    k_a, k_m = f"{key}_anio", f"{key}_mes"
+    if st.session_state.get(k_a) not in [TODOS_ANIOS] + anios:
+        st.session_state[k_a] = hoy.year
+    anio = c1.selectbox("Año", [TODOS_ANIOS] + anios, key=k_a)
+    if anio == TODOS_ANIOS:
+        return d, "todos los años"
+    del_anio = d[f.dt.year == anio] if len(d) else d
+    meses = list(range(12, 0, -1))
+    if st.session_state.get(k_m) not in [0] + meses:
+        st.session_state[k_m] = hoy.month if anio == hoy.year else 0
+    cuenta = del_anio["_prestacion"].dt.month.value_counts() if len(del_anio) else pd.Series(dtype=int)
+    mes = c2.selectbox("Mes", [0] + meses, key=k_m,
+                       format_func=lambda m: TODO_EL_ANIO if not m else
+                       f"{cfx_.MESES[m - 1].capitalize()} ({int(cuenta.get(m, 0))})")
+    if not mes:
+        return del_anio, f"año {anio}"
+    return del_anio[del_anio["_prestacion"].dt.month == mes], f"{cfx_.MESES[mes - 1]} {anio}"
 
 
 def _esc(t: Any) -> str:
