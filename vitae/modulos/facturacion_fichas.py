@@ -348,10 +348,11 @@ def ordenar(x: pd.DataFrame, orden: str) -> pd.DataFrame:
         return x
     pp = (~pendiente_pago(x)).astype(int)
     if orden == "Registros":
-        # Sólo para Registros: de la más reciente a la más antigua (fecha de prestación), sin separar.
-        return x.assign(_pa=x["_paciente"].astype(str)).sort_values(
-            ["_prestacion", "_numero_factura", "_pa"], ascending=[False, False, True], na_position="last",
-            kind="stable").drop(columns=["_pa"])
+        # Sólo para Registros, igual que «Tabla»: de la más reciente a la más antigua (fecha de prestación);
+        # con la misma fecha, en el orden de la planilla. Sin fecha, al final.
+        k_ = pd.to_datetime(x["_prestacion"], errors="coerce")
+        return x.assign(_k=k_).sort_values("_k", ascending=False, na_position="last", kind="mergesort").drop(
+            columns="_k")
     if orden == "Por fecha":
         # Lo pendiente primero; dentro de cada parte, por fecha de prestación (de la más vieja a la más nueva)
         return x.assign(_pp=pp, _pa=x["_paciente"].astype(str)).sort_values(
