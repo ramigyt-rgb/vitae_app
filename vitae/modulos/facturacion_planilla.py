@@ -180,14 +180,14 @@ def html_obra_social(x: pd.DataFrame, titulo: str, hoy: date, *, forzar_incomple
 
 
 def html_todo_junto(x: pd.DataFrame, titulo: str, hoy: date, *, forzar_incompleta: bool = False,
-                    notas: dict[Any, str] | None = None) -> str:
+                    notas: dict[Any, str] | None = None, orden: str = "Más urgentes") -> str:
     """Un solo bloque, de lo más urgente a lo menos, con la obra social en la primera columna."""
     if x.empty:
         return ""
     sin_factura = bool((~x["_facturada"]).all())
     partes = [f'<div class="fz-bloque"><div class="fz-tit"><b>{_e(titulo)}</b><span>{_e(resumen_txt(x))}</span></div>',
               _encabezado("Obra social", "Plazo" if sin_factura else "Vence")]
-    for i in ff.ordenar(x, "Más urgentes").index:
+    for i in ff.ordenar(x, orden).index:
         r = x.loc[i]
         partes.append(_fila(r, grupo=r["_obra_social"], sub="", primera=True, hoy=hoy, columna_os=True,
                             forzar_incompleta=forzar_incompleta, nota=(notas or {}).get(i, "")))
@@ -197,11 +197,12 @@ def html_todo_junto(x: pd.DataFrame, titulo: str, hoy: date, *, forzar_incomplet
 
 
 def html_planilla(x: pd.DataFrame, hoy: date, vista: str = "Por obra social", *, titulo: str = "Todas",
-                  forzar_incompleta: bool = False, notas: dict[Any, str] | None = None) -> str:
+                  forzar_incompleta: bool = False, notas: dict[Any, str] | None = None,
+                  orden: str = "Más urgentes") -> str:
     if x.empty:
         return ""
     if vista == "Todo junto":
-        return CSS + html_todo_junto(x, titulo, hoy, forzar_incompleta=forzar_incompleta, notas=notas)
+        return CSS + html_todo_junto(x, titulo, hoy, forzar_incompleta=forzar_incompleta, notas=notas, orden=orden)
     ro = ff.resumen_obras(x)
     return CSS + "".join(html_obra_social(x[x["_obra_social"] == os_], os_, hoy, forzar_incompleta=forzar_incompleta,
                                           notas=notas) for os_ in ro["Obra social"])
@@ -210,15 +211,15 @@ def html_planilla(x: pd.DataFrame, hoy: date, vista: str = "Por obra social", *,
 # ---------------------------------------------------------------------------
 # Barra de acción: elegir paciente o factura y actuar
 # ---------------------------------------------------------------------------
-def opciones_accion(x: pd.DataFrame) -> list[str]:
-    """Las facturas conjuntas primero (``F|número``) y cada paciente (``R|fila``), en orden de urgencia."""
+def opciones_accion(x: pd.DataFrame, orden: str = "Más urgentes") -> list[str]:
+    """Las facturas conjuntas primero (``F|número``) y cada paciente (``R|fila``), en el orden pedido."""
     if x.empty:
         return []
     out: list[str] = []
     for numero, filas in ff.grupos_factura(ff.ordenar(x, "Más urgentes")):
         if numero and len(filas) > 1:
             out.append(f"F|{numero}")
-    out += [f"R|{int(i)}" for i in ff.ordenar(x, "Más urgentes").index]
+    out += [f"R|{int(i)}" for i in ff.ordenar(x, orden).index]
     return out
 
 
@@ -239,14 +240,15 @@ def etiqueta_accion(op: str, x: pd.DataFrame) -> str:
 
 
 def _barra(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, k: str, key: str, guardar: Callable[[pd.DataFrame], Any],
-           forzar_incompleta: bool) -> None:
-    ops = opciones_accion(x)
+           forzar_incompleta: bool, solo_editar: bool = False, orden: str = "Más urgentes") -> None:
+    ops = opciones_accion(x, orden)
     sel_key = f"{k}_sel"
     if st.session_state.get(sel_key) not in ops:
         st.session_state.pop(sel_key, None)
     with st.container(border=True):
         c = st.columns([3.4, 1.25, 1.25, 1.25], vertical_alignment="bottom")
-        op = c[0].selectbox("Para actuar, elegí un paciente o una factura", ops, index=None, key=sel_key,
+        op = c[0].selectbox("Para editar, elegí un paciente o una factura" if solo_editar else
+                            "Para actuar, elegí un paciente o una factura", ops, index=None, key=sel_key,
                             format_func=lambda o: etiqueta_accion(o, x),
                             placeholder="Escribí el paciente, la obra social o el N° de factura…")
         if not op:
@@ -256,6 +258,11 @@ def _barra(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, k: str, key: str, g
         if tipo == "F":
             filas = [int(i) for i in ctx["d"].index[ctx["d"]["_numero_factura"].astype(str).str.strip() == val]]
             g = ctx["d"].loc[filas]
+            if solo_editar:
+                if c[3].button("Datos de la factura", key=f"{k}_fd", type="primary", use_container_width=True,
+                               icon=":material/receipt_long:"):
+                    ff.dialogo_factura(st, ctx, filas, "datos", guardar, key)
+                return
             if float(g["_pendiente"].sum()) > 0.5 and c[3].button("Registrar cobro", key=f"{k}_fc", type="primary",
                                                                   use_container_width=True, icon=":material/payments:"):
                 ff.dialogo_factura(st, ctx, filas, "cobro", guardar, key)
@@ -265,7 +272,7 @@ def _barra(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, k: str, key: str, g
         i = int(val)
         r = ctx["d"].loc[i]
         inc = forzar_incompleta and ff.incompleta(r)
-        acc, texto = ff.accion(r, inc)
+        acc, texto = ("editar", "Editar") if solo_editar else ff.accion(r, inc)
         if acc != "editar":
             if c[3].button(texto, key=f"{k}_a", type="primary", use_container_width=True,
                            icon={"facturar": ":material/receipt_long:", "cobro": ":material/payments:",
@@ -273,7 +280,7 @@ def _barra(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, k: str, key: str, g
                 ff.dialogo(st, acc, i, ctx, guardar, key)
             if c[2].button("Editar", key=f"{k}_e", use_container_width=True, icon=":material/edit:"):
                 ff.dialogo(st, "editar", i, ctx, guardar, key)
-        elif c[3].button(texto, key=f"{k}_a", type="primary" if inc else "secondary", use_container_width=True,
+        elif c[3].button(texto, key=f"{k}_a", type="primary" if inc or solo_editar else "secondary", use_container_width=True,
                          icon=":material/edit:"):
             ff.dialogo(st, "editar", i, ctx, guardar, key)
         if "requisitos" in ctx and ff.etapa(r) == "cargado" and not inc:
@@ -299,8 +306,9 @@ def notas_documentacion(ctx: dict[str, Any], x: pd.DataFrame, notas: dict[Any, s
 
 def render_lista(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Callable[[pd.DataFrame], Any], key: str,
                  lista: str, vacio: str = "No hay nada acá.", notas: dict[Any, str] | None = None,
-                 forzar_incompleta: bool = False, vista: str = "Por obra social", titulo: str = "Todas") -> None:
-    """Filtros, barra de acción y la planilla."""
+                 forzar_incompleta: bool = False, vista: str = "Por obra social", titulo: str = "Todas",
+                 solo_editar: bool = False, orden: str = "Más urgentes") -> None:
+    """Filtros, barra de acción y la planilla. ``solo_editar``: la barra sólo edita (para 1 · Cargar)."""
     st.markdown(CSS + ff._CSS, unsafe_allow_html=True)
     k = f"{key}_fz_{lista}"
     pend = st.session_state.pop(f"{key}_abrir", None)
@@ -328,18 +336,20 @@ def render_lista(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Call
         st.info("Nada coincide con los filtros.")
         return
     notas = notas_documentacion(ctx, x, notas)
-    filas = [int(i) for i in ff.ordenar(x, "Más urgentes").index]
+    filas = [int(i) for i in ff.ordenar(x, orden).index]
     st.session_state[f"{key}_orden"] = filas
     for acc in ("facturar", "cobro", "debito", "editar"):
         st.session_state[f"{key}_orden_{acc}"] = [
             i for i in filas if ff.accion(ctx["d"].loc[i], forzar_incompleta and ff.incompleta(ctx["d"].loc[i]))[0] == acc]
-    _barra(st, ctx, x, k=k, key=key, guardar=guardar, forzar_incompleta=forzar_incompleta)
+    _barra(st, ctx, x, k=k, key=key, guardar=guardar, forzar_incompleta=forzar_incompleta, solo_editar=solo_editar,
+           orden=orden)
     mostrar = x
     if len(x) > MAX_FILAS:
         mostrar = x.loc[filas[:MAX_FILAS]]
-        st.caption(f"Se muestran los {MAX_FILAS} más urgentes de {len(x)}. Usá los filtros para ver el resto.")
-    st.markdown(html_planilla(mostrar, ctx["hoy"], v, titulo=titulo, forzar_incompleta=forzar_incompleta, notas=notas),
-                unsafe_allow_html=True)
+        st.caption(f"Se muestran {MAX_FILAS} de {len(x)} ({orden.lower()}). Usá los filtros o el buscador para ver el "
+                   "resto; en la barra de arriba están todos.")
+    st.markdown(html_planilla(mostrar, ctx["hoy"], v, titulo=titulo, forzar_incompleta=forzar_incompleta, notas=notas,
+                              orden=orden), unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
