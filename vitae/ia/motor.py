@@ -40,7 +40,8 @@ except Exception:  # pragma: no cover
 
 TABLA_CONOCIMIENTO = "ia_conocimiento"
 # Pestañas que la IA NUNCA lee (datos de acceso de usuarios).
-_TABLAS_PROHIBIDAS = {"usuarios_vitae"}
+# (pacientes: datos sensibles de salud, Ley 25.326 → la IA no los lee).
+_TABLAS_PROHIBIDAS = {"usuarios_vitae", "pacientes", "pacientes_accesos"}
 # Pestañas adicionales útiles fuera de MODULES.
 _TABLAS_EXTRA = {"Farmacia · movimientos": "farmacia_movimientos", "Gine Vitae · formularios web": "gine_vitae_formularios"}
 _MODULO_DE_EXTRA = {"Farmacia · movimientos": "Farmacia", "Gine Vitae · formularios web": "Gine Vitae"}
