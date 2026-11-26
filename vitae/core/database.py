@@ -352,8 +352,11 @@ def explicar_diagnostico(info: Dict[str, Any], table: str | None = None) -> str:
     return " ".join(partes)
 
 
-def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
+def sync_df_to_sheet(table: str, df: pd.DataFrame, limpiar_cache: bool = True) -> int:
     """Reemplaza el contenido de la pestaña por ``df``.
+
+    ``limpiar_cache=False`` (memoria y chat de Luz): no descarta los datos ya
+    leídos de las demás pestañas; sólo actualiza la copia de ésta.
 
     Orden seguro: primero se ESCRIBE el contenido nuevo y recién después se
     limpia lo que sobra. Antes se borraba la pestaña y luego se escribía: si
@@ -385,7 +388,11 @@ def sync_df_to_sheet(table: str, df: pd.DataFrame) -> int:
             ws.batch_clear(sobrantes)
     except gspread.exceptions.APIError as exc:
         raise _explicar_error_sheets(exc, table) from exc
-    st.cache_data.clear()
+    if limpiar_cache:
+        st.cache_data.clear()
+    else:
+        with _cache_lock:
+            _cache_tablas[table] = df.copy()
     return 0 if df.empty else len(df)
 
 

@@ -492,7 +492,7 @@ def _cliente_y_modelos():
 def responder(pregunta: str, modulo_actual: str | None = None, historial: list[dict[str, str]] | None = None,
               datos_visibles: dict[str, pd.DataFrame] | None = None, cliente=None, modelos: list[str] | None = None,
               modulos_permitidos: set[str] | None = None, estilo: str = "analista",
-              acciones: list[dict[str, Any]] | None = None) -> str:
+              acciones: list[dict[str, Any]] | None = None, memoria: Any = None) -> str:
     """Responde una pregunta usando herramientas de consulta sobre todos los datos.
 
     ``estilo``: "analista" (respuestas completas, con fuente) o "chat" (Luz:
@@ -504,6 +504,9 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
 
     ``modulos_permitidos``: si se indica, la IA sólo consulta esos módulos
     (los que el usuario puede abrir en la app).
+
+    ``memoria``: la memoria de Luz de este usuario (vitae/ia/memoria.py): se le
+    da lo que ya sabe y puede recordar / olvidar.
     """
     from google.genai import types
 
@@ -524,6 +527,15 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
 
         de_accion = _acciones.herramientas(datos, acciones)
         herramientas = herramientas + de_accion
+    bloque_memoria = ""
+    if memoria is not None:
+        from vitae.ia import memoria as _memoria
+
+        herramientas = herramientas + _memoria.herramientas(memoria)
+        try:
+            bloque_memoria = f"{_memoria.INSTRUCCIONES}\n\n{memoria.bloque_prompt()}\n\n"
+        except Exception:
+            bloque_memoria = f"{_memoria.INSTRUCCIONES}\n\n"
 
     hoy = pd.Timestamp.today().normalize()
     mes = nombre_mes_es(hoy.to_period("M")) if nombre_mes_es else hoy.strftime("%m/%Y")
@@ -536,6 +548,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
         + (f"{_experta_fx.INSTRUCCIONES}\n\n" if expertas else "")
         + (f"{_experta_caja.INSTRUCCIONES}\n\n" if expertas_caja else "")
         + (f"{_acciones.instrucciones(de_accion)}\n\n" if de_accion else "")
+        + bloque_memoria
         + f"HOY: {['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'][hoy.weekday()]} "
           f"{hoy:%d/%m/%Y} (mes actual: {mes}).\n"
         f"PANTALLA ACTUAL DEL USUARIO: {modulo_actual or 'Inicio'}.\n"
@@ -569,3 +582,22 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
         except Exception as exc:  # modelo inexistente, cuota, etc.: se prueba el siguiente
             ultimo_error = exc
     raise ultimo_error or RuntimeError("No se pudo obtener respuesta de la IA.")
+
+
+def generar_texto(prompt: str, cliente=None, modelos: list[str] | None = None) -> str:
+    """Una llamada simple a la IA (sin herramientas), p. ej. para que Luz repase una conversación."""
+    from google.genai import types
+
+    if cliente is None or modelos is None:
+        cliente, modelos = _cliente_y_modelos()
+    config = types.GenerateContentConfig(temperature=0.2, max_output_tokens=1500)
+    ultimo: Exception | None = None
+    for modelo in modelos:
+        try:
+            r = cliente.models.generate_content(model=modelo, contents=prompt, config=config)
+            texto = (getattr(r, "text", None) or "").strip()
+            if texto:
+                return texto
+        except Exception as exc:
+            ultimo = exc
+    raise ultimo or RuntimeError("La IA no devolvió texto.")
