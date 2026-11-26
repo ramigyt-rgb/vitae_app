@@ -732,19 +732,22 @@ def render_registros(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: 
     if x.empty:
         st.info("Nada coincide con los filtros.")
         return
-    orden = [int(i) for i in ff.ordenar(x, "Más urgentes").index]
+    # En orden: obras sociales A-Z (las que tienen algo pendiente primero) y, en cada una, por fecha de
+    # prestación (lo pendiente de pago primero).
+    pend_os = set(x.loc[ff.pendiente_pago(x), "_obra_social"])
+    obras_orden = sorted(x["_obra_social"].unique(), key=lambda o: (o not in pend_os, str(o).upper()))
+    orden = [int(i) for os_ in obras_orden for i in ff.ordenar(x[x["_obra_social"] == os_], "Por fecha").index]
     st.session_state[f"{key}_orden"] = orden
     for acc in ("facturar", "cobro", "debito", "editar"):
         st.session_state[f"{key}_orden_{acc}"] = [i for i in orden if ff.accion(ctx["d"].loc[i])[0] == acc]
-    _barra(st, ctx, x, k=k, key=key, guardar=guardar, forzar_incompleta=False)
+    _barra(st, ctx, x, k=k, key=key, guardar=guardar, forzar_incompleta=False, orden="Por fecha")
 
     limite = int(st.session_state.get(f"{k}_limite", REG_POR_TANDA))
     mostradas = set(orden[:limite])
     anchos = REG_ANCHOS + ([REG_ANCHO_EDITAR] if edita else [])
-    for os_ in ff.resumen_obras(x)["Obra social"]:
+    for os_ in obras_orden:
         g = x[x["_obra_social"] == os_]
-        filas = [int(j) for _, idx in ff.grupos_factura(ff.ordenar(g, "Más urgentes")) for j in idx
-                 if int(j) in mostradas]
+        filas = [int(j) for j in ff.ordenar(g, "Por fecha").index if int(j) in mostradas]
         if not filas:
             continue
         with st.container(border=True, key=f"frblk_{_clave_css(k)}_{_clave_css(os_)}"):
