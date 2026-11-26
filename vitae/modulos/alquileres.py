@@ -219,6 +219,12 @@ def a_cobrar(d: pd.DataFrame) -> pd.Series:
     return d["alquiler"].where(d["condicion"].isin([CARGO, A_CUENTA]), 0.0)
 
 
+def servicio_medico(d: pd.DataFrame, medico: str, mes: str) -> float:
+    """El servicio WPP de un médico en el mes (sólo si ese mes paga alquiler o está a cuenta)."""
+    x = d[(d["medico"] == medico) & (d["periodo"] == mes) & d["condicion"].isin([CARGO, A_CUENTA])]
+    return float(x["servicio"].sum())
+
+
 def servicio_total(d: pd.DataFrame, mes: str) -> float:
     """El servicio WPP del mes, aparte del alquiler."""
     x = d[(d["periodo"] == mes) & d["condicion"].isin([CARGO, A_CUENTA])]
@@ -399,6 +405,25 @@ def aplicar_planilla(d: pd.DataFrame, original: pd.DataFrame, editada: pd.DataFr
             cambios += int(m_.sum())
             nuevo = nuevo[~m_]
     return nuevo.reset_index(drop=True), cambios
+
+
+def aplicar_servicio(d: pd.DataFrame, original: pd.DataFrame, editada: pd.DataFrame, mes: str,
+                     columna: str) -> tuple[pd.DataFrame, int]:
+    """La columna WPP de la grilla editable → el servicio de cada médico en ese mes."""
+    nuevo = d.copy()
+    antes = dict(zip(original["Médico"], original[columna])) if len(original) else {}
+    cambios = 0
+    for _, f in editada.iterrows():
+        med = nombre_medico(f.get("Médico"))
+        v = _n(f.get(columna))
+        if not med or abs(v - _n(antes.get(med, 0.0))) < 0.005:
+            continue
+        m = (nuevo["medico"] == med) & (nuevo["periodo"] == mes) & nuevo["condicion"].isin([CARGO, A_CUENTA])
+        if m.any():
+            nuevo.loc[m, "servicio"] = v
+            nuevo.loc[m, "updated_at"] = _ahora()
+            cambios += 1
+    return nuevo, cambios
 
 
 def generar_mes(d: pd.DataFrame, mes: str, *, aumento_pct: float = 0.0, redondeo: int = 0,
@@ -855,7 +880,8 @@ _CSS = """<style>
 .al-tab td.cmp{background:#E3ECF7;color:#2F4F7A}.al-tab td.sc{color:#8A7F85;font-style:italic}
 .al-tab td.baja{color:#BD4B4B;font-weight:700}.al-tab td.act{outline:2px solid #8C2853;outline-offset:-2px}
 .al-tab td.debe{font-weight:700;color:#8C2853}
-.al-tab tr.srv td{background:#FFF8B8;color:#5E4B00;font-weight:600}
+.al-tab th.wpp{background:#FFF3A6;color:#5E4B00}
+.al-tab td.wpp{background:#FFFBD6;color:#5E4B00;font-weight:600;border-left:2px solid #F0DE6E}
 .al-tab tr.tot td{font-weight:800;border-top:2px solid #CFC6CB;background:#FAF7F8}
 .al-ley{display:flex;gap:1rem;flex-wrap:wrap;font-size:.78rem;color:#6B5F66;margin:.2rem 0 .4rem}
 .al-ley i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:4px;vertical-align:-2px;border:1px solid #ddd}
@@ -872,7 +898,8 @@ LEYENDA = ('<div class="al-ley"><span><i style="background:#DDEFD5"></i>Cobrado<
 
 
 def html_planilla(d: pd.DataFrame, meses_v: list[str], hoy: date | None = None, mostrar_bajas: bool = False) -> str:
-    """La grilla como la planilla, con el estado de cobro de cada celda, el servicio WPP y los totales."""
+    """La grilla como la planilla, con el estado de cobro de cada celda y los totales. Al costado, lo
+    que debe cada médico y su servicio WPP del mes (aparte: su total no se suma a los alquileres)."""
     t = tabla_planilla(d, meses_v, mostrar_bajas)
     if t.empty:
         return '<div class="al-sub">No hay alquileres en esos meses.</div>'
@@ -881,7 +908,8 @@ def html_planilla(d: pd.DataFrame, meses_v: list[str], hoy: date | None = None, 
     ref = mes_referencia(d, hoy)
     sa = saldo(d)
     cab = ('<tr><th class="l fijo">Médico</th>' + "".join(f"<th>{e(mes_largo(m))}</th>" for m in meses_v) +
-           "<th>Debe</th></tr>")
+           f'<th>Debe</th><th class="wpp" title="Servicio de WhatsApp de {e(mes_largo(ref))}, aparte del alquiler">'
+           f'WPP {e(etiqueta_mes(ref))}</th></tr>')
     cuerpo = []
     idx = d.set_index(["medico", "periodo"])
     for _, fila in t.iterrows():
@@ -916,19 +944,21 @@ def html_planilla(d: pd.DataFrame, meses_v: list[str], hoy: date | None = None, 
             celdas.append(f'<td class="{clase}" title="{e(tip)}">{e(txt)}</td>')
         x = d[d["medico"] == med]
         debe = float(sa[x.index][x["periodo"] < ref].sum())
+        wpp = servicio_medico(d, med, ref)
         cuerpo.append(f'<tr><td class="l fijo">{e(med)}</td>{"".join(celdas)}'
-                      f'<td class="debe">{pesos(debe, 0) if debe > 0.5 else ""}</td></tr>')
-    srv = [servicio_del_mes(d, m) for m in meses_v]
-    if any(srv):
-        cuerpo.append('<tr class="srv"><td class="l fijo">Servicio WPP (aparte)</td>' +
-                      "".join(f"<td>{pesos(v, 0) + ' c/u' if v else ''}</td>" for v in srv) + "<td></td></tr>")
+                      f'<td class="debe">{pesos(debe, 0) if debe > 0.5 else ""}</td>'
+                      f'<td class="wpp">{pesos(wpp, 0) if wpp > 0.5 else ""}</td></tr>')
     ac, ce = a_cobrar(d), cobrado_efectivo(d)
     tot = [float(ac[d["periodo"] == m].sum()) for m in meses_v]
     cob = [float(ce[d["periodo"] == m].sum()) for m in meses_v]
     deuda = float(sa[d["periodo"] < ref].sum())
+    wpp_tot = servicio_total(d, ref)
     cuerpo.append('<tr class="tot"><td class="l fijo">Alquileres a cobrar</td>' + "".join(f"<td>{pesos(v)}</td>" for v in tot) +
-                  f'<td class="debe">{pesos(deuda, 0) if deuda > 0.5 else ""}</td></tr>')
-    cuerpo.append('<tr><td class="l fijo">Cobrado</td>' + "".join(f"<td>{pesos(v)}</td>" for v in cob) + "<td></td></tr>")
+                  f'<td class="debe">{pesos(deuda, 0) if deuda > 0.5 else ""}</td>'
+                  f'<td class="wpp" title="Total del servicio WPP (aparte de los alquileres)">'
+                  f'{pesos(wpp_tot, 0) if wpp_tot > 0.5 else ""}</td></tr>')
+    cuerpo.append('<tr><td class="l fijo">Cobrado</td>' + "".join(f"<td>{pesos(v)}</td>" for v in cob) +
+                  '<td></td><td class="wpp"></td></tr>')
     return f'<div class="al-wrap"><table class="al-tab">{cab}{"".join(cuerpo)}</table></div>'
 
 
@@ -1010,18 +1040,23 @@ def render_alquileres(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFra
             st.markdown('<div class="al-hall"><ul style="margin:0;padding-left:1.1rem">' +
                         "".join(f"<li>{html.escape(h)}</li>" for h in hl) + "</ul></div>", unsafe_allow_html=True)
         with st.expander("Editar la planilla", icon=":material/edit:"):
+            col_wpp = f"WPP {etiqueta_mes(ref)}"
             st.caption("Escribí como en la planilla: un importe ($ 584.000), SIN CARGO, BAJA o A CTA INFORMES. "
-                       "Vacío = no figura ese mes. Agregá un médico en la última fila. Lo cobrado no se pierde.")
+                       f"Vacío = no figura ese mes. «{col_wpp}» es el servicio de WhatsApp de cada médico ese mes "
+                       "(aparte del alquiler). Agregá un médico en la última fila. Lo cobrado no se pierde.")
             original = tabla_planilla(d, meses_v, True)
+            original[col_wpp] = [servicio_medico(d, m_, ref) for m_ in original["Médico"]]
             vista = original.rename(columns={m: mes_largo(m) for m in meses_v})
             ed = st.data_editor(vista, hide_index=True, use_container_width=True, num_rows="dynamic",
                                 key=f"{k}ed_{rango}_{rev}",
-                                column_config={"Médico": st.column_config.TextColumn(required=True, width="medium")})
+                                column_config={"Médico": st.column_config.TextColumn(required=True, width="medium"),
+                                               col_wpp: st.column_config.NumberColumn(format="localized", min_value=0.0)})
             if st.button("Guardar la planilla", type="primary", key=f"{k}ed_ok", icon=":material/save:"):
                 ed = ed.rename(columns={mes_largo(m): m for m in meses_v})
-                nuevo, n = aplicar_planilla(d, original, ed, meses_v)
-                if n:
-                    _guardar(nuevo, f"{n} celda(s) actualizada(s)")
+                nuevo, n = aplicar_planilla(d, original.drop(columns=col_wpp), ed.drop(columns=col_wpp), meses_v)
+                nuevo, n_wpp = aplicar_servicio(nuevo, original, ed, ref, col_wpp)
+                if n + n_wpp:
+                    _guardar(nuevo, f"{n + n_wpp} cambio(s) guardado(s)")
                 else:
                     st.info("No hay cambios.")
         return
