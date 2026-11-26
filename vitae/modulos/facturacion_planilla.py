@@ -644,9 +644,9 @@ def render_edicion(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Ca
 # ---------------------------------------------------------------------------
 # Registros: una fila por paciente con su botón «Editar» (sólo quien puede editar: rchar)
 # ---------------------------------------------------------------------------
-REG_COLUMNAS = ["Paciente", "Fecha prestación", "N° factura", "Fecha factura", "Vto. factura", "Importe", "Saldo",
-                "Estado"]
-REG_ANCHOS = [2.6, 1.15, 1.35, 1.1, 1.1, 1.2, 1.2, 1.9]
+REG_COLUMNAS = ["Fecha prestación", "Paciente", "Obra social", "N° factura", "Fecha factura", "Vto. factura",
+                "Importe", "Saldo", "Estado"]
+REG_ANCHOS = [1.05, 2.3, 1.35, 1.3, 1.05, 1.05, 1.15, 1.15, 1.75]
 REG_ANCHO_EDITAR = 0.42
 REG_POR_TANDA = 60
 
@@ -690,8 +690,9 @@ def celdas_registro(r: pd.Series, hoy: date) -> list[tuple[str, dict[str, Any]]]
                                      "" if r["_medico"] == "SIN MÉDICO" else r["_medico"]) if x)
     venc_rojo = bool(r["_vencido"]) and not tenue
     return [
-        (r["_paciente"] or "Sin nombre", {"chico": detalle, "tenue": tenue}),
         (_f(r.get("_prestacion")), {"tenue": tenue}),
+        (r["_paciente"] or "Sin nombre", {"chico": detalle, "tenue": tenue}),
+        ("" if r["_obra_social"] == "SIN OBRA SOCIAL" else r["_obra_social"], {"tenue": tenue}),
         (_texto(r["_numero_factura"]) or "—", {"tenue": tenue}),
         (_f(r.get("_fecha_factura")) if r["_facturada"] else "", {"tenue": tenue}),
         (_f(r.get("_vencimiento")) if r["_facturada"] else "", {"tenue": tenue, "color": COLOR["rojo"] if venc_rojo else ""}),
@@ -706,7 +707,8 @@ def celdas_registro(r: pd.Series, hoy: date) -> list[tuple[str, dict[str, Any]]]
 
 def render_registros(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Callable[[pd.DataFrame], Any], key: str,
                      lista: str, vacio: str = "No hay registros.") -> None:
-    """Registros: filtros, barra para avanzar y una planilla por obra social con «Editar» en cada paciente."""
+    """Registros: filtros, barra para avanzar y una sola lista (de la más reciente a la más antigua) con
+    «Editar» en cada paciente."""
     st.markdown(CSS + ff._CSS + CSS_REG, unsafe_allow_html=True)
     k = f"{key}_fr_{lista}"
     edita = bool(ctx.get("puede_editar", True))
@@ -732,42 +734,36 @@ def render_registros(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: 
     if x.empty:
         st.info("Nada coincide con los filtros.")
         return
-    # En orden: obras sociales A-Z y, en cada una, de la más reciente a la más antigua (fecha de prestación).
-    obras_orden = sorted(x["_obra_social"].unique(), key=lambda o: str(o).upper())
-    orden = [int(i) for os_ in obras_orden for i in ff.ordenar(x[x["_obra_social"] == os_], "Registros").index]
+    # En orden, igual que «Tabla»: una sola lista de la más reciente a la más antigua (fecha de prestación);
+    # con la misma fecha, en el orden de la planilla.
+    orden = [int(i) for i in ff.ordenar(x, "Registros").index]
     st.session_state[f"{key}_orden"] = orden
     for acc in ("facturar", "cobro", "debito", "editar"):
         st.session_state[f"{key}_orden_{acc}"] = [i for i in orden if ff.accion(ctx["d"].loc[i])[0] == acc]
     _barra(st, ctx, x, k=k, key=key, guardar=guardar, forzar_incompleta=False, orden="Registros")
 
     limite = int(st.session_state.get(f"{k}_limite", REG_POR_TANDA))
-    mostradas = set(orden[:limite])
+    filas = orden[:limite]
     anchos = REG_ANCHOS + ([REG_ANCHO_EDITAR] if edita else [])
-    for os_ in obras_orden:
-        g = x[x["_obra_social"] == os_]
-        filas = [int(j) for j in ff.ordenar(g, "Registros").index if int(j) in mostradas]
-        if not filas:
-            continue
-        with st.container(border=True, key=f"frblk_{_clave_css(k)}_{_clave_css(os_)}"):
-            st.markdown(f'<div class="fz-tit" style="margin:-.2rem -.2rem .3rem;border-radius:8px"><b>{_e(os_)}</b>'
-                        f'<span>{_e(resumen_txt(g))}</span></div>', unsafe_allow_html=True)
-            cab = st.columns(anchos, vertical_alignment="bottom")
-            for j, titulo in enumerate(REG_COLUMNAS + ([""] if edita else [])):
-                derecha = titulo in ("Importe", "Saldo")
-                cab[j].markdown(f'<div class="fr-h{" fr-n" if derecha else ""}">{_e(titulo)}</div>',
-                                unsafe_allow_html=True)
-            for i in filas:
-                r = ctx["d"].loc[i]
-                cols = st.columns(anchos, vertical_alignment="center")
-                for j, (texto, op) in enumerate(celdas_registro(r, ctx["hoy"])):
-                    cols[j].markdown(_celda(texto, **op), unsafe_allow_html=True)
-                if edita and cols[-1].button("✎", key=f"fred_{_clave_css(k)}_{i}", type="tertiary",
-                                             help="Editar los datos de este paciente"):
-                    ff.dialogo(st, "editar", i, ctx, guardar, key)
-            vivos = g[~g["_cancelado"]]
-            st.markdown(f'<div class="fr-tot"><span>TOTAL · {len(g)} paciente(s)</span><span>Importe '
-                        f'{pesos(float(vivos["_monto"].sum()))} · Saldo {pesos(pendiente_total(g))}</span></div>',
-                        unsafe_allow_html=True)
+    with st.container(border=True, key=f"frblk_{_clave_css(k)}"):
+        st.markdown(f'<div class="fz-tit" style="margin:-.2rem -.2rem .3rem;border-radius:8px"><b>Registros</b>'
+                    f'<span>{_e(resumen_txt(x))}</span></div>', unsafe_allow_html=True)
+        cab = st.columns(anchos, vertical_alignment="bottom")
+        for j, titulo in enumerate(REG_COLUMNAS + ([""] if edita else [])):
+            derecha = titulo in ("Importe", "Saldo")
+            cab[j].markdown(f'<div class="fr-h{" fr-n" if derecha else ""}">{_e(titulo)}</div>', unsafe_allow_html=True)
+        for i in filas:
+            r = ctx["d"].loc[i]
+            cols = st.columns(anchos, vertical_alignment="center")
+            for j, (texto, op) in enumerate(celdas_registro(r, ctx["hoy"])):
+                cols[j].markdown(_celda(texto, **op), unsafe_allow_html=True)
+            if edita and cols[-1].button("✎", key=f"fred_{_clave_css(k)}_{i}", type="tertiary",
+                                         help="Editar los datos de este paciente"):
+                ff.dialogo(st, "editar", i, ctx, guardar, key)
+        vivos = x[~x["_cancelado"]]
+        st.markdown(f'<div class="fr-tot"><span>TOTAL · {len(x)} registro(s)</span><span>Importe '
+                    f'{pesos(float(vivos["_monto"].sum()))} · Saldo {pesos(pendiente_total(x))}</span></div>',
+                    unsafe_allow_html=True)
     if len(orden) > limite:
         if st.button(f"Mostrar más ({len(orden) - limite} restantes)", key=f"{k}_mas", icon=":material/expand_more:"):
             st.session_state[f"{k}_limite"] = limite + REG_POR_TANDA
