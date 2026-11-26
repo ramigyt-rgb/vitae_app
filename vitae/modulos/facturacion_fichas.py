@@ -1,8 +1,8 @@
-"""Facturación VMR / VM en fichas: una tarjeta por paciente en lugar de la tabla tipo Excel.
+"""Facturación VMR / VM: estado de cada registro y los formularios para avanzar.
 
-Cada ficha muestra quién es (paciente, obra social, procedimiento, médico, fecha), el importe, en qué
-etapa está (Cargado → Facturado → Cobrado) con un aviso (plazo, vencimiento, débito) y el botón de lo
-que sigue. El botón abre un formulario corto con los datos sugeridos:
+La planilla (estilo Deudas Impositivas) está en ``facturacion_planilla``. Acá: en qué etapa está cada
+registro (Cargado → Facturado → Cobrado), su aviso (plazo, vencimiento, débito), la acción que sigue
+y los formularios cortos con los datos sugeridos:
 
     Facturar          N° (el siguiente de la serie), fecha (hoy) y vencimiento (los días típicos de esa
                       obra social).
@@ -108,42 +108,6 @@ def accion(r: pd.Series, incompleta: bool = False) -> tuple[str, str]:
 def incompleta(r: pd.Series) -> bool:
     return (r["_obra_social"] == "SIN OBRA SOCIAL" or r["_procedimiento"] == "SIN PROCEDIMIENTO"
             or r["_medico"] == "SIN MÉDICO" or r["_monto"] <= 0)
-
-
-def html_ficha(r: pd.Series, hoy: date | None = None, nota: str = "") -> str:
-    e = html.escape
-    texto, tono = aviso(r, hoy)
-    fondo, color = TONOS[tono]
-    et = etapa(r)
-    sub = " · ".join(x for x in (
-        "" if r["_obra_social"] == "SIN OBRA SOCIAL" else r["_obra_social"],
-        "" if r["_procedimiento"] == "SIN PROCEDIMIENTO" else r["_procedimiento"],
-        "" if r["_medico"] == "SIN MÉDICO" else r["_medico"], _f(r.get("_prestacion"))) if x)
-    if r.get("_numero_factura"):
-        sub += f" · Fact. {r['_numero_factura']}"
-    pasos = ["Cargado", "Facturado", "Cobrado"]
-    hecho = {"cargado": 1, "facturado": 2, "cobrado": 3, "anulado": 0}[et]
-    trk = []
-    for i, p in enumerate(pasos, start=1):
-        clase = "ok" if i <= hecho else ""
-        actual = ' class="ff-et"' if i == hecho + 1 and et != "anulado" else ""
-        trk.append(f'<span><span class="ff-dot {clase}"></span><span{actual}>{p}</span></span>')
-        if i < 3:
-            trk.append(f'<span class="ff-ln {"ok" if i < hecho else ""}"></span>')
-    nom = e(r["_paciente"] or "Sin nombre")
-    falta = ""
-    if incompleta(r):
-        falta = "Falta: " + ", ".join(t for t, ok in (
-            ("obra social", r["_obra_social"] == "SIN OBRA SOCIAL"), ("procedimiento", r["_procedimiento"] == "SIN PROCEDIMIENTO"),
-            ("médico", r["_medico"] == "SIN MÉDICO"), ("importe", r["_monto"] <= 0)) if ok)
-    notas = " · ".join(x for x in (falta, nota) if x)
-    pend = (f'<div class="ff-nota">saldo {pesos(r["_pendiente"], 0)}</div>'
-            if et == "facturado" and 0.5 < r["_pendiente"] < r["_monto"] - 0.5 else "")
-    return (f'<div class="ff-top"><div><div class="ff-nom">{nom}</div><div class="ff-sub">{e(sub) or "&nbsp;"}</div></div>'
-            f'<div><div class="ff-imp">{pesos(r["_monto"], 0) if r["_monto"] else "—"}</div>{pend}'
-            f'<div style="text-align:right"><span class="ff-bd" style="background:{fondo};color:{color}">{e(texto)}</span>'
-            f'</div></div></div><div class="ff-trk">{"".join(trk)}</div>'
-            + (f'<div class="ff-nota">{e(notas)}</div>' if notas else ""))
 
 
 # ---------------------------------------------------------------------------
@@ -531,77 +495,6 @@ def dialogo_nuevo(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame]
     st.dialog(titulo, width="medium")(cuerpo)()
 
 
-def render_fichas(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Callable[[pd.DataFrame], Any], key: str,
-                  vacio: str = "No hay nada acá.", notas: dict[Any, str] | None = None, buscar_txt: bool = True,
-                  forzar_incompleta: bool = False, lista: str = "") -> None:
-    """Las fichas de ``x`` (filas de ``ctx['d']``) con búsqueda, páginas y el botón de cada una."""
-    st.markdown(_CSS, unsafe_allow_html=True)
-    k = f"{key}_ff{('_' + lista) if lista else ''}"
-    # Formulario pendiente de abrir («Guardar y siguiente»)
-    pend = st.session_state.pop(f"{key}_abrir", None)
-    if pend:
-        acc, fila = pend
-        if acc == "nuevo":
-            dialogo_nuevo(st, ctx, guardar, key)
-        else:
-            dialogo(st, acc, fila, ctx, guardar, key)
-    if x is None or x.empty:
-        st.markdown(f'<div class="fp-ok">✅ {html.escape(vacio)}</div>', unsafe_allow_html=True)
-        return
-    if buscar_txt and len(x) > 6:
-        t = st.text_input("Buscar", key=f"{k}_q", placeholder="Buscar paciente, obra social, procedimiento o N° de factura",
-                          label_visibility="collapsed")
-        x = buscar(x, t)
-        if x.empty:
-            st.info("Ninguna ficha coincide con la búsqueda.")
-            return
-    filas = [int(i) for i in x.index]
-    st.session_state[f"{key}_orden"] = filas
-    st.session_state[f"{key}_orden_documentos"] = [i for i in filas if etapa(ctx["d"].loc[i]) == "cargado"]
-    for acc in ("facturar", "cobro", "debito", "editar"):
-        st.session_state[f"{key}_orden_{acc}"] = [i for i in filas
-                                                  if accion(ctx["d"].loc[i], forzar_incompleta or incompleta(ctx["d"].loc[i]))[0] == acc]
-    paginas = max(1, -(-len(filas) // POR_PAGINA))
-    pag = min(int(st.session_state.get(f"{k}_pag", 0)), paginas - 1)
-    for i in filas[pag * POR_PAGINA:(pag + 1) * POR_PAGINA]:
-        _ficha(st, ctx, i, k=k, key=key, guardar=guardar, forzar_incompleta=forzar_incompleta,
-               nota=(notas or {}).get(i, ""))
-    if paginas > 1:
-        c1, c2, c3 = st.columns([1, 2, 1])
-        if c1.button("← Anteriores", key=f"{k}_prev", disabled=pag == 0, use_container_width=True):
-            st.session_state[f"{k}_pag"] = pag - 1
-            st.rerun()
-        c2.markdown(f'<div class="ff-pag">{pag * POR_PAGINA + 1}–{min((pag + 1) * POR_PAGINA, len(filas))} de '
-                    f'{len(filas)}</div>', unsafe_allow_html=True)
-        if c3.button("Siguientes →", key=f"{k}_next", disabled=pag >= paginas - 1, use_container_width=True):
-            st.session_state[f"{k}_pag"] = pag + 1
-            st.rerun()
-
-
-def render_agenda_fichas(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
-    """Cirugías realizadas que faltan cargar, como fichas con «Agregar»."""
-    ag = ctx["c"]["agenda"]
-    if ag.empty:
-        return
-    st.markdown(_CSS, unsafe_allow_html=True)
-    st.markdown(f'<div class="cf-tit">Cirugías realizadas sin cargar · {len(ag)}</div>'
-                f'<div class="cf-sub">Sólo las de procedimientos de {html.escape(ctx["empresa"])}. Tocá «Agregar», revisá '
-                'el importe sugerido y guardá.</div>', unsafe_allow_html=True)
-    if len(ag) > 1 and st.button(f"Agregar las {len(ag)} con el importe sugerido", key=f"{key}_ag_todas",
-                                 icon=":material/playlist_add:", help="Después podés revisar cada una en 2 · Facturar."):
-        agregar_todas(st, ctx, guardar, key)
-    for i, r in ag.reset_index(drop=True).iterrows():
-        with st.container(border=True):
-            c1, c2 = st.columns([4.1, 1.5])
-            sub = " · ".join(_texto(v) for v in (r["Obra social"], r["Procedimiento"], r["Médico"], cf._fecha_txt(r["Fecha"]))
-                             if _texto(v))
-            c1.markdown(f'<div class="ff-nom">{html.escape(_texto(r["Paciente"]))}</div><div class="ff-sub">'
-                        f'{html.escape(sub)}</div><span class="ff-bd" style="background:{TONOS["rojo"][0]};'
-                        f'color:{TONOS["rojo"][1]}">realizada, sin cargar</span>', unsafe_allow_html=True)
-            if c2.button("Agregar", key=f"{key}_ag_add_{i}", type="primary", use_container_width=True, icon=":material/add:"):
-                dialogo_nuevo(st, ctx, guardar, key, r.to_dict())
-
-
 def filas_agenda(ctx: dict[str, Any]) -> pd.DataFrame:
     """Todas las cirugías sin cargar → la planilla con sus filas nuevas (importe sugerido)."""
     nuevo, d, hoy = ctx["raw"], ctx["d"], ctx["hoy"]
@@ -625,18 +518,8 @@ def agregar_todas(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame]
 
 
 # ---------------------------------------------------------------------------
-# Vistas agrupadas: por obra social y por factura (facturas conjuntas)
+# Agrupado por obra social y por factura (facturas conjuntas); la planilla está en facturacion_planilla
 # ---------------------------------------------------------------------------
-VISTAS = ["Por obra social", "Por factura", "Por paciente"]
-_CSS_GRUPOS = """<style>
-.fg-os{font-weight:800;font-size:1.08rem;color:#2B2226}
-.fg-chips{margin-top:.35rem}
-.fg-fac{font-weight:800;color:#2B2226}
-.fg-pac{display:flex;justify-content:space-between;gap:.6rem;align-items:center}
-.fg-pac b{color:#2B2226}
-</style>"""
-
-
 def _urgencia(x: pd.DataFrame) -> pd.Series:
     """0 = plazo vencido sin facturar / factura vencida / débito; 1 = por vencer; 2 = resto."""
     u = pd.Series(2, index=x.index)
@@ -700,83 +583,6 @@ def aviso_factura(g: pd.DataFrame, hoy: date | None = None) -> tuple[str, str]:
     return "sin vencimiento", "ambar"
 
 
-def _chip(texto: str, tono: str) -> str:
-    fondo, color = TONOS[tono]
-    return f'<span class="ff-bd" style="background:{fondo};color:{color};margin-right:.3rem">{html.escape(texto)}</span>'
-
-
-def _ficha(st: Any, ctx: dict[str, Any], i: int, *, k: str, key: str, guardar: Callable[[pd.DataFrame], Any],
-           forzar_incompleta: bool = False, nota: str = "") -> None:
-    """Una ficha completa (tarjeta) con sus botones."""
-    r = ctx["d"].loc[i]
-    inc = forzar_incompleta or incompleta(r)
-    acc, etiqueta = accion(r, inc and forzar_incompleta)
-    docs_btn = "requisitos" in ctx and etapa(r) == "cargado" and not (inc and forzar_incompleta)
-    if docs_btn:
-        from vitae.modulos import presentaciones as pr
-
-        nd = pr.nota_docs(r, ctx.get("requisitos"), ctx["empresa"])
-        nota = " · ".join(x_ for x_ in (nota, nd) if x_)
-    with st.container(border=True):
-        st.markdown(html_ficha(r, ctx["hoy"], nota), unsafe_allow_html=True)
-        if docs_btn:
-            b = st.columns([1.9, 1.4, 1.1, 1.5])
-            if b[1].button("Documentación", key=f"{k}_d_{i}", use_container_width=True, icon=":material/fact_check:"):
-                dialogo(st, "documentos", i, ctx, guardar, key)
-            b = [b[0], b[2], b[3]]
-        else:
-            b = st.columns([3, 1.1, 1.5]) if acc != "editar" else st.columns([4.1, 1.5])
-        if acc != "editar":
-            if b[1].button("Editar", key=f"{k}_e_{i}", use_container_width=True, icon=":material/edit:"):
-                dialogo(st, "editar", i, ctx, guardar, key)
-            if b[2].button(etiqueta, key=f"{k}_a_{i}", type="primary", use_container_width=True,
-                           icon={"facturar": ":material/receipt_long:", "cobro": ":material/payments:",
-                                 "debito": ":material/report:"}.get(acc)):
-                dialogo(st, acc, i, ctx, guardar, key)
-        elif b[1].button(etiqueta, key=f"{k}_a_{i}", use_container_width=True, type="primary" if inc else "secondary",
-                         icon=":material/edit:"):
-            dialogo(st, "editar", i, ctx, guardar, key)
-
-
-def _factura(st: Any, ctx: dict[str, Any], numero: str, filas: list[int], *, k: str, key: str,
-             guardar: Callable[[pd.DataFrame], Any]) -> None:
-    """Una factura con varios pacientes (factura conjunta): sus datos, lo cobrado y cada paciente."""
-    d = ctx["d"]
-    g = d.loc[filas]
-    texto, tono = aviso_factura(g, ctx["hoy"])
-    ff_ = g["_fecha_factura"].dropna()
-    vv = g["_vencimiento"].dropna()
-    sub = " · ".join(x_ for x_ in (g["_obra_social"].iloc[0], f"{len(g)} pacientes",
-                                    f"del {_f(ff_.min())}" if len(ff_) else "",
-                                    f"vence {_f(vv.min())}" if len(vv) else "") if x_)
-    with st.container(border=True):
-        st.markdown(f'<div class="ff-top"><div><div class="fg-fac">Factura {html.escape(numero)}</div>'
-                    f'<div class="ff-sub">{html.escape(sub)}</div></div><div><div class="ff-imp">'
-                    f'{pesos(float(g["_monto"].sum()), 0)}</div><div style="text-align:right">{_chip(texto, tono)}</div>'
-                    f'</div></div>', unsafe_allow_html=True)
-        fact, cob = float(g["_monto"].sum()), float(g["_cobrado"].sum())
-        if fact > 0:
-            st.progress(min(cob / fact, 1.0), text=f"Cobrado {pesos(cob, 0)} · falta {pesos(float(g['_pendiente'].sum()), 0)}")
-        for i in filas:
-            r = d.loc[i]
-            t_, to_ = aviso(r, ctx["hoy"])
-            c1, c2, c3 = st.columns([4.2, 1.2, 1.1])
-            c1.markdown(f'<div class="fg-pac"><div><b>{html.escape(r["_paciente"])}</b> <span class="ff-sub">'
-                        f'{html.escape(" · ".join(x_ for x_ in (r["_procedimiento"], _f(r["_prestacion"])) if x_))}</span>'
-                        f'</div><div>{_chip(t_, to_) if to_ in ("rojo", "verde") else ""}</div></div>',
-                        unsafe_allow_html=True)
-            c2.markdown(f'<div class="ff-imp" style="font-size:.92rem;padding-top:.3rem">{pesos(r["_monto"], 0)}</div>',
-                        unsafe_allow_html=True)
-            if c3.button("Abrir", key=f"{k}_fe_{i}", use_container_width=True, icon=":material/edit:"):
-                dialogo(st, "editar", i, ctx, guardar, key)
-        b1, b2, b3 = st.columns([2.4, 1.5, 1.6])
-        if b2.button("Datos de la factura", key=f"{k}_fd_{numero}", use_container_width=True, icon=":material/receipt_long:"):
-            dialogo_factura(st, ctx, filas, "datos", guardar, key)
-        if float(g["_pendiente"].sum()) > 0.5 and b3.button("Registrar cobro", key=f"{k}_fc_{numero}", type="primary",
-                                                            use_container_width=True, icon=":material/payments:"):
-            dialogo_factura(st, ctx, filas, "cobro", guardar, key)
-
-
 def cambios_factura_cobro(d: pd.DataFrame, filas: list[int], fecha: Any, cobrados: dict[int, float]) -> list[dict[str, Any]]:
     """Cobro de una factura conjunta: cada paciente con lo que pagaron (si es menos, la diferencia es débito)."""
     out = []
@@ -833,103 +639,3 @@ def dialogo_factura(st: Any, ctx: dict[str, Any], filas: list[int], accion_: str
     st.dialog(titulo, width="large" if accion_ == "cobro" else "medium")({"cobro": cobro, "datos": datos}[accion_])()
 
 
-def _contenido(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, k: str, key: str, guardar: Callable[[pd.DataFrame], Any],
-               forzar_incompleta: bool, notas: dict[Any, str] | None, por_pagina: int = 15) -> None:
-    """Las fichas de un grupo: las facturas conjuntas juntas, el resto de a una; con páginas."""
-    items: list[tuple[str, Any]] = []
-    for numero, filas in grupos_factura(ordenar(x, "Más urgentes")):
-        if numero and len(filas) > 1:
-            items.append(("factura", (numero, filas)))
-        else:
-            items += [("ficha", i) for i in filas]
-    paginas = max(1, -(-len(items) // por_pagina))
-    pag = min(int(st.session_state.get(f"{k}_pag", 0)), paginas - 1)
-    for tipo, val in items[pag * por_pagina:(pag + 1) * por_pagina]:
-        if tipo == "factura":
-            _factura(st, ctx, val[0], val[1], k=k, key=key, guardar=guardar)
-        else:
-            _ficha(st, ctx, val, k=k, key=key, guardar=guardar, forzar_incompleta=forzar_incompleta,
-                   nota=(notas or {}).get(val, ""))
-    if paginas > 1:
-        c1, c2, c3 = st.columns([1, 2, 1])
-        if c1.button("← Anteriores", key=f"{k}_prev", disabled=pag == 0, use_container_width=True):
-            st.session_state[f"{k}_pag"] = pag - 1
-            st.rerun()
-        c2.markdown(f'<div class="ff-pag">{pag * por_pagina + 1}–{min((pag + 1) * por_pagina, len(items))} de '
-                    f'{len(items)}</div>', unsafe_allow_html=True)
-        if c3.button("Siguientes →", key=f"{k}_next", disabled=pag >= paginas - 1, use_container_width=True):
-            st.session_state[f"{k}_pag"] = pag + 1
-            st.rerun()
-
-
-def render_lista(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Callable[[pd.DataFrame], Any], key: str,
-                 lista: str, vacio: str = "No hay nada acá.", notas: dict[Any, str] | None = None,
-                 forzar_incompleta: bool = False, vista: str = "Por obra social") -> None:
-    """La lista de fichas con la vista a elegir: por obra social (grupos con sus totales), por factura (las
-    conjuntas juntas) o por paciente (de a una)."""
-    st.markdown(_CSS + _CSS_GRUPOS, unsafe_allow_html=True)
-    k = f"{key}_fl_{lista}"
-    pend = st.session_state.pop(f"{key}_abrir", None)
-    if pend:
-        acc, fila = pend
-        if acc == "nuevo":
-            dialogo_nuevo(st, ctx, guardar, key)
-        else:
-            dialogo(st, acc, fila, ctx, guardar, key)
-    if x is None or x.empty:
-        st.markdown(f'<div class="fp-ok">✅ {html.escape(vacio)}</div>', unsafe_allow_html=True)
-        return
-    c1, c2 = st.columns([1.5, 2.5])
-    with c1:
-        v = st.pills("Ver", VISTAS, default=vista, key=f"{k}_vista", label_visibility="collapsed") or vista
-    with c2:
-        t = st.text_input("Buscar", key=f"{k}_q", label_visibility="collapsed",
-                          placeholder="Buscar paciente, obra social, procedimiento o N° de factura")
-    x = buscar(x, t)
-    if x.empty:
-        st.info("Nada coincide con la búsqueda.")
-        return
-    filas = [int(i) for i in ordenar(x, "Más urgentes").index]
-    st.session_state[f"{key}_orden"] = filas
-    for acc in ("facturar", "cobro", "debito", "editar"):
-        st.session_state[f"{key}_orden_{acc}"] = [i for i in filas if accion(ctx["d"].loc[i], forzar_incompleta or
-                                                                            incompleta(ctx["d"].loc[i]))[0] == acc]
-    if v == "Por paciente":
-        render_fichas(st, ctx, ordenar(x, "Más urgentes"), guardar=guardar, key=key, lista=lista, buscar_txt=False,
-                      notas=notas, forzar_incompleta=forzar_incompleta, vacio=vacio)
-        return
-    if v == "Por factura":
-        _contenido(st, ctx, x, k=f"{k}_fac", key=key, guardar=guardar, forzar_incompleta=forzar_incompleta, notas=notas)
-        return
-    # Por obra social: un grupo por obra social con sus totales; se abre para ver sus fichas.
-    abiertas = set(st.session_state.get(f"{k}_abiertas", set()))
-    ro = resumen_obras(x)
-    if len(ro) == 1:
-        abiertas.add(ro.iloc[0]["Obra social"])
-    for _, r in ro.iterrows():
-        os_ = r["Obra social"]
-        chips = []
-        if r["Para facturar"]:
-            chips.append(_chip(f"{r['Para facturar']} para facturar", "ambar"))
-        if r["Pendiente"] > 0.5:
-            chips.append(_chip(f"por cobrar {pesos(r['Pendiente'], 0)}", "azul"))
-        if r["Vencidas"]:
-            chips.append(_chip(f"{r['Vencidas']} vencida(s)", "rojo"))
-        if r["Débitos"] > 0.5:
-            chips.append(_chip(f"débitos {pesos(r['Débitos'], 0)}", "rojo"))
-        sub = f"{int(r['Prestaciones'])} paciente(s)" + (f" · {int(r['Conjuntas'])} factura(s) conjunta(s)"
-                                                         if r["Conjuntas"] else "")
-        abierta = os_ in abiertas
-        with st.container(border=True):
-            c1, c2 = st.columns([4.2, 1.3])
-            c1.markdown(f'<div class="ff-top"><div><div class="fg-os">{html.escape(os_)}</div><div class="ff-sub">{sub}</div>'
-                        f'<div class="fg-chips">{"".join(chips)}</div></div><div class="ff-imp">{pesos(r["Importe"], 0)}'
-                        f'</div></div>', unsafe_allow_html=True)
-            if c2.button("Ocultar" if abierta else "Ver", key=f"{k}_os_{os_}", use_container_width=True,
-                         icon=":material/expand_less:" if abierta else ":material/expand_more:"):
-                abiertas.symmetric_difference_update({os_})
-                st.session_state[f"{k}_abiertas"] = abiertas
-                st.rerun()
-            if abierta:
-                _contenido(st, ctx, x[x["_obra_social"] == os_], k=f"{k}_{os_}", key=key, guardar=guardar,
-                           forzar_incompleta=forzar_incompleta, notas=notas)
