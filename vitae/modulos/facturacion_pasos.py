@@ -7,7 +7,8 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
 
 - Hoy: el plan para ponerse al día (por dónde empezar, en etapas), la tanda del día y cómo viene
   bajando lo pendiente (se anota un renglón por día en ``facturacion_avance``).
-- Cargar: cirugías de la Agenda que faltan, datos incompletos o repetidos y la calidad de la planilla.
+- Cargar: cirugías de la Agenda que faltan, datos incompletos o repetidos, editar cualquier registro
+  cargado y la calidad de la planilla.
 - Facturar: lo que falta facturar, por obra social (presentaciones) o todo junto, por el plazo de 60 días.
 - Cobrar: vencidas, por vencer y sin vencimiento; antigüedad, por obra social y a quién cobrar primero.
 - Débitos: a reclamar, reclamados, recuperados y aceptados; cobros parciales sin el débito.
@@ -286,6 +287,13 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                             notas=notas, vista="Todo junto", titulo="Datos para completar")
         if st.button("Nuevo registro", key=f"{key}_nuevo_cargar", icon=":material/add_circle:"):
             ff.dialogo_nuevo(st, ctx, guardar, key)
+        st.markdown('<div class="cf-tit">Registros cargados</div><div class="fp-sub">Para corregir cualquier dato '
+                    '(paciente, fecha, obra social, procedimiento, médico, importe, factura, pago, estado o anular): '
+                    'elegilo en la barra y tocá «Editar». Lo más reciente primero.</div>', unsafe_allow_html=True)
+        todos = ctx["d"]
+        fz.render_lista(st, ctx, todos, guardar=guardar, key=key, lista="cargados", vista="Todo junto",
+                        titulo="Cargados", solo_editar=True, orden="Más recientes",
+                        vacio="Todavía no hay registros cargados.")
         with st.expander("Calidad de la planilla (qué columnas se leen y qué falta)", icon=":material/verified:"):
             fx._seccion_calidad(data, cols, f"{key}_cal")
         siguiente("cargar")
