@@ -1,12 +1,14 @@
 """Facturación VMR / VM paso a paso.
 
-    Hoy → 1 Cargar → 2 Facturar → 3 Cobrar → 4 Débitos → 5 Cierre          (y aparte: Análisis · Planilla)
+    Mes → 1 Cargar → 2 Facturar → 3 Cobrar → 4 Débitos → 5 Cierre          (y aparte: Análisis · Planilla)
 
 Arriba, siempre los mismos indicadores (para facturar, por cobrar, vencido, débitos). Cada paso dice
 qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente paso».
 
-- Hoy: el plan para ponerse al día (por dónde empezar, en etapas), la tanda del día y cómo viene
-  bajando lo pendiente (se anota un renglón por día en ``facturacion_avance``).
+- Mes: el mes elegido (por defecto el actual) en calendario del 1 al último día, la situación del mes
+  (qué falta y dónde se resuelve), por obra social y sus registros por obra social o por paciente
+  (``facturacion_mes``). Abajo, plegado, el plan para ponerse al día y cómo viene bajando lo pendiente
+  (se anota un renglón por día en ``facturacion_avance``).
 - Cargar: cirugías de la Agenda que faltan, datos incompletos o repetidos, editar cualquier registro
   cargado y la calidad de la planilla.
 - Facturar: lo que falta facturar, por obra social (presentaciones) o todo junto, por el plazo de 60 días.
@@ -31,12 +33,13 @@ import vitae.modulos.cierre_facturacion as cfx
 import vitae.modulos.control_facturacion as cf
 import vitae.modulos.facturacion as fx
 import vitae.modulos.facturacion_fichas as ff
+import vitae.modulos.facturacion_mes as fm
 import vitae.modulos.facturacion_planilla as fz
 from vitae.modulos.pagos_pendientes import pesos
 
 PASOS = ["hoy", "cargar", "facturar", "cobrar", "debitos", "cierre"]
 EXTRAS = ["fichas", "analisis", "tabla", "importar", "exportar"]
-NOMBRES = {"hoy": "Hoy", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "cobrar": "3 · Cobrar",
+NOMBRES = {"hoy": "Mes", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "cobrar": "3 · Cobrar",
            "debitos": "4 · Débitos", "cierre": "5 · Cierre", "fichas": "Registros", "analisis": "Análisis",
            "tabla": "Tabla", "importar": "Importar", "exportar": "Exportar"}
 LEGACY = {"tabla": "Editar tabla", "importar": "Importar"}
@@ -71,7 +74,9 @@ def cuentas(ctx: dict[str, Any]) -> dict[str, int]:
                 idx |= set(c[k].index)
         return len(idx)
 
-    return {"hoy": int(len(b)), "cargar": int(len(c["agenda"])) + n("incompletos", "repetidas"),
+    hoy_ = ctx["hoy"]
+    del_mes = fm.registros(ctx["d"], f"{hoy_.year:04d}-{hoy_.month:02d}")
+    return {"hoy": int(ff.pendiente_pago(del_mes).sum()) if len(del_mes) else 0, "cargar": int(len(c["agenda"])) + n("incompletos", "repetidas"),
             "facturar": n("sin_facturar"), "cobrar": n("vencidas", "por_vencer", "sin_vencimiento"),
             "debitos": n("debitos", "parcial_sin_debito")}
 
@@ -267,7 +272,12 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
 
     # ---- Hoy ---------------------------------------------------------------------------
     if vista == "hoy":
-        _hoy(st, ctx, key=key, ir=ir, leer_tabla=leer_tabla, guardar_tabla=guardar_tabla)
+        st.markdown(_titulo("", "Mes", "Cómo viene el mes: todo lo registrado día por día, qué falta y dónde se "
+                            "resuelve. Elegí otro mes para ver qué quedó pendiente."), unsafe_allow_html=True)
+        fm.render_mes(st, ctx, key=key, ir=ir, guardar=guardar, nombres=NOMBRES)
+        with st.expander("Plan para ponerte al día (si venís atrasado) y cómo viene bajando lo pendiente",
+                         icon=":material/route:"):
+            _hoy(st, ctx, key=key, ir=ir, leer_tabla=leer_tabla, guardar_tabla=guardar_tabla, embebido=True)
         return
 
     # ---- 1 · Cargar -------------------------------------------------------------------------
@@ -284,14 +294,14 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             rep_ = c["repetidas"].index if len(c["repetidas"]) else []
             notas = {i: f"N° {x.loc[i, '_numero_factura']} repetido" for i in x.index if i in rep_}
             fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="completar", forzar_incompleta=True,
-                            notas=notas, vista="Todo junto", titulo="Datos para completar")
+                            notas=notas, vista="Por paciente", titulo="Datos para completar")
         if st.button("Nuevo registro", key=f"{key}_nuevo_cargar", icon=":material/add_circle:"):
             ff.dialogo_nuevo(st, ctx, guardar, key)
         st.markdown('<div class="cf-tit">Registros cargados</div><div class="fp-sub">Para corregir cualquier dato '
                     '(paciente, fecha, obra social, procedimiento, médico, importe, factura, pago, estado o anular): '
                     'elegilo en la barra y tocá «Editar». Lo más reciente primero.</div>', unsafe_allow_html=True)
         todos = ctx["d"]
-        fz.render_lista(st, ctx, todos, guardar=guardar, key=key, lista="cargados", vista="Todo junto",
+        fz.render_lista(st, ctx, todos, guardar=guardar, key=key, lista="cargados", vista="Por paciente",
                         titulo="Cargados", solo_editar=True, orden="Más recientes",
                         vacio="Todavía no hay registros cargados.")
         with st.expander("Calidad de la planilla (qué columnas se leen y qué falta)", icon=":material/verified:"):
@@ -321,7 +331,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
         else:
             x, _, _ = cf.grupo(c, "Facturar")
-            fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="facturar", vista="Todo junto",
+            fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="facturar", vista="Por paciente",
                             titulo="Sin facturar")
         siguiente("facturar")
         return
@@ -384,11 +394,13 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
 
 
 def _hoy(st: Any, ctx: dict[str, Any], *, key: str, ir: Callable[[str], Callable[[], None]],
-         leer_tabla: Callable[[str], pd.DataFrame | None], guardar_tabla: Callable[[str, pd.DataFrame], Any]) -> None:
+         leer_tabla: Callable[[str], pd.DataFrame | None], guardar_tabla: Callable[[str, pd.DataFrame], Any],
+         embebido: bool = False) -> None:
     hoy_d = ctx["hoy"]
     p = cfx.plan(ctx["b"])
-    st.markdown(_titulo("", "Hoy", "Lo que tenés que hacer, en orden. Si venís atrasado, seguí el plan de arriba "
-                        "hacia abajo: cada etapa se resuelve en su paso."), unsafe_allow_html=True)
+    if not embebido:
+        st.markdown(_titulo("", "Hoy", "Lo que tenés que hacer, en orden. Si venís atrasado, seguí el plan de arriba "
+                            "hacia abajo: cada etapa se resuelve en su paso."), unsafe_allow_html=True)
 
     # Avance: un renglón por día (sólo la primera vez que se abre en el día, o si cambió)
     av_raw = leer_tabla(cfx.TABLA_AVANCE)

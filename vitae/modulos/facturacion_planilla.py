@@ -22,7 +22,7 @@ import vitae.modulos.control_facturacion as cf
 import vitae.modulos.facturacion_fichas as ff
 from vitae.modulos.pagos_pendientes import _texto, pesos
 
-VISTAS = ["Por obra social", "Todo junto"]
+VISTAS = ["Por obra social", "Por paciente"]
 MAX_FILAS = 300
 
 COLOR = {"rojo": "#B14E5E", "ambar": "#9A6200", "verde": "#2F7A4A", "azul": "#3D5F8C", "gris": "#8A7F85"}
@@ -204,7 +204,7 @@ def html_planilla(x: pd.DataFrame, hoy: date, vista: str = "Por obra social", *,
                   orden: str = "Más urgentes") -> str:
     if x.empty:
         return ""
-    if vista == "Todo junto":
+    if vista == "Por paciente":
         return CSS + html_todo_junto(x, titulo, hoy, forzar_incompleta=forzar_incompleta, notas=notas, orden=orden)
     ro = ff.resumen_obras(x)
     return CSS + "".join(html_obra_social(x[x["_obra_social"] == os_], os_, hoy, forzar_incompleta=forzar_incompleta,
