@@ -27,7 +27,7 @@ from vitae.modulos.pagos_pendientes import _texto, pesos
 
 POR_PAGINA = 10
 FILTROS = ["Para facturar", "Plazo vencido", "Por cobrar", "Vencidas", "Débitos", "Cobradas", "Anuladas", "Todas"]
-ORDENES = ["Más urgentes", "Más recientes", "Mayor importe", "Paciente (A-Z)", "Por fecha"]
+ORDENES = ["Más urgentes", "Más recientes", "Mayor importe", "Paciente (A-Z)", "Por fecha", "Registros"]
 # Estados de la planilla: «Completo» = pagado; «Pendiente» = sin cobro; «Anulado».
 ESTADOS = ["Pendiente", "Completo", "Anulado"]
 
@@ -347,6 +347,11 @@ def ordenar(x: pd.DataFrame, orden: str) -> pd.DataFrame:
     if x.empty:
         return x
     pp = (~pendiente_pago(x)).astype(int)
+    if orden == "Registros":
+        # Sólo para Registros: de la más reciente a la más antigua (fecha de prestación), sin separar.
+        return x.assign(_pa=x["_paciente"].astype(str)).sort_values(
+            ["_prestacion", "_numero_factura", "_pa"], ascending=[False, False, True], na_position="last",
+            kind="stable").drop(columns=["_pa"])
     if orden == "Por fecha":
         # Lo pendiente primero; dentro de cada parte, por fecha de prestación (de la más vieja a la más nueva)
         return x.assign(_pp=pp, _pa=x["_paciente"].astype(str)).sort_values(
