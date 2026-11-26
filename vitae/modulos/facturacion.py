@@ -1399,25 +1399,7 @@ def render_facturacion_ultra_pro(
     else:
         _encabezado(module_name, company, key)
 
-    secciones = _SECCIONES_ANALISIS + (_SECCIONES_GESTION if legacy_renderer is not None else [":material/download: Exportar"])
-    if es_movil():
-        # En el celular 8 botones no entran en una fila: desplegable compacto.
-        seccion = st.selectbox(
-            "Sección", secciones, key=f"{key}_seccion_movil", label_visibility="collapsed",
-            format_func=sin_icono,
-        )
-    else:
-        seleccion = st.segmented_control(
-            "Sección", secciones, default=secciones[0], key=f"{key}_seccion", label_visibility="collapsed"
-        )
-        seccion = seleccion or secciones[0]
-
-    # ---- Gestión: flujo existente, siempre sobre la planilla completa ----
-    if seccion in _WORKSPACE_GESTION and legacy_renderer is not None:
-        legacy_renderer(module_name, cfg, workspace=_WORKSPACE_GESTION[seccion], embebido=True)
-        return
-
-    # ---- Análisis (y Exportar): lectura + filtros compartidos ----
+    # Paso a paso: Hoy → 1 Cargar → 2 Facturar → 3 Cobrar → 4 Débitos → 5 Cierre (y Análisis · Planilla).
     if get_df is None:
         st.error("No se pudo conectar con la base de datos.")
         return
@@ -1427,48 +1409,24 @@ def render_facturacion_ultra_pro(
         st.error(f"No se pudo leer la planilla «{table}» de Google Sheets: {exc}")
         return
     if df_raw is None or df_raw.empty:
-        st.info("Todavía no hay registros. Podés cargarlos desde Cargar o Importar.")
+        st.info("Todavía no hay registros. Cargalos a mano o importá la planilla.")
+        if legacy_renderer is not None:
+            vista = st.segmented_control("Planilla", ["Cargar", "Importar"], default="Importar", key=f"{key}_vacia",
+                                         label_visibility="collapsed") or "Importar"
+            legacy_renderer(module_name, cfg, workspace=vista, embebido=True)
         return
 
-    if seccion == _SECCION_CONTROL:
-        # Control de todo (sin filtros): bandeja de hoy, controles y cierre de mes.
-        from vitae.core.database import sync_df_to_sheet
-        from vitae.modulos.control_facturacion import render_control
+    from vitae.core.database import sync_df_to_sheet
+    from vitae.modulos.facturacion_pasos import render_pasos
 
-        otra = "facturacion_vm" if company == "VMR" else "facturacion_vmr"
+    def _leer(t: str) -> pd.DataFrame | None:
+        try:
+            return get_df(t)
+        except Exception:
+            return None
 
-        def _leer(t: str) -> pd.DataFrame | None:
-            try:
-                return get_df(t)
-            except Exception:
-                return None
-
-        render_control(df_raw, empresa=company, guardar=lambda nuevo: sync_df_to_sheet(table, nuevo),
-                       agenda_raw=_leer("agenda_quirofano"), otras_facturaciones=[_leer(otra)], key=f"{key}_cf")
-        return
-
-    data, cols = _prepare_facturacion(df_raw)
-    data = _ajustar_estado_manual(data)
-    filtrado, detalle = _panel_filtros(data, key)
-
-    if seccion == ":material/download: Exportar":
-        _seccion_exportar(filtrado, _metrics(filtrado), module_name, cfg, table, key, legacy_renderer)
-        return
-
-    if filtrado.empty:
-        st.info("Ningún registro coincide con los filtros. Probá ampliar el período o tocar «Limpiar».")
-        return
-
-    metrics = _metrics(filtrado)
-    _tarjetas(metrics)
-    st.caption(detalle)
-
-    if seccion == ":material/insights: Resumen":
-        _seccion_resumen(filtrado, metrics, module_name, key)
-        _registros_del_periodo(filtrado, detalle)
-    elif seccion == ":material/payments: Cobranza":
-        _seccion_cobranza(filtrado, metrics, key)
-    elif seccion == ":material/stethoscope: Producción":
-        _seccion_produccion(filtrado)
-    elif seccion == ":material/verified: Calidad":
-        _seccion_calidad(filtrado, cols, key)
+    usuario = st.session_state.get("vitae_auth_user") or {}
+    render_pasos(module_name=module_name, cfg=cfg, table=table, empresa=company, key=key, raw=df_raw,
+                 guardar=lambda nuevo: sync_df_to_sheet(table, nuevo), leer_tabla=_leer,
+                 guardar_tabla=lambda t, df: sync_df_to_sheet(t, df), legacy_renderer=legacy_renderer,
+                 usuario=str(usuario.get("nombre") or usuario.get("usuario") or ""), movil=bool(es_movil()))
