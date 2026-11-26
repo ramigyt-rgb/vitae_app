@@ -28,7 +28,8 @@ from vitae.modulos.pagos_pendientes import _texto, pesos
 POR_PAGINA = 10
 FILTROS = ["Para facturar", "Plazo vencido", "Por cobrar", "Vencidas", "Débitos", "Cobradas", "Anuladas", "Todas"]
 ORDENES = ["Más urgentes", "Más recientes", "Mayor importe", "Paciente (A-Z)"]
-ESTADOS = ["Pendiente", "Completo", "Parcial", "Vencido", "Anulado"]
+# Estados de la planilla: «Completo» = pagado; «Pendiente» = sin cobro; «Anulado».
+ESTADOS = ["Pendiente", "Completo", "Anulado"]
 
 _CSS = """<style>
 .ff-top{display:flex;justify-content:space-between;gap:.8rem;align-items:flex-start}
@@ -385,16 +386,15 @@ def cambios_facturar(fila: int, numero: str, fecha: Any, vencimiento: Any) -> li
 
 
 def cambios_cobro(r: pd.Series, fila: int, fecha: Any, cobrado: float | None, motivo: str = "") -> list[dict[str, Any]]:
-    """Todo (cobrado None o ≥ saldo) → Completo. Una parte → Parcial y lo que falta queda como débito a reclamar."""
-    c = [{"fila": fila, "campo": "fecha_pago", "valor": _txt_fecha(fecha)}]
-    saldo = float(r["_pendiente"]) if r["_pendiente"] > 0.004 else float(r["_monto"])
-    ya = float(r["_monto"]) - saldo
-    if cobrado is None or cobrado >= saldo - 0.5:
-        c.append({"fila": fila, "campo": "estado", "valor": "Completo"})
+    """Registrar el cobro: estado «Completo» (= pagado; regla de la planilla). Si pagaron menos, se anota el
+    débito por la diferencia, a reclamar (el débito no cambia lo cobrado: sólo queda para reclamarlo)."""
+    c = [{"fila": fila, "campo": "fecha_pago", "valor": _txt_fecha(fecha)},
+         {"fila": fila, "campo": "estado", "valor": "Completo"}]
+    monto = float(r["_monto"])
+    if cobrado is None or cobrado >= monto - 0.5:
         return c
-    debito = max(float(r["_monto"]) - ya - float(cobrado), 0.0)
-    c += [{"fila": fila, "campo": "estado", "valor": "Parcial"},
-          {"fila": fila, "campo": "debito", "valor": _txt_imp(debito)},
+    debito = max(monto - float(cobrado), 0.0)
+    c += [{"fila": fila, "campo": "debito", "valor": _txt_imp(debito)},
           {"fila": fila, "campo": "debito_estado", "valor": "A reclamar"}]
     if motivo:
         c.append({"fila": fila, "campo": "debito_motivo", "valor": motivo})

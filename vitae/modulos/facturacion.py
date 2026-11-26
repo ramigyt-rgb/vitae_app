@@ -291,48 +291,22 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     data["_monto"] = _series_number(data, cols["monto"]).clip(lower=0)
 
     cancel_words = ("anulad", "cancelad", "rechazad", "baja")
-    paid_words = ("cobrad", "pagad", "abonad", "cancelado_pago", "completo", "cerrad")
     cancelled = data["_estado_norm"].map(lambda x: any(w in x for w in cancel_words))
-    paid_by_state = data["_estado_norm"].map(lambda x: any(w in x for w in paid_words))
 
-    explicit_collected = _series_number(data, cols["cobrado"]).clip(lower=0) if cols["cobrado"] else pd.Series(0.0, index=data.index)
-    explicit_balance = _series_number(data, cols["saldo"]).clip(lower=0) if cols["saldo"] else pd.Series(0.0, index=data.index)
-
-    if cols["cobrado"]:
-        collected = explicit_collected.clip(upper=data["_monto"])
-    elif cols["saldo"]:
-        plausible = (explicit_balance >= 0) & (explicit_balance <= data["_monto"])
-        collected = (data["_monto"] - explicit_balance.where(plausible, data["_monto"])).clip(lower=0)
-    else:
-        collected = pd.Series(0.0, index=data.index)
-        collected.loc[paid_by_state | data["_fecha_pago"].notna()] = data.loc[paid_by_state | data["_fecha_pago"].notna(), "_monto"]
-
-    # Si el Sheet dice cobrado/pagado y no existe monto explícito cobrado, se considera cobro total.
-    if not cols["cobrado"]:
-        collected.loc[paid_by_state] = data.loc[paid_by_state, "_monto"]
-
-    # REGLA de la planilla de Facturación: estado «Completo» = pagado (cobro total); estado «Pendiente» = sin
-    # registro de cobro (nada cobrado, aunque tenga fecha de pago u otro dato). El estado manda.
+    # REGLA (fin del tema): lo cobrado sale SÓLO del estado de la planilla. «Completo» = pagado (el importe
+    # entero); «Pendiente» (o cualquier otro estado) = sin registro de cobro (nada cobrado). No se usan
+    # columnas de cobrado/saldo, la fecha de pago ni el débito para calcular lo cobrado.
     est_completo = data["_estado_norm"].str.contains("completo", na=False)
-    est_pendiente = data["_estado_norm"].str.startswith("pendiente", na=False)
-    collected.loc[est_completo] = data.loc[est_completo, "_monto"]
-    collected.loc[est_pendiente] = 0.0
-
-    data["_cobrado"] = collected.clip(lower=0, upper=data["_monto"])
-    # Débitos (lo que la obra social pagó de menos): no es cobrado. Si se reclama, sigue pendiente;
-    # si se aceptó (no se recupera), deja de ser deuda; si se recuperó, se cobró.
+    data["_cobrado"] = data["_monto"].where(est_completo, 0.0)
+    data["_pendiente"] = (data["_monto"] - data["_cobrado"]).clip(lower=0)
+    # Débitos (lo que la obra social pagó de menos): sólo se registran para reclamarlos; no cambian lo
+    # cobrado ni lo pendiente.
     exactas = {_norm(c): c for c in data.columns}
     col_deb = exactas.get(_norm("debito"))
     debito = _series_number(data, col_deb).clip(lower=0) if col_deb else pd.Series(0.0, index=data.index)
     col_deb_est = exactas.get(_norm("debito_estado"))
     deb_est = _series_text(data, col_deb_est).map(_norm) if col_deb_est else pd.Series("", index=data.index)
     recuperado = deb_est.str.contains("recuper", na=False)
-    aceptado = deb_est.str.contains("acept", na=False)
-    con_debito = (debito > 0) & ~recuperado
-    data.loc[con_debito, "_cobrado"] = (data.loc[con_debito, "_cobrado"]
-                                        .clip(upper=(data.loc[con_debito, "_monto"] - debito[con_debito]).clip(lower=0)))
-    data["_pendiente"] = (data["_monto"] - data["_cobrado"]).clip(lower=0)
-    data.loc[con_debito & aceptado, "_pendiente"] = 0.0
     data["_debito"] = debito.where(~recuperado, 0.0)
     data.loc[cancelled, ["_monto", "_cobrado", "_pendiente"]] = 0.0
     data["_cancelado"] = cancelled
