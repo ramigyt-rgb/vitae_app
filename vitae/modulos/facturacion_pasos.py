@@ -131,7 +131,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                  raw: pd.DataFrame, guardar: Callable[[pd.DataFrame], Any],
                  leer_tabla: Callable[[str], pd.DataFrame | None], guardar_tabla: Callable[[str, pd.DataFrame], Any],
                  legacy_renderer: Callable[..., None] | None = None, usuario: str = "",
-                 hoy: date | None = None, movil: bool = False) -> None:
+                 hoy: date | None = None, movil: bool = False, puede_editar: bool = False) -> None:
     import streamlit as st
 
     from vitae.core.ui import tarjetas_kpi
@@ -146,6 +146,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     from vitae.modulos import presentaciones as pr
 
     ctx["requisitos"] = leer_tabla(pr.TABLA_REQ)
+    ctx["puede_editar"] = bool(puede_editar)  # sólo rchar
     n = cuentas(ctx)
     cierres = leer_tabla(cfx.TABLA_CIERRES)
     actual = f"{hoy_d.year:04d}-{hoy_d.month:02d}"
@@ -265,8 +266,10 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         d = ctx["d"]
         st.markdown(_titulo("", "Registros", ""), unsafe_allow_html=True)
         d, periodo = filtro_periodo(st, d, ctx["hoy"], key=f"{key}_reg")
-        modo = st.segmented_control("Modo", ["Ver y avanzar", "Editar en tabla"], default="Ver y avanzar",
-                                    key=f"{key}_reg_modo", label_visibility="collapsed") or "Ver y avanzar"
+        modo = "Ver y avanzar"
+        if ctx.get("puede_editar"):  # «Editar en tabla» sólo para rchar
+            modo = st.segmented_control("Modo", ["Ver y avanzar", "Editar en tabla"], default="Ver y avanzar",
+                                        key=f"{key}_reg_modo", label_visibility="collapsed") or "Ver y avanzar"
         cnt = ff.cuentas_filtros(d)
         c1, c2 = st.columns([4, 1.3])
         with c1:
@@ -280,8 +283,8 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if modo == "Editar en tabla":
             fz.render_edicion(st, ctx, x, guardar=guardar, key=key)
             return
-        fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}_{periodo}",
-                        titulo=f"{filtro} · {periodo}", vacio=f"No hay registros en este grupo ({periodo}).")
+        fz.render_registros(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}_{periodo}",
+                            vacio=f"No hay registros en este grupo ({periodo}).")
         return
 
     # ---- Hoy ---------------------------------------------------------------------------
