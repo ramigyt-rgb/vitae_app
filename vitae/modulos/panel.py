@@ -306,17 +306,13 @@ def tareas(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
 
 
 def vencimientos(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
+    """Mismo cálculo que el módulo Vencimientos (documentos, habilitaciones, pólizas…)."""
+    from vitae.modulos import vencimientos as vc
+
     if _vacio(df):
         return {"hay": False}
-    estado = _txt(df, "estado").map(_sin_acentos)
-    pendiente = ~estado.isin({"realizado", "realizada", "pagado", "pagada", "cancelado", "cancelada"})
-    v = _fecha(df, "vencimiento", "fecha")
-    imp = _num(df, "importe")
-    vencido = pendiente & v.notna() & v.lt(hoy)
-    prox = pendiente & v.between(hoy, hoy + pd.Timedelta(days=30))
-    return {"hay": True, "vencidos": int(vencido.sum()), "vencidos_importe": float(imp[vencido].sum()),
-            "prox_30": int(prox.sum()), "prox_30_importe": float(imp[prox].sum()),
-            "prox_7": int((pendiente & v.between(hoy, hoy + pd.Timedelta(days=7))).sum())}
+    r = vc.resumen(vc.normalizar(df), hoy.date())
+    return r if r.get("hay") else {"hay": False}
 
 
 def alquileres(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
@@ -420,10 +416,12 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
     for e, i in m["impuestos"].items():
         if i.get("vencido", 0) > 0.5:
             add("alta", f"Impuestos vencidos {e}", pesos(i["vencido"], 0), f"Deudas Impositivas {e}")
+    from vitae.modulos.vencimientos import lista_corta
+
     v = m["vencimientos"]
     if v.get("vencidos"):
-        add("alta", "Vencimientos pasados sin resolver",
-            f"{v['vencidos']}" + (f" · {pesos(v['vencidos_importe'], 0)}" if v.get("vencidos_importe") else ""), "Vencimientos")
+        add("alta", f"Vencimientos: {_plural(v['vencidos'], 'documento vencido', 'documentos vencidos')}",
+            lista_corta(v.get("vencidos_nombres", []), 4), "Vencimientos")
     pl = m["planes"]
     if pl.get("mora"):
         add("alta", "Planes de pago con cuotas impagas o atrasadas",
@@ -449,7 +447,14 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
         add("media", "Pagos pendientes sin caja asignada",
             f"{pesos(pg['sin_asignar'], 0)} en {pg['n_sin_asignar']} conceptos", "Pagos pendientes Vitae")
     if v.get("prox_7"):
-        add("media", "Vencimientos esta semana", f"{v['prox_7']} en los próximos 7 días", "Vencimientos")
+        add("media", f"Vencimientos: {_plural(v['prox_7'], 'vence', 'vencen')} esta semana",
+            lista_corta(v.get("prox_7_nombres", []), 4), "Vencimientos")
+    if v.get("por_vencer"):
+        add("baja", f"Vencimientos: {_plural(v['por_vencer'], 'por vencer', 'por vencer')} (aviso anticipado)",
+            lista_corta(v.get("por_vencer_nombres", []), 4), "Vencimientos")
+    if v.get("en_tramite_vencidos"):
+        add("baja", f"Vencimientos en trámite: {v['en_tramite_vencidos']} ya vencido(s)",
+            lista_corta(v.get("en_tramite_nombres", []), 4), "Vencimientos")
     c = m["contratos"]
     if c.get("vencidos"):
         add("media", "Contratos vencidos marcados como vigentes", f"{c['vencidos']}", "Contratos")
@@ -650,8 +655,9 @@ def html_tarjetas(m: dict[str, Any]) -> str:
                  sub_k=(f"{tr['alta']} de prioridad alta" if tr["alta"] else ""), alerta_sub=bool(tr["vencidas"]))
           if tr.get("hay") else _sin_datos("Tareas pendientes", tr))
     v = m["vencimientos"]
+    px = v.get("proximo") or {}
     o += (_linea("Vencimientos", f"{v['prox_30']} en 30 días",
-                 sub_k=(pesos(v["prox_30_importe"], 0) if v["prox_30_importe"] else ""),
+                 sub_k=(f"Próximo: {px.get('documento', '')} ({px.get('vencimiento', '')})" if px else ""),
                  sub_v=(f"{_plural(v['vencidos'], 'ya vencido', 'ya vencidos')}" if v["vencidos"] else "ninguno vencido"),
                  alerta_sub=bool(v["vencidos"]))
           if v.get("hay") else _sin_datos("Vencimientos", v))

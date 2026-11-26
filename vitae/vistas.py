@@ -21069,6 +21069,26 @@ def render_facturacion_pro(
         )
         return
 
+    # VENCIMIENTOS: documentos, habilitaciones, pólizas, mantenimientos y dominios
+    # con su fecha, semáforo, renovar y calendario (vitae/modulos/vencimientos.py).
+    if str(table).lower() == "vencimientos":
+        from vitae.modulos.vencimientos import render_vencimientos
+
+        try:
+            render_vencimientos(
+                df_base.copy(),
+                guardar=lambda df_nuevo: sync_df_to_sheet(table, df_nuevo),
+                selector=_vitae_lazy_selector,
+                mostrar_error=lambda msg, exc: _vitae_render_error(msg, exc, context=f"vencimientos:{table}"),
+            )
+        except Exception as exc:  # datos raros en la pestaña: aviso claro, la app sigue andando
+            if any(x in type(exc).__name__ for x in ("Rerun", "Stop")):
+                raise
+            _vitae_render_error("No pude mostrar Vencimientos con los datos que tiene la pestaña. "
+                                "Probá traer la planilla de nuevo en «Importar».", exc, context=f"vencimientos:{table}")
+            st.caption(f"Detalle: {type(exc).__name__} en {_alq_lugar(exc)}")
+        return
+
     # VALORES ALQUILERES: alquileres de consultorios por médico y mes, como la
     # planilla (vitae/modulos/alquileres.py): cobros, nuevo mes con aumento,
     # altas y bajas, servicio WPP y los cobros que ya figuran en las cajas.
