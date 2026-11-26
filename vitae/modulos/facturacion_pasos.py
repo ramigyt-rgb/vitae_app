@@ -14,7 +14,8 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
 - Cierre: los meses del año con su estado; el control de cada mes; cerrar (se guarda en
   ``facturacion_cierres``) y el PDF del mes y del año.
 - Análisis: lo de antes (resumen, cobranza, producción, calidad) con filtros.
-- Fichas: todos los registros como tarjetas (filtros, búsqueda, nuevo registro).
+- Registros: todos los registros en planilla por obra social, con el estilo de Deudas Impositivas
+  (filtros, búsqueda, barra para actuar, nuevo registro).
 - Tabla (la planilla tipo Excel, por si hace falta), Importar y Exportar.
 """
 from __future__ import annotations
@@ -29,12 +30,13 @@ import vitae.modulos.cierre_facturacion as cfx
 import vitae.modulos.control_facturacion as cf
 import vitae.modulos.facturacion as fx
 import vitae.modulos.facturacion_fichas as ff
+import vitae.modulos.facturacion_planilla as fz
 from vitae.modulos.pagos_pendientes import pesos
 
 PASOS = ["hoy", "cargar", "facturar", "cobrar", "debitos", "cierre"]
 EXTRAS = ["fichas", "analisis", "tabla", "importar", "exportar"]
 NOMBRES = {"hoy": "Hoy", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "cobrar": "3 · Cobrar",
-           "debitos": "4 · Débitos", "cierre": "5 · Cierre", "fichas": "Fichas", "analisis": "Análisis",
+           "debitos": "4 · Débitos", "cierre": "5 · Cierre", "fichas": "Registros", "analisis": "Análisis",
            "tabla": "Tabla", "importar": "Importar", "exportar": "Exportar"}
 LEGACY = {"tabla": "Editar tabla", "importar": "Importar"}
 ANALISIS = ["Resumen", "Cobranza", "Producción", "Calidad"]
@@ -243,11 +245,11 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             fx._seccion_calidad(filtrado, cols, key)
         return
 
-    # ---- Fichas: todos los registros -----------------------------------------------------
+    # ---- Registros: todos, en planilla ------------------------------------------------------
     if vista == "fichas":
         d = ctx["d"]
-        st.markdown(_titulo("", "Fichas", "Todos los pacientes cargados, como tarjetas. Filtrá, buscá y tocá el botón "
-                            "de cada uno para avanzar."), unsafe_allow_html=True)
+        st.markdown(_titulo("", "Registros", "Todos los pacientes cargados, en planilla por obra social. Para avanzar, "
+                            "elegí el paciente o la factura en la barra de arriba."), unsafe_allow_html=True)
         cnt = ff.cuentas_filtros(d)
         c1, c2 = st.columns([4, 1.3])
         with c1:
@@ -257,9 +259,8 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             if st.button("Nuevo registro", key=f"{key}_nuevo", type="primary", use_container_width=True,
                          icon=":material/add:"):
                 ff.dialogo_nuevo(st, ctx, guardar, key)
-        orden = st.selectbox("Orden", ff.ORDENES, key=f"{key}_ff_orden", label_visibility="collapsed")
-        x = ff.ordenar(ff.filtrar(d, filtro), orden)
-        ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}",
+        x = ff.filtrar(d, filtro)
+        fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista=f"todas_{filtro}", titulo=filtro,
                         vacio="No hay registros en este grupo.")
         return
 
@@ -276,14 +277,13 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if c["agenda"].empty and not n["cargar"]:
             st.markdown('<div class="fp-ok">✅ Todas las cirugías realizadas están cargadas y los datos están completos.'
                         '</div>', unsafe_allow_html=True)
-        ff.render_agenda_fichas(st, ctx, guardar=guardar, key=key)
+        fz.render_agenda(st, ctx, guardar=guardar, key=key)
         x, _, _ = cf.grupo(c, "Completar datos")
         if len(x):
-            st.markdown(f'<div class="cf-tit">Datos para completar · {len(x)}</div>', unsafe_allow_html=True)
             rep_ = c["repetidas"].index if len(c["repetidas"]) else []
             notas = {i: f"N° {x.loc[i, '_numero_factura']} repetido" for i in x.index if i in rep_}
-            ff.render_fichas(st, ctx, x, guardar=guardar, key=key, lista="completar", forzar_incompleta=True,
-                             notas=notas)
+            fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="completar", forzar_incompleta=True,
+                            notas=notas, vista="Todo junto", titulo="Datos para completar")
         if st.button("Nuevo registro", key=f"{key}_nuevo_cargar", icon=":material/add_circle:"):
             ff.dialogo_nuevo(st, ctx, guardar, key)
         with st.expander("Calidad de la planilla (qué columnas se leen y qué falta)", icon=":material/verified:"):
@@ -313,7 +313,8 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
             st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
         else:
             x, _, _ = cf.grupo(c, "Facturar")
-            ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista="facturar", vista="Por paciente")
+            fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="facturar", vista="Todo junto",
+                            titulo="Sin facturar")
         if len(c["repetidas"]) or not c["salteados"].empty:
             with st.expander("Numeración: repetidos y salteados", icon=":material/pin:"):
                 if len(c["repetidas"]):
@@ -344,7 +345,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if x.empty:
             st.markdown('<div class="fp-ok">✅ Nada vencido ni por vencer esta semana.</div>', unsafe_allow_html=True)
         else:
-            ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista="cobrar")
+            fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="cobrar", titulo="Para cobrar")
         st.markdown('<div class="cf-tit">Seguimiento de la cobranza</div>', unsafe_allow_html=True)
         fx._seccion_cobranza(data, fx._metrics(data), f"{key}_cob")
         siguiente("cobrar")
@@ -368,7 +369,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         if x.empty:
             st.markdown('<div class="fp-ok">✅ No hay débitos para reclamar.</div>', unsafe_allow_html=True)
         else:
-            ff.render_lista(st, ctx, x, guardar=guardar, key=key, lista="debitos")
+            fz.render_lista(st, ctx, x, guardar=guardar, key=key, lista="debitos", titulo="Débitos")
         if len(todos):
             st.markdown('<div class="cf-tit">Débitos por obra social</div>', unsafe_allow_html=True)
             t = todos.assign(_e=todos["_debito_estado"].replace("", "A reclamar")).pivot_table(
@@ -625,7 +626,7 @@ def _presentaciones(st: Any, ctx: dict[str, Any], *, key: str, guardar: Callable
                     f'{pesos(info["pendiente"], 0)}</div>', unsafe_allow_html=True)
         fecha = st.date_input("Fecha de pago", value=ctx["hoy"], format="DD/MM/YYYY", key=f"{key}_pc_f_{info['id']}")
         st.caption("Marca como cobradas todas las prestaciones del lote que siguen pendientes. Si a alguna le pagaron de "
-                   "menos, registralo después en su ficha (cobro de una parte).")
+                   "menos, registralo después en 3 · Cobrar (cobro de una parte).")
         if st.button("Registrar cobro del lote", type="primary", key=f"{key}_pc_ok_{info['id']}", use_container_width=True):
             cambios = pr.cambios_cobro_lote(d, info["id"], fecha)
             if not cambios:
@@ -635,59 +636,54 @@ def _presentaciones(st: Any, ctx: dict[str, Any], *, key: str, guardar: Callable
             _ok(f"Lote {info['obra_social']} cobrado")
 
     # Para presentar
-    st.markdown(ff._CSS, unsafe_allow_html=True)
     t = pr.por_obra_social(d, req, empresa)
-    st.markdown('<div class="cf-tit">Para presentar, por obra social</div>'
-                '<div class="fp-sub">Armá una presentación por obra social: elegís las prestaciones, el N° y la fecha una '
-                'sola vez y quedan todas facturadas.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="cf-tit">Para presentar</div><div class="fp-sub">Una presentación por obra social: '
+                'elegís las prestaciones, el N° y la fecha una sola vez y quedan todas facturadas.</div>',
+                unsafe_allow_html=True)
     if t.empty:
         st.markdown('<div class="fp-ok">✅ No queda nada sin facturar.</div>', unsafe_allow_html=True)
-    for _, r in t.iterrows():
-        tono = "rojo" if r["Plazo"] is not None and pd.notna(r["Plazo"]) and r["Plazo"] < 0 else (
-            "ambar" if r["Plazo"] is not None and pd.notna(r["Plazo"]) and r["Plazo"] <= cf.AVISO_PRESENTACION else "gris")
-        fondo, color = ff.TONOS[tono]
-        listas = (f"{int(r['Listas'])} con la documentación completa" if r["Listas"] < r["Prestaciones"]
-                  else "todas con la documentación completa")
+    else:
         with st.container(border=True):
-            c1, c2 = st.columns([4, 1.5])
-            c1.markdown(f'<div class="ff-top"><div><div class="ff-nom">{_esc(r["Obra social"])}</div>'
-                        f'<div class="ff-sub">{int(r["Prestaciones"])} prestación(es) · {listas} · del '
-                        f'{pr.fecha_corta(r["Desde"])} al {pr.fecha_corta(r["Hasta"])}</div></div>'
-                        f'<div><div class="ff-imp">{pesos(r["Importe"], 0)}</div><div style="text-align:right">'
-                        f'<span class="ff-bd" style="background:{fondo};color:{color}">{_esc(pr.plazo_txt(r["Plazo"]))}'
-                        f'</span></div></div></div>', unsafe_allow_html=True)
-            if c2.button("Armar presentación", key=f"{key}_pr_{r['Obra social']}", type="primary",
+            c1, c2 = st.columns([3.4, 1.6], vertical_alignment="bottom")
+            os_sel = c1.selectbox("Armar la presentación de", list(t["Obra social"]), index=None, key=f"{key}_pr_sel",
+                                  placeholder="Elegí la obra social…",
+                                  format_func=lambda o: f"{o} · {int(t.set_index('Obra social').loc[o, 'Prestaciones'])} "
+                                                        f"prestación(es) · {pesos(t.set_index('Obra social').loc[o, 'Importe'], 0)}")
+            if c2.button("Armar presentación", key=f"{key}_pr_armar", type="primary", disabled=os_sel is None,
                          use_container_width=True, icon=":material/inventory_2:"):
-                st.dialog(f"Presentación · {r['Obra social']}", width="large")(armar_dialogo)(r["Obra social"])
+                st.dialog(f"Presentación · {os_sel}", width="large")(armar_dialogo)(os_sel)
+        st.markdown(fz.html_para_presentar(t), unsafe_allow_html=True)
 
     # Ya presentadas
     hechas = pr.presentaciones(pres, d, empresa)
     if len(hechas):
-        st.markdown('<div class="cf-tit">Presentaciones hechas</div>', unsafe_allow_html=True)
-        ver = st.pills("Ver", ["Por cobrar", "Todas"], default="Por cobrar", key=f"{key}_pr_ver",
-                       label_visibility="collapsed") or "Por cobrar"
+        c1, c2 = st.columns([3, 1.4], vertical_alignment="bottom")
+        c1.markdown('<div class="cf-tit">Presentaciones hechas</div>', unsafe_allow_html=True)
+        ver = c2.segmented_control("Ver", ["Por cobrar", "Todas"], default="Por cobrar", key=f"{key}_pr_ver",
+                                   label_visibility="collapsed") or "Por cobrar"
         if ver == "Por cobrar":
             hechas = hechas[hechas["pendiente"] > 0.5]
-        for _, h in hechas.head(30).iterrows():
-            tono = "verde" if h["estado"] == "Cobrada" else ("rojo" if h["vencido"] else "azul")
-            fondo, color = ff.TONOS[tono]
+        hechas = hechas.head(60).reset_index(drop=True)
+        if hechas.empty:
+            st.markdown('<div class="fp-ok">✅ Todas las presentaciones están cobradas.</div>', unsafe_allow_html=True)
+        else:
             with st.container(border=True):
-                st.markdown(f'<div class="ff-top"><div><div class="ff-nom">{_esc(h["obra_social"])} · {_esc(h["periodo"])}</div>'
-                            f'<div class="ff-sub">Presentada el {_esc(h["fecha"])} · Fact. {_esc(h["numero"])} · vence '
-                            f'{_esc(h["vencimiento"]) or "—"} · {int(h["fichas"])} prestación(es)</div></div>'
-                            f'<div><div class="ff-imp">{pesos(h["facturado"], 0)}</div><div style="text-align:right">'
-                            f'<span class="ff-bd" style="background:{fondo};color:{color}">{_esc(h["estado"])}</span>'
-                            f'</div></div></div>', unsafe_allow_html=True)
-                st.progress(min(h["cobrado"] / h["facturado"], 1.0) if h["facturado"] else 0.0,
-                            text=f"Cobrado {pesos(h['cobrado'], 0)} · falta {pesos(h['pendiente'], 0)}")
-                c1, c2, c3 = st.columns([2.6, 1.3, 1.5])
-                c2.download_button("Detalle", data=pr.excel_lote(d, h.to_dict()), key=f"{key}_pr_x_{h['id']}",
-                                   file_name=f"presentacion_{h['obra_social']}_{h['fecha'].replace('/', '-')}.xlsx",
-                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                   icon=":material/download:", use_container_width=True)
-                if h["pendiente"] > 0.5 and c3.button("Registrar cobro", key=f"{key}_pr_c_{h['id']}", type="primary",
-                                                      use_container_width=True, icon=":material/payments:"):
-                    st.dialog(f"Cobro del lote · {h['obra_social']}")(cobro_dialogo)(h.to_dict())
+                c1, c2, c3 = st.columns([3.4, 1.2, 1.4], vertical_alignment="bottom")
+                j = c1.selectbox("Presentación", list(hechas.index), index=None, key=f"{key}_pr_hsel",
+                                 placeholder="Elegí la presentación para cobrarla o bajar el detalle…",
+                                 format_func=lambda j_: f"{hechas.loc[j_, 'obra_social']} · {hechas.loc[j_, 'periodo']} · "
+                                                        f"Fact. {hechas.loc[j_, 'numero']} · saldo "
+                                                        f"{pesos(hechas.loc[j_, 'pendiente'], 0)}")
+                if j is not None:
+                    h = hechas.loc[j]
+                    c2.download_button("Detalle", data=pr.excel_lote(d, h.to_dict()), key=f"{key}_pr_x_{h['id']}",
+                                       file_name=f"presentacion_{h['obra_social']}_{str(h['fecha']).replace('/', '-')}.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                       icon=":material/download:", use_container_width=True)
+                    if h["pendiente"] > 0.5 and c3.button("Registrar cobro", key=f"{key}_pr_c_{h['id']}", type="primary",
+                                                          use_container_width=True, icon=":material/payments:"):
+                        st.dialog(f"Cobro del lote · {h['obra_social']}")(cobro_dialogo)(h.to_dict())
+            st.markdown(fz.html_presentadas(hechas), unsafe_allow_html=True)
 
     # Documentación que pide cada obra social
     with st.expander("Documentación que pide cada obra social", icon=":material/fact_check:"):
