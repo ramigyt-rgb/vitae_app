@@ -356,50 +356,6 @@ def render_lista(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Call
 
 
 # ---------------------------------------------------------------------------
-# Cirugías de la Agenda sin cargar
-# ---------------------------------------------------------------------------
-_GRID_AG = "minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) 90px"
-
-
-def html_agenda(ag: pd.DataFrame, empresa: str) -> str:
-    partes = [CSS, f'<div class="fz-bloque"><div class="fz-tit"><b>Cirugías realizadas sin cargar</b>'
-              f'<span>{len(ag)} · sólo procedimientos de {_e(empresa)}</span></div>'
-              f'<div class="fz-cols" style="grid-template-columns:{_GRID_AG}"><div>Paciente</div><div>Obra social</div>'
-              '<div>Procedimiento</div><div>Médico</div><div style="text-align:center">Fecha</div></div>']
-    for _, r in ag.iterrows():
-        partes.append(f'<div class="fz-row" style="grid-template-columns:{_GRID_AG}">'
-                      f'<div class="fz-p">{_e(_texto(r["Paciente"]))}</div><div class="fz-p fz-x">{_e(_texto(r["Obra social"]))}</div>'
-                      f'<div class="fz-p fz-x">{_e(_texto(r["Procedimiento"]))}</div><div class="fz-p fz-x">{_e(_texto(r["Médico"]))}</div>'
-                      f'<div class="fz-c">{_e(cf._fecha_txt(r["Fecha"]))}</div>'
-                      f'<div class="fz-meta">{_e(" · ".join(_texto(v) for v in (r["Obra social"], r["Procedimiento"], r["Médico"]) if _texto(v)))}'
-                      '</div></div>')
-    partes.append("</div>")
-    return "".join(partes)
-
-
-def render_agenda(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
-    ag = ctx["c"]["agenda"]
-    if ag.empty:
-        return
-    ag = ag.reset_index(drop=True)
-    with st.container(border=True):
-        c1, c2, c3 = st.columns([3.4, 1.25, 1.6], vertical_alignment="bottom")
-        i = c1.selectbox("Agregar una cirugía", list(ag.index), index=None, key=f"{key}_fz_ag_sel",
-                         format_func=lambda j: " · ".join(_texto(v) for v in (ag.loc[j, "Paciente"], ag.loc[j, "Obra social"],
-                                                                              ag.loc[j, "Procedimiento"],
-                                                                              cf._fecha_txt(ag.loc[j, "Fecha"])) if _texto(v)),
-                         placeholder="Elegí la cirugía para revisar el importe y agregarla…")
-        if c2.button("Agregar", key=f"{key}_fz_ag_add", type="primary", disabled=i is None, use_container_width=True,
-                     icon=":material/add:"):
-            ff.dialogo_nuevo(st, ctx, guardar, key, ag.loc[i].to_dict())
-        if len(ag) > 1 and c3.button(f"Agregar las {len(ag)}", key=f"{key}_ag_todas", use_container_width=True,
-                                     icon=":material/playlist_add:",
-                                     help="Con el importe sugerido. Después se revisan en 2 · Facturar."):
-            ff.agregar_todas(st, ctx, guardar, key)
-    st.markdown(html_agenda(ag, ctx["empresa"]), unsafe_allow_html=True)
-
-
-# ---------------------------------------------------------------------------
 # Presentaciones (facturar por obra social)
 # ---------------------------------------------------------------------------
 _GRID_PR = "minmax(0,1.3fr) 90px minmax(0,1.2fr) 150px 120px 150px"

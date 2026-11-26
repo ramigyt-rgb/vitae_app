@@ -4,9 +4,11 @@ Cuando en la Agenda una cirugía pasa a «Realizado» (o se carga directamente c
 su ficha en la facturación de la empresa que corresponde a su procedimiento (VMR o VM, igual que el
 control): paciente, fecha, obra social, procedimiento, médico, importe sugerido (lo último de ese
 procedimiento y obra social), estado Pendiente y la documentación que ya figura en la Agenda
-(autorización, consentimiento firmado). Si ya está en alguna de las dos facturaciones, no se duplica.
+(autorización, consentimiento firmado). Si ya está en la facturación de su empresa, no se duplica.
+Regla principal: reproducción → VMR; todo lo demás → VM (``control_facturacion.empresa_procedimiento``).
 
-Sólo las recién realizadas: lo viejo que falta se agrega desde «1 · Cargar» (de a una o todas juntas).
+Sólo las recién realizadas (las que pasan a «Realizado» al guardar): lo viejo de la Agenda no se revisa,
+porque la Agenda era un respaldo. No se duplica lo que ya está en la facturación de su empresa.
 """
 from __future__ import annotations
 
@@ -67,14 +69,14 @@ def a_facturacion(cirugias: pd.DataFrame, facturaciones: dict[str, pd.DataFrame 
     hoy_d = hoy or date.today()
     raws = {e: (df.reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame())
             for e, df in facturaciones.items()}
-    historial = cf.historial_procedimientos(raws)
     # ¿Ya está en alguna facturación? Mismo control que «cirugías sin cargar», sobre estas filas.
     base_agenda = agenda_raw.loc[cirugias.index] if isinstance(agenda_raw, pd.DataFrame) else None
     out: dict[str, tuple[pd.DataFrame, list[str]]] = {}
     for empresa, tabla in TABLAS.items():
         raw = raws.get(empresa, pd.DataFrame())
         if base_agenda is not None:
-            faltan = cf.agenda_sin_facturar(base_agenda, list(raws.values()), hoy_d, empresa, historial)
+            # Sólo contra la facturación de su empresa: VMR y VM no se mezclan.
+            faltan = cf.agenda_sin_facturar(base_agenda, [raw], hoy_d, empresa)
             faltan_claves = {(_texto(p), pd.Timestamp(f).strftime("%Y-%m-%d")) for p, f in zip(faltan.get("Paciente", []),
                                                                                          faltan.get("Fecha", []))}
         else:
@@ -82,7 +84,7 @@ def a_facturacion(cirugias: pd.DataFrame, facturaciones: dict[str, pd.DataFrame 
         d, cols = cf.preparar(raw, hoy_d) if not raw.empty else (pd.DataFrame(), {})
         nuevo, pacientes = raw, []
         for _, r in cirugias.iterrows():
-            if cf.empresa_procedimiento(r["procedimiento"], historial) != empresa:
+            if cf.empresa_procedimiento(r["procedimiento"]) != empresa:
                 continue
             f = r["_fecha_dt"]
             if faltan_claves is not None and (_texto(r["paciente"]), f.strftime("%Y-%m-%d") if pd.notna(f) else "") \

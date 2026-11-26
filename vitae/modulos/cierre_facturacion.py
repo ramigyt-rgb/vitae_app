@@ -223,12 +223,7 @@ def _en_mes(x: pd.DataFrame, mes: str) -> pd.DataFrame:
 def checklist(ctx: dict[str, Any], mes: str) -> list[dict[str, Any]]:
     """Cada punto del cierre: ok o no, cuántos casos, si traba el cierre y en qué paso se arregla."""
     c = ctx["c"]
-    ag = c["agenda"]
-    ag_mes = ag[ag["Fecha"].map(lambda f: f"{f.year:04d}-{f.month:02d}" if pd.notna(f) else "") == mes] \
-        if not ag.empty else ag
     puntos = [
-        ("Cirugías del mes cargadas en facturación", len(ag_mes), True, "cargar",
-         "Cirugías realizadas en la Agenda que no están en ninguna facturación."),
         ("Todo facturado", len(_en_mes(c["sin_facturar"], mes)), True, "facturar", "Prestaciones sin N° de factura."),
         ("Datos completos", len(_en_mes(c["incompletos"], mes)), True, "cargar",
          "Falta obra social, procedimiento o importe."),

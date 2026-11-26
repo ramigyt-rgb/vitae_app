@@ -364,15 +364,13 @@ def calcular(dfs: dict[str, pd.DataFrame], mes: str, hoy: pd.Timestamp | None = 
     m: dict[str, Any] = {"mes": mes, "hoy": hoy}
     m["disponible"] = _seguro(lambda: disponible(dfs, mes, hoy))
     m["fact"] = {e: _seguro(lambda t=t: facturacion(g(t), mes)) for e, t in (("VMR", "facturacion_vmr"), ("VM", "facturacion_vm"))}
-    # Control de facturación (mismo cálculo que la sección Control de cada Facturación). Cada cirugía
-    # realizada sin cargar va a la empresa de su procedimiento (VMR sólo los de VMR; el resto, VM).
+    # Control de facturación (mismo cálculo que cada Facturación). VMR y VM no se mezclan: cada una
+    # sólo con su planilla.
     from vitae.modulos import control_facturacion as cf
 
     m["control_fact"] = {
-        "VMR": _seguro(lambda: cf.resumen(g("facturacion_vmr"), g("agenda_quirofano"), [g("facturacion_vm")],
-                                          hoy.date(), empresa="VMR")),
-        "VM": _seguro(lambda: cf.resumen(g("facturacion_vm"), g("agenda_quirofano"), [g("facturacion_vmr")],
-                                         hoy.date(), empresa="VM")),
+        "VMR": _seguro(lambda: cf.resumen(g("facturacion_vmr"), hoy=hoy.date(), empresa="VMR")),
+        "VM": _seguro(lambda: cf.resumen(g("facturacion_vm"), hoy=hoy.date(), empresa="VM")),
     }
     m["pagos"] = _seguro(lambda: pagos_pendientes(g("pagos_pendientes_vitae")))
     m["honorarios"] = _seguro(lambda: honorarios(g("honorarios_medicos"), p.get("honorarios")))
@@ -415,9 +413,6 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
                 f"{pesos(f['vencido'], 0)} en {f['facturas_vencidas']} facturas" + (f" · {os_txt}" if os_txt else ""),
                 f"Facturación {e}")
     for e, cfe in m.get("control_fact", {}).items():
-        if cfe.get("agenda_sin_cargar"):
-            add("alta", f"Facturación {e}: cirugías realizadas sin cargar",
-                f"{cfe['agenda_sin_cargar']} en la Agenda de Quirófano", f"Facturación {e}")
         if cfe.get("sin_facturar_vencido"):
             add("alta", f"Facturación {e}: sin facturar con el plazo de 60 días vencido",
                 f"{cfe['sin_facturar_vencido']} registro(s)", f"Facturación {e}")

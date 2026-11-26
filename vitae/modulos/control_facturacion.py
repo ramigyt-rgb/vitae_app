@@ -1,13 +1,16 @@
 """Control de facturación (VMR / VM): que no se pase nada.
 
-Circuito de cada registro de Facturación (pacientes que ingresaron a quirófano):
+REGLA PRINCIPAL: VMR (empresa de fertilidad) y VM (quirófano) son dos facturaciones distintas y no se
+mezclan: cada módulo se controla sólo con su planilla. En la Agenda registra VM, pero las pacientes de
+procedimientos de reproducción son de VMR; lo que no es de reproducción va a Facturación VM
+(``empresa_procedimiento``). La Agenda era un respaldo: no se compara contra Facturación.
 
-    Cirugía realizada (Agenda de Quirófano) → Para facturar → Facturada → Por cobrar → Cobrada
-                                                                                    ↘ Débito
+Circuito de cada registro de Facturación:
+
+    Cargado → Para facturar → Facturada → Por cobrar → Cobrada
+                                                    ↘ Débito
 
 Controles, cada uno con cantidad e importe (en cero = todo bien):
-- Cirugías realizadas en la Agenda que no están en ninguna facturación (VMR ni VM). Cada una va a la
-  empresa de su procedimiento (``empresa_procedimiento``): en VMR sólo las de VMR; el resto, en VM.
 - Para facturar: sin N° de factura. Plazo de presentación: 60 días desde la prestación
   (``PLAZO_PRESENTACION``); avisa antes de que venza.
 - Por cobrar: vencidas (30/60/90+) y por vencer en 7 días; facturas sin vencimiento.
@@ -284,8 +287,6 @@ def _repetidas(a: pd.DataFrame, rep: pd.Series) -> pd.DataFrame:
 
 CONTROLES = [
     # clave, título, por qué, nivel si hay casos
-    ("agenda", "Cirugías realizadas sin cargar en facturación", "En la Agenda figuran como realizadas, son procedimientos "
-     "de esta empresa y no están ni en VMR ni en VM.", "alta"),
     ("sin_facturar_vencido", f"Sin facturar con el plazo de {PLAZO_PRESENTACION} días vencido",
      "Pasaron más de 60 días desde la prestación.", "alta"),
     ("sin_facturar_proximo", f"Sin facturar: vence el plazo en {AVISO_PRESENTACION} días o menos",
@@ -334,10 +335,6 @@ def bandeja(c: dict[str, pd.DataFrame], hoy: date | None = None) -> pd.DataFrame
                           "Obra social": r["_obra_social"], "Procedimiento": r["_procedimiento"],
                           "Importe": float(r[monto]), "Detalle": detalle(r), "_fila": i})
 
-    for _, r in c["agenda"].iterrows() if not c["agenda"].empty else []:
-        filas.append({"Prioridad": URGENTE, "Tarea": "Cargar en facturación", "Paciente": r["Paciente"],
-                      "Obra social": r["Obra social"], "Procedimiento": r["Procedimiento"], "Importe": 0.0,
-                      "Detalle": f"Cirugía realizada el {_fecha_txt(r['Fecha'])}", "_fila": -1})
     add(URGENTE, "Facturar (plazo vencido)", c["sin_facturar_vencido"],
         lambda r: f"Prestación {_fecha_txt(r['_prestacion'])} · venció hace {-int(r['_dias_plazo'])} días")
     add(URGENTE, "Reclamar factura vencida", c["vencidas"],
@@ -411,9 +408,8 @@ def resumen(raw: pd.DataFrame | None, agenda_raw: pd.DataFrame | None = None,
     """Para el Panel general y Luz. Con ``empresa`` ("VMR"/"VM") las cirugías sin cargar son sólo
     las de esa empresa; ``otras_facturaciones[0]`` es la facturación de la otra empresa."""
     d, _ = preparar(raw, hoy)
-    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy, empresa,
-                             _historial(raw, otras_facturaciones, empresa)) if agenda_raw is not None \
-        else pd.DataFrame()
+    # La Agenda era un respaldo: no se compara contra Facturación (no hay registro previo en la Agenda).
+    ag = pd.DataFrame()
     c = controles(d, ag, hoy)
     t = tabla_controles(c)
     b = bandeja(c, hoy)
@@ -421,7 +417,7 @@ def resumen(raw: pd.DataFrame | None, agenda_raw: pd.DataFrame | None = None,
             "urgentes": int((b["Prioridad"] == URGENTE).sum()) if len(b) else 0,
             "esta_semana": int((b["Prioridad"] == SEMANA).sum()) if len(b) else 0,
             "sin_facturar": len(c["sin_facturar"]), "sin_facturar_vencido": len(c["sin_facturar_vencido"]),
-            "agenda_sin_cargar": len(ag), "debitos": float(c["debitos"]["_debito"].sum()) if len(c["debitos"]) else 0.0,
+            "debitos": float(c["debitos"]["_debito"].sum()) if len(c["debitos"]) else 0.0,
             "vencidas": len(c["vencidas"])}
 
 
@@ -515,8 +511,9 @@ def contexto(raw: pd.DataFrame | None, *, empresa: str, agenda_raw: pd.DataFrame
     hoy_d = hoy or date.today()
     raw = raw.reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
     d, cols = preparar(raw, hoy_d)
-    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy_d, empresa,
-                             _historial(raw, otras_facturaciones, empresa))
+    # REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son distintas; cada una se controla sólo con su
+    # planilla. La Agenda era un respaldo: no se compara contra Facturación (``agenda`` queda vacía).
+    ag = pd.DataFrame()
     c = controles(d, ag, hoy_d)
     return {"raw": raw, "d": d, "cols": cols, "c": c, "b": bandeja(c, hoy_d), "t": tabla_controles(c),
             "hoy": hoy_d, "empresa": empresa, "agenda_raw": agenda_raw}
@@ -672,8 +669,9 @@ def render_control(raw: pd.DataFrame, *, empresa: str, guardar: Callable[[pd.Dat
     st.markdown(_CSS, unsafe_allow_html=True)
     raw = raw.reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
     d, cols = preparar(raw, hoy_d)
-    ag = agenda_sin_facturar(agenda_raw, [raw] + list(otras_facturaciones or []), hoy_d, empresa,
-                             _historial(raw, otras_facturaciones, empresa))
+    # REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son distintas; cada una se controla sólo con su
+    # planilla. La Agenda era un respaldo: no se compara contra Facturación (``agenda`` queda vacía).
+    ag = pd.DataFrame()
     c = controles(d, ag, hoy_d)
     b = bandeja(c, hoy_d)
     t = tabla_controles(c)

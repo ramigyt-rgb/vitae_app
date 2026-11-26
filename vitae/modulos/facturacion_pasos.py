@@ -7,9 +7,11 @@ qué hacer, muestra la lista para resolver ahí mismo y termina con «Siguiente 
 
 - Mes: el mes elegido (por defecto el actual) en calendario del 1 al último día, la situación del mes
   (qué falta y dónde se resuelve), por obra social y sus registros por obra social o por paciente
-  (``facturacion_mes``). Abajo, plegado, el plan para ponerse al día y cómo viene bajando lo pendiente
-  (se anota un renglón por día en ``facturacion_avance``).
-- Cargar: cirugías de la Agenda que faltan, datos incompletos o repetidos, editar cualquier registro
+  (``facturacion_mes``).
+
+REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son dos facturaciones distintas; cada módulo sólo lee y
+controla su propia planilla. La Agenda era un respaldo: no se compara contra Facturación.
+- Cargar: datos incompletos o repetidos, nuevo registro, editar cualquier registro
   cargado y la calidad de la planilla.
 - Facturar: lo que falta facturar, por obra social (presentaciones) o todo junto, por el plazo de 60 días.
 - Cobrar: vencidas, por vencer y sin vencimiento; antigüedad, por obra social y a quién cobrar primero.
@@ -44,6 +46,11 @@ NOMBRES = {"hoy": "Mes", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "
            "tabla": "Tabla", "importar": "Importar", "exportar": "Exportar"}
 LEGACY = {"tabla": "Editar tabla", "importar": "Importar"}
 ANALISIS = ["Resumen", "Cobranza", "Producción", "Calidad"]
+# Regla principal: dos empresas, dos facturaciones que no se mezclan.
+REGLA = {"VMR": "VMR es la empresa de fertilidad: acá van sólo las pacientes de procedimientos de reproducción. "
+                "Lo de quirófano que no es de reproducción va en Facturación VM.",
+         "VM": "VM es el quirófano: acá va lo que no es de reproducción. Las pacientes de procedimientos de "
+               "reproducción (aunque se registren en la Agenda de VM) van en Facturación VMR."}
 
 _CSS = """<style>
 .fp-paso{display:flex;align-items:baseline;gap:.6rem;margin:.6rem 0 .1rem}
@@ -76,7 +83,7 @@ def cuentas(ctx: dict[str, Any]) -> dict[str, int]:
 
     hoy_ = ctx["hoy"]
     del_mes = fm.registros(ctx["d"], f"{hoy_.year:04d}-{hoy_.month:02d}")
-    return {"hoy": int(ff.pendiente_pago(del_mes).sum()) if len(del_mes) else 0, "cargar": int(len(c["agenda"])) + n("incompletos", "repetidas"),
+    return {"hoy": int(ff.pendiente_pago(del_mes).sum()) if len(del_mes) else 0, "cargar": n("incompletos", "repetidas"),
             "facturar": n("sin_facturar"), "cobrar": n("vencidas", "por_vencer", "sin_vencimiento"),
             "debitos": n("debitos", "parcial_sin_debito")}
 
@@ -131,9 +138,9 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
 
     st.markdown(cf._CSS + _CSS, unsafe_allow_html=True)
     hoy_d = hoy or date.today()
-    otra = "facturacion_vm" if empresa == "VMR" else "facturacion_vmr"
-    ctx = cf.contexto(raw, empresa=empresa, agenda_raw=leer_tabla("agenda_quirofano"),
-                      otras_facturaciones=[leer_tabla(otra)], hoy=hoy_d)
+    # REGLA PRINCIPAL: VMR (fertilidad) y VM (quirófano) son distintas y no se mezclan: cada una se controla
+    # sólo con su planilla (no se lee la de la otra empresa). La Agenda era un respaldo: no se compara.
+    ctx = cf.contexto(raw, empresa=empresa, hoy=hoy_d)
     from vitae.modulos import presentaciones as pr
 
     ctx["requisitos"] = leer_tabla(pr.TABLA_REQ)
@@ -146,6 +153,8 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     n["cierre"] = len(sin_cerrar)
 
     tarjetas_kpi(indicadores(ctx))
+    st.markdown(f'<div class="fp-sub" style="margin:-.2rem 0 .5rem">{_esc(REGLA.get(empresa, ""))}</div>',
+                unsafe_allow_html=True)
 
     # ---- Navegación: pasos numerados y, aparte, Análisis y Planilla -------------------
     k_v, k_p, k_e = f"{key}_vista", f"{key}_pasos", f"{key}_extras"
@@ -275,20 +284,16 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
         st.markdown(_titulo("", "Mes", "Cómo viene el mes: todo lo registrado día por día, qué falta y dónde se "
                             "resuelve. Elegí otro mes para ver qué quedó pendiente."), unsafe_allow_html=True)
         fm.render_mes(st, ctx, key=key, ir=ir, guardar=guardar, nombres=NOMBRES)
-        with st.expander("Plan para ponerte al día (si venís atrasado) y cómo viene bajando lo pendiente",
-                         icon=":material/route:"):
-            _hoy(st, ctx, key=key, ir=ir, leer_tabla=leer_tabla, guardar_tabla=guardar_tabla, embebido=True)
         return
 
     # ---- 1 · Cargar -------------------------------------------------------------------------
     if vista == "cargar":
-        st.markdown(_titulo("1", "Cargar", "Que esté todo lo que pasó por quirófano y con los datos completos. "
-                            "Lo que no está cargado no se factura."), unsafe_allow_html=True)
+        st.markdown(_titulo("1", "Cargar", "Cada prestación cargada con sus datos completos (obra social, "
+                            "procedimiento e importe). Lo que no está cargado no se factura."), unsafe_allow_html=True)
         c = ctx["c"]
-        if c["agenda"].empty and not n["cargar"]:
-            st.markdown('<div class="fp-ok">✅ Todas las cirugías realizadas están cargadas y los datos están completos.'
-                        '</div>', unsafe_allow_html=True)
-        fz.render_agenda(st, ctx, guardar=guardar, key=key)
+        if not n["cargar"]:
+            st.markdown('<div class="fp-ok">✅ Los datos de todo lo cargado están completos.</div>',
+                        unsafe_allow_html=True)
         x, _, _ = cf.grupo(c, "Completar datos")
         if len(x):
             rep_ = c["repetidas"].index if len(c["repetidas"]) else []
@@ -391,79 +396,6 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     if vista == "cierre":
         _cierre(st, ctx, cierres, key=key, ir=ir, guardar_tabla=guardar_tabla, usuario=usuario)
         return
-
-
-def _hoy(st: Any, ctx: dict[str, Any], *, key: str, ir: Callable[[str], Callable[[], None]],
-         leer_tabla: Callable[[str], pd.DataFrame | None], guardar_tabla: Callable[[str, pd.DataFrame], Any],
-         embebido: bool = False) -> None:
-    hoy_d = ctx["hoy"]
-    p = cfx.plan(ctx["b"])
-    if not embebido:
-        st.markdown(_titulo("", "Hoy", "Lo que tenés que hacer, en orden. Si venís atrasado, seguí el plan de arriba "
-                            "hacia abajo: cada etapa se resuelve en su paso."), unsafe_allow_html=True)
-
-    # Avance: un renglón por día (sólo la primera vez que se abre en el día, o si cambió)
-    av_raw = leer_tabla(cfx.TABLA_AVANCE)
-    f = cfx.foto(ctx)
-    marca = f"{key}_avance_{f['fecha']}_{f['pendientes']}"
-    av_tabla, cambio = cfx.registrar_avance(av_raw, f)
-    if cambio and not st.session_state.get(marca):
-        try:
-            guardar_tabla(cfx.TABLA_AVANCE, av_tabla)
-            st.session_state[marca] = True
-        except Exception:
-            pass
-    av = cfx.avance_de(av_tabla, ctx["empresa"])
-    comp = cfx.comparacion(av, hoy_d)
-
-    if p.empty:
-        st.markdown('<div class="fp-ok">✅ Estás al día: nada para cargar, facturar, cobrar ni reclamar. Para mantenerlo: '
-                    'cada día revisá 1 · Cargar (las cirugías de ayer) y 2 · Facturar; una vez por semana, 3 · Cobrar y '
-                    '4 · Débitos; a principio de mes, 5 · Cierre del mes anterior.</div>', unsafe_allow_html=True)
-    else:
-        et = cfx.etapas(p)
-        st.markdown('<div class="cf-tit">Plan para ponerte al día</div>'
-                    f'<div class="fp-sub">{len(p)} tarea(s) en total. Empezá por la etapa 1 y seguí en orden; tocá '
-                    '«Ir» para resolverla en su paso.</div>', unsafe_allow_html=True)
-        for _, r in et.iterrows():
-            c1, c2, c3 = st.columns([5, 1.6, 1.1])
-            c1.markdown(f'<div class="fp-etapa"><span class="n">{int(r["Etapa"])}</span><div><b>{html.escape(r["Qué hacer"])}'
-                        f'</b><div class="fp-sub">{html.escape(str(r["Por qué"] or ""))}</div></div></div>',
-                        unsafe_allow_html=True)
-            c2.markdown(f'<div style="padding-top:.45rem;text-align:right"><b>{int(r["Tareas"])}</b>'
-                        f'{" · " + pesos(r["Importe"], 0) if r["Importe"] else ""}</div>', unsafe_allow_html=True)
-            c3.button("Ir", key=f"{key}_ir_{int(r['Etapa'])}", on_click=ir(r["Paso"]), use_container_width=True,
-                      icon=":material/arrow_forward:")
-
-        st.markdown('<div class="cf-tit">Tanda de hoy</div>', unsafe_allow_html=True)
-        c1, c2 = st.columns([1, 2.4])
-        por_dia = c1.selectbox("Tareas por día", [10, 15, 20, 30, 50], index=2, key=f"{key}_por_dia")
-        dias = cfx.dias_para_terminar(len(p), por_dia)
-        c2.markdown(f'<div class="fp-sub" style="padding-top:1.9rem">A {por_dia} por día, te ponés al día en '
-                    f'<b>{dias} día(s) hábil(es)</b>. Después, el circuito diario es mucho más corto.</div>',
-                    unsafe_allow_html=True)
-        tanda = p.head(por_dia)
-        vista_t = pd.DataFrame({"Etapa": tanda["Etapa"], "Qué hacer": tanda["Tarea"], "Paciente": tanda["Paciente"],
-                                "Obra social": tanda["Obra social"], "Importe": tanda["Importe"].map(
-                                    lambda v: pesos(v) if v else ""), "Detalle": tanda["Detalle"],
-                                "Dónde": tanda["Paso"].map(lambda v: NOMBRES.get(v, v))})
-        st.dataframe(vista_t, hide_index=True, use_container_width=True, height=min(38 + 35 * len(vista_t), 560))
-
-    st.markdown('<div class="cf-tit">Cómo venís</div>', unsafe_allow_html=True)
-    if comp.get("anterior") is not None and comp.get("hoy") is not None:
-        dif = comp["hoy"] - comp["anterior"]
-        txt = (f"Hoy quedan <b>{comp['hoy']}</b> tareas; el {pd.Timestamp(comp['anterior_fecha']):%d/%m} quedaban "
-               f"{comp['anterior']} ({'−' if dif < 0 else '+'}{abs(dif)}).")
-        if comp.get("inicio") is not None and comp["inicio"] != comp["hoy"]:
-            txt += (f" Desde el {pd.Timestamp(comp['inicio_fecha']):%d/%m}: {comp['inicio']} → {comp['hoy']}.")
-        st.markdown(f'<div class="fp-box">{txt}</div>', unsafe_allow_html=True)
-    else:
-        st.markdown('<div class="fp-box">Desde hoy se anota cuánto queda pendiente cada día, para que veas cómo baja.'
-                    '</div>', unsafe_allow_html=True)
-    if len(av) >= 2:
-        g = av.assign(Día=pd.to_datetime(av["fecha"])).set_index("Día")[["pendientes", "facturar", "cobrar"]]
-        st.line_chart(g.rename(columns={"pendientes": "Total", "facturar": "Para facturar", "cobrar": "Para cobrar"}),
-                      color=["#8C2853", "#C9895B", "#4F7CAC"])
 
 
 def _cierre(st: Any, ctx: dict[str, Any], cierres: pd.DataFrame | None, *, key: str,
