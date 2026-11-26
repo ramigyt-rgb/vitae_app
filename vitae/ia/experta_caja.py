@@ -71,9 +71,12 @@ def _r(x: Any) -> float:
     return round(float(x or 0.0), 2)
 
 
-def resumen_caja(d: pd.DataFrame, mes: str) -> dict[str, Any]:
+def resumen_caja(d: pd.DataFrame, mes: str, tabla: str = "") -> dict[str, Any]:
     from vitae.modulos import caja as cj
 
+    internas = cj.cajas_internas(tabla)
+    if len(internas) > 1:
+        return resumen_con_internas(d, mes, tabla, internas)
     out: dict[str, Any] = {"mes": mes}
     for moneda in ("ARS", "USD"):
         r = cj.resumen_mes(d, mes, moneda)
@@ -103,9 +106,63 @@ def resumen_caja(d: pd.DataFrame, mes: str) -> dict[str, Any]:
     return out
 
 
+def resumen_con_internas(d: pd.DataFrame, mes: str, tabla: str, internas: list[str]) -> dict[str, Any]:
+    """Caja con cajas internas (Caja VMR): total y reparto por caja, con disponible y frascos."""
+    from vitae.modulos import caja as cj
+
+    out: dict[str, Any] = {"mes": mes, "nota": ("El total es la suma de las cajas internas. Las transferencias entre "
+                                               "ellas no son entradas ni salidas del total; los frascos no cambian "
+                                               "saldos, sólo cuánto queda disponible.")}
+    hasta = cj._hasta_mes(mes)
+    for moneda in ("ARS", "USD"):
+        tot = cj.resumen_total(d, mes, moneda, internas)
+        hoy_total = sum(cj.saldo_hoy(cj.de_caja(d, c), moneda) for c in internas)
+        if moneda == "USD" and not tot["movimientos"] and abs(tot["inicial"]) < 0.005 and abs(hoy_total) < 0.005:
+            continue
+        bloque: dict[str, Any] = {
+            "total": {"saldo_inicial": _r(tot["inicial"]), "entradas": _r(tot["entradas"]), "salidas": _r(tot["salidas"]),
+                      "saldo_del_mes": _r(tot["saldo"]), "saldo_hoy": _r(hoy_total)},
+            "cajas_internas": {}}
+        for c in internas:
+            r = tot["por_caja"][c]
+            fr = cj.frascos(d, c, tabla, hasta, moneda)
+            info: dict[str, Any] = {
+                "saldo_inicial": _r(r["inicial"]), "entradas": _r(r["entradas_propias"]),
+                "salidas": _r(r["salidas_propias"]), "transferencias_recibidas": _r(r["transf_entrada"]),
+                "transferencias_enviadas": _r(r["transf_salida"]), "saldo_del_mes": _r(r["saldo"]),
+                "saldo_hoy": _r(cj.saldo_hoy(cj.de_caja(d, c), moneda)),
+                "porcentaje_del_total": _r(r["saldo"] / tot["saldo"] * 100) if abs(tot["saldo"]) > 0.004 else 0.0}
+            if fr:
+                info["frascos"] = {k: _r(v) for k, v in fr.items()}
+                info["disponible"] = _r(r["saldo"] - sum(fr.values()))
+            bloque["cajas_internas"][c] = info
+        if moneda == "ARS":
+            ef = cj.de_caja(d, cj.EFECTIVO)
+            bloque["por_rubro_efectivo"] = {k: {kk: (_r(vv) if kk != "n" else vv) for kk, vv in v.items()}
+                                            for k, v in cj.por_rubro(ef, mes, moneda).items()}
+            avisos = []
+            for c in internas:
+                lb = cj.libro(cj.de_caja(d, c), moneda)
+                dif = lb[(lb["mes"] == mes) & (lb["diferencia"].abs() > 0.009)]
+                if not dif.empty:
+                    avisos.append(f"{c}: el saldo inicial cargado no coincide con el cierre del mes anterior "
+                                  f"(diferencia {cj.pesos(dif.iloc[0]['diferencia'])}).")
+            if avisos:
+                bloque["avisos"] = avisos
+        out[moneda] = bloque
+    sf = int((d["_mes"] == cj.SIN_FECHA).sum()) if not d.empty else 0
+    if sf:
+        out["movimientos_sin_fecha"] = sf
+    return out
+
+
 def movimientos(d: pd.DataFrame, *, mes: str = "", tipo: str = "", rubro: str = "", buscar: str = "",
-                moneda: str = "", limite: int = 40) -> list[dict[str, Any]]:
+                moneda: str = "", limite: int = 40, caja_interna: str = "") -> list[dict[str, Any]]:
     x = d[~d["_inicial"]] if not d.empty else d
+    if caja_interna and "_cuenta" in x.columns:
+        from vitae.modulos import caja as cj
+
+        x = x[x["_cuenta"] == cj.normalizar_cuenta(caja_interna)]
     if mes:
         x = x[x["_mes"] == mes]
     t = _norm(tipo)
@@ -127,7 +184,10 @@ def movimientos(d: pd.DataFrame, *, mes: str = "", tipo: str = "", rubro: str = 
         filas.append({"fecha": f["_fecha"].strftime("%d/%m/%Y") if pd.notna(f["_fecha"]) else "sin fecha",
                       "descripcion": f["_concepto"], "entrada": _r(f["_entrada"]) or None,
                       "salida": _r(f["_salida"]) or None, "moneda": f["_moneda"], "rubro": f["_rubro"],
-                      "quien": f["_quien"], "medio": f["_medio"], "observaciones": f["_obs"]})
+                      "quien": f["_quien"], "medio": f["_medio"], "observaciones": f["_obs"],
+                      "caja_interna": f.get("_cuenta", "Efectivo"), "frasco": f.get("_frasco", ""),
+                      "es": ("frasco (no cambia saldo)" if f.get("_es_frasco") else
+                             "transferencia entre cajas" if f.get("_transferencia") else "movimiento")})
     return filas
 
 
@@ -143,7 +203,11 @@ INSTRUCCIONES = """EXPERTA EN CAJA VMR Y CAJA VM (usá SIEMPRE las herramientas 
 - Si el saldo inicial cargado no coincide con el cierre del mes anterior, avisalo. Si hay movimientos sin fecha,
   también (se corrigen en Editar).
 - La pantalla de Caja siempre abre en el mes actual. Secciones: Planilla, Cargar movimiento, Editar, Historial e
-  Importar."""
+  Importar.
+- Caja VMR por dentro tiene 3 cajas internas: Efectivo (la de siempre), Mercado Pago y Medicación, cada una con sus
+  movimientos y su saldo; el total de VMR es la suma. Las transferencias entre cajas internas no son entradas ni
+  salidas del total. Los frascos (p. ej. Reserva en Mercado Pago) apartan plata sin que salga: el saldo no cambia,
+  cambia lo «disponible». caja_resumen de VMR trae el total, cada caja interna con su % del total, y sus frascos."""
 
 
 def herramientas(datos: Any, hoy: date | None = None) -> list[Callable[..., str]]:
@@ -169,18 +233,19 @@ def herramientas(datos: Any, hoy: date | None = None) -> list[Callable[..., str]
         caja: VMR, VM o ambas."""
         registrar(f"caja_resumen({caja}, {mes})")
         m = mes_de(mes, hoy)
-        salida = {c: resumen_caja(base(c), m) for c in cajas_pedidas(caja, disponibles)}
+        salida = {c: resumen_caja(base(c), m, CAJAS[c][1]) for c in cajas_pedidas(caja, disponibles)}
         return _json(salida or {"error": "No tenés acceso a Caja VMR ni Caja VM."})
 
     def caja_movimientos(caja: str = "ambas", mes: str = "", tipo: str = "", rubro: str = "", buscar: str = "",
-                         moneda: str = "", limite: int = 40) -> str:
+                         moneda: str = "", limite: int = 40, caja_interna: str = "") -> str:
         """Movimientos de la caja (sin las filas de saldo inicial). mes: vacío = mes actual, «todos» = todo.
         tipo: entradas o salidas. rubro: General, Alquileres o Caja gastos comunes. moneda: ARS o USD.
-        buscar: texto en descripción, quién u observaciones."""
+        buscar: texto en descripción, quién u observaciones. caja_interna (Caja VMR): Efectivo, Mercado Pago o
+        Medicación."""
         registrar(f"caja_movimientos({caja}, {mes}, {buscar})")
         m = "" if _norm(mes) in {"todos", "todo", "todo el historial"} else mes_de(mes, hoy)
         return _json({c: movimientos(base(c), mes=m, tipo=tipo, rubro=rubro, buscar=buscar, moneda=moneda,
-                                     limite=limite) for c in cajas_pedidas(caja, disponibles)})
+                                     limite=limite, caja_interna=caja_interna) for c in cajas_pedidas(caja, disponibles)})
 
     def caja_historial(caja: str = "ambas", moneda: str = "ARS", ultimos: int = 12) -> str:
         """Libro mes a mes: saldo inicial, entradas, salidas, saldo y cantidad de movimientos; marca si el saldo
@@ -190,7 +255,10 @@ def herramientas(datos: Any, hoy: date | None = None) -> list[Callable[..., str]
         registrar(f"caja_historial({caja}, {moneda})")
         salida = {}
         for c in cajas_pedidas(caja, disponibles):
-            lb = cj.libro(base(c), (moneda or "ARS").upper()).tail(max(1, min(int(ultimos or 12), 60)))
+            internas = cj.cajas_internas(CAJAS[c][1])
+            mon = (moneda or "ARS").upper()
+            lb = (cj.libro_total(base(c), mon, internas) if len(internas) > 1 else cj.libro(base(c), mon)
+                  ).tail(max(1, min(int(ultimos or 12), 60)))
             salida[c] = [{k: (v if k == "mes" or k == "movimientos" else (_r(v) if v is not None else None))
                           for k, v in f.items()} for f in lb.to_dict("records")]
         return _json(salida)

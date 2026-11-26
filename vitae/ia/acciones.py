@@ -582,9 +582,19 @@ def _pesos_caja(valor: float, moneda: str) -> str:
     return cj.dinero(valor, moneda)
 
 
+def _interna(caja: str, valor: Any) -> str:
+    """Caja interna válida para esa caja (Caja VM: siempre Efectivo)."""
+    from vitae.modulos import caja as cj
+
+    internas = cj.cajas_internas(CAJAS[caja][1])
+    v = cj.normalizar_cuenta(valor)
+    return v if v in internas else cj.EFECTIVO
+
+
 def movimiento_caja_datos(raw: pd.DataFrame, caja: str, *, tipo: str, importe: Any, descripcion: str = "",
                           fecha: str = "", moneda: str = "ARS", rubro: str = "", quien: str = "",
-                          medio: str = "Efectivo", observaciones: str = "", hoy: date | None = None) -> dict[str, Any]:
+                          medio: str = "Efectivo", observaciones: str = "", caja_interna: str = "",
+                          frasco: str = "", hoy: date | None = None) -> dict[str, Any]:
     """Valida y arma UN movimiento de caja (no guarda)."""
     from vitae.modulos import caja as cj
     from vitae.modulos.pagos_pendientes import numero
@@ -610,8 +620,13 @@ def movimiento_caja_datos(raw: pd.DataFrame, caja: str, *, tipo: str, importe: A
     if clase == "inicial":
         f = f.replace(day=1)
     moneda = "USD" if _norm(moneda) in {"usd", "dolar", "dolares", "us$", "u$s"} else "ARS"
-    d = _preparar_caja(raw, c)
-    frec = cj.frecuentes(d, 200)
+    interna = _interna(c, caja_interna)
+    d_todo = _preparar_caja(raw, c)
+    frec = cj.frecuentes(d_todo, 200)
+    d = cj.de_caja(d_todo, interna)
+    frasco_ok = cj.normalizar_frasco(frasco) if clase in ("entrada", "salida") else ""
+    if frasco_ok and frasco_ok not in cj.frascos(d_todo, interna, CAJAS[c][1]):
+        return {"ok": False, "error": f"No hay un frasco «{frasco_ok}» en {interna}."}
     if clase == "inicial":
         concepto, rubro_ok, quien_ok = "SALDO INICIAL", cj.GENERAL, ""
     else:
@@ -625,7 +640,7 @@ def movimiento_caja_datos(raw: pd.DataFrame, caja: str, *, tipo: str, importe: A
     item = {"fecha": f.strftime("%Y-%m-%d"), "concepto": concepto, "entrada": round(monto, 2) if clase != "salida" else 0.0,
             "salida": round(monto, 2) if clase == "salida" else 0.0, "moneda": moneda, "rubro": rubro_ok,
             "quien": quien_ok, "medio": medio_ok, "observaciones": _texto(observaciones), "inicial": clase == "inicial",
-            "clase": clase}
+            "clase": clase, "caja_interna": interna, "frasco": frasco_ok}
     avisos = []
     if len(d) and clase != "inicial":
         mismo = d[(d["_fecha"] == f) & (d["_concepto"].map(_norm) == _norm(concepto))
@@ -640,15 +655,99 @@ def movimiento_caja_datos(raw: pd.DataFrame, caja: str, *, tipo: str, importe: A
     return {"ok": True, "caja": c, "item": item, "avisos": avisos}
 
 
+def transferencia_caja_datos(raw: pd.DataFrame, caja: str, *, desde: str, hacia: str, importe: Any, fecha: str = "",
+                             moneda: str = "ARS", observaciones: str = "", hoy: date | None = None) -> dict[str, Any]:
+    """Pase entre cajas internas (sale de una y entra en otra; no es entrada ni salida del total)."""
+    from vitae.modulos import caja as cj
+    from vitae.modulos.pagos_pendientes import numero
+
+    c = _caja_de(caja)
+    if c is None:
+        return {"ok": False, "error": "Decime si es la Caja VMR o la Caja VM."}
+    internas = cj.cajas_internas(CAJAS[c][1])
+    if len(internas) < 2:
+        return {"ok": False, "error": f"{CAJAS[c][0]} no tiene cajas internas."}
+    o, dd = cj.normalizar_cuenta(desde), cj.normalizar_cuenta(hacia)
+    if o not in internas or dd not in internas or o == dd:
+        return {"ok": False, "error": f"Decime desde y hacia qué caja ({', '.join(internas)})."}
+    monto = numero(importe)
+    if not monto or monto <= 0:
+        return {"ok": False, "faltan": ["importe"]}
+    f = leer_fecha(fecha or "hoy", hoy or date.today())
+    if pd.isna(f):
+        return {"ok": False, "error": f"No entendí la fecha «{fecha}»."}
+    moneda = "USD" if _norm(moneda) in {"usd", "dolar", "dolares", "us$", "u$s"} else "ARS"
+    item = {"clase": "transferencia", "fecha": f.strftime("%Y-%m-%d"), "desde": o, "hacia": dd,
+            "importe": round(monto, 2), "moneda": moneda, "observaciones": _texto(observaciones),
+            "entrada": 0.0, "salida": 0.0, "inicial": False}
+    d = _preparar_caja(raw, c)
+    avisos = []
+    if cj.saldo_hoy(cj.de_caja(d, o), moneda) < monto - 0.004:
+        avisos.append(f"{o} no tiene tanto: queda en negativo.")
+    return {"ok": True, "caja": c, "item": item, "avisos": avisos}
+
+
+def frasco_caja_datos(raw: pd.DataFrame, caja: str, *, caja_interna: str, frasco: str, accion: str, importe: Any,
+                      fecha: str = "", moneda: str = "ARS", observaciones: str = "",
+                      hoy: date | None = None) -> dict[str, Any]:
+    """Apartar plata en un frasco (o devolverla al disponible). No cambia saldos: sólo cómo se reparte."""
+    from vitae.modulos import caja as cj
+    from vitae.modulos.pagos_pendientes import numero
+
+    c = _caja_de(caja)
+    if c is None:
+        return {"ok": False, "error": "Decime si es la Caja VMR o la Caja VM."}
+    tabla = CAJAS[c][1]
+    if len(cj.cajas_internas(tabla)) < 2:
+        return {"ok": False, "error": f"{CAJAS[c][0]} no tiene frascos."}
+    interna = _interna(c, caja_interna or cj.MERCADO_PAGO)
+    nombre = cj.normalizar_frasco(frasco)
+    if not nombre:
+        return {"ok": False, "faltan": ["frasco"]}
+    a = _norm(accion)
+    apartar = not a.startswith(("devol", "sacar", "retir", "liber"))
+    monto = numero(importe)
+    if not monto or monto <= 0:
+        return {"ok": False, "faltan": ["importe"]}
+    f = leer_fecha(fecha or "hoy", hoy or date.today())
+    if pd.isna(f):
+        return {"ok": False, "error": f"No entendí la fecha «{fecha}»."}
+    moneda = "USD" if _norm(moneda) in {"usd", "dolar", "dolares", "us$", "u$s"} else "ARS"
+    d = _preparar_caja(raw, c)
+    fr = cj.frascos(d, interna, tabla, moneda=moneda)
+    nombre = next((x for x in fr if _norm(x) == _norm(nombre)), nombre)
+    disponible = cj.saldo_hoy(cj.de_caja(d, interna), moneda) - sum(fr.values())
+    avisos = []
+    if apartar and monto > disponible + 0.004:
+        avisos.append(f"En {interna} hay {_pesos_caja(disponible, moneda)} disponibles: es más de lo que hay.")
+    if not apartar and monto > fr.get(nombre, 0.0) + 0.004:
+        avisos.append(f"El frasco {nombre} tiene {_pesos_caja(fr.get(nombre, 0.0), moneda)}.")
+    if nombre not in fr:
+        avisos.append(f"Se crea el frasco «{nombre}» en {interna}.")
+    item = {"clase": "frasco", "fecha": f.strftime("%Y-%m-%d"), "caja_interna": interna, "frasco": nombre,
+            "apartar": apartar, "importe": round(monto, 2), "moneda": moneda, "observaciones": _texto(observaciones),
+            "entrada": 0.0, "salida": 0.0, "inicial": False}
+    return {"ok": True, "caja": c, "item": item, "avisos": avisos}
+
+
 def _linea_item(it: dict[str, Any]) -> list[str]:
     f = pd.Timestamp(it["fecha"])
+    if it.get("clase") == "transferencia":
+        return [f"Transferencia {f.day}/{f.month}", f"{it['desde']} → {it['hacia']} · {_pesos_caja(it['importe'], it['moneda'])}"]
+    if it.get("clase") == "frasco":
+        verbo = "Apartar a" if it["apartar"] else "Devolver de"
+        return [f"Frasco {f.day}/{f.month}", f"{verbo} {it['frasco']} ({it['caja_interna']}) · "
+                                             f"{_pesos_caja(it['importe'], it['moneda'])}"]
+    donde = f" · {it['caja_interna']}" if it.get("caja_interna") and it["caja_interna"] != "Efectivo" else ""
+    if it.get("frasco"):
+        donde += f" (frasco {it['frasco']})"
     if it.get("inicial"):
-        return ["Saldo inicial", f"{f.month:02d}/{f.year} · {_pesos_caja(it['entrada'], it['moneda'])}"]
+        return ["Saldo inicial" + donde, f"{f.month:02d}/{f.year} · {_pesos_caja(it['entrada'], it['moneda'])}"]
     signo = "+" if it["entrada"] else "−"
     monto = it["entrada"] or it["salida"]
     extra = " · ".join(x for x in (it["rubro"] if it["rubro"] != "General" else "", it["quien"], it["medio"]
                                    if it["medio"] != "Efectivo" else "") if x)
-    return [("Entrada" if it["entrada"] else "Salida") + f" {f.day}/{f.month}",
+    return [("Entrada" if it["entrada"] else "Salida") + f" {f.day}/{f.month}" + donde,
             f"{it['concepto']} · {signo}{_pesos_caja(monto, it['moneda'])}" + (f" ({extra})" if extra else "")]
 
 
@@ -658,16 +757,31 @@ def armar_accion_caja(raw: pd.DataFrame, caja: str, items: list[dict[str, Any]],
     nombre, tabla = CAJAS[caja]
     d = _preparar_caja(raw, caja)
     filas = [_linea_item(it) for it in items]
-    # Saldo después, por moneda tocada
+    internas = cj.cajas_internas(tabla)
+    hoy = pd.Timestamp.today().normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    # Saldo después, por moneda y caja interna tocadas (las transferencias y frascos no cambian el total)
     for moneda in sorted({it["moneda"] for it in items}):
-        hoy = pd.Timestamp.today().normalize() + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
-        lb = cj.libro(d, moneda, hasta=hoy)
-        antes = float(lb["saldo"].iloc[-1]) if not lb.empty else 0.0
-        mov = sum(it["entrada"] - it["salida"] for it in items if it["moneda"] == moneda and not it["inicial"]
-                  and pd.Timestamp(it["fecha"]) <= hoy)
-        despues = antes + mov
-        filas.append([f"Saldo {'en dólares' if moneda == 'USD' else 'en pesos'}",
-                      f"{_pesos_caja(antes, moneda)} → {_pesos_caja(despues, moneda)}"])
+        delta: dict[str, float] = {}
+        for it in items:
+            if it["moneda"] != moneda or it["inicial"] or pd.Timestamp(it["fecha"]) > hoy:
+                continue
+            if it.get("clase") == "transferencia":
+                delta[it["desde"]] = delta.get(it["desde"], 0.0) - it["importe"]
+                delta[it["hacia"]] = delta.get(it["hacia"], 0.0) + it["importe"]
+            elif it.get("clase") != "frasco":
+                ci = it.get("caja_interna") or cj.EFECTIVO
+                delta[ci] = delta.get(ci, 0.0) + it["entrada"] - it["salida"]
+        antes = sum(cj.saldo_hoy(cj.de_caja(d, c_), moneda) for c_ in internas)
+        despues = antes + sum(delta.values())
+        etiqueta = "Saldo " + (nombre if len(internas) > 1 else "") + (" en dólares" if moneda == "USD" else " en pesos")
+        if len(internas) > 1:
+            for c_, v in delta.items():
+                if abs(v) > 0.004:
+                    a_c = cj.saldo_hoy(cj.de_caja(d, c_), moneda)
+                    filas.append([f"  {c_}", f"{_pesos_caja(a_c, moneda)} → {_pesos_caja(a_c + v, moneda)}"])
+                    if a_c + v < -0.005:
+                        avisos = avisos + [f"Con esto {c_} queda en negativo."]
+        filas.append([etiqueta.replace("  ", " ").strip(), f"{_pesos_caja(antes, moneda)} → {_pesos_caja(despues, moneda)}"])
         if despues < -0.005:
             avisos = avisos + [f"Con esto la caja en {'dólares' if moneda == 'USD' else 'pesos'} queda en negativo."]
     n = len(items)
@@ -684,9 +798,18 @@ def _ejecutar_caja_movimientos(accion: dict[str, Any], leer: Callable[[str], pd.
     raw = leer(accion["tabla"])
     raw = raw.copy().reset_index(drop=True) if isinstance(raw, pd.DataFrame) else pd.DataFrame()
     for it in accion["items"]:
-        raw = cj.fila_nueva(raw, fecha=it["fecha"], concepto=it["concepto"], entrada=it["entrada"],
-                            salida=it["salida"], moneda=it["moneda"], rubro=it["rubro"], quien=it["quien"],
-                            medio=it["medio"], observaciones=it["observaciones"], inicial=it["inicial"])
+        if it.get("clase") == "transferencia":
+            raw = cj.transferencia(raw, fecha=it["fecha"], desde=it["desde"], hacia=it["hacia"], importe=it["importe"],
+                                   moneda=it["moneda"], observaciones=it["observaciones"])
+        elif it.get("clase") == "frasco":
+            raw = cj.mover_frasco(raw, fecha=it["fecha"], caja=it["caja_interna"], frasco=it["frasco"],
+                                  importe=it["importe"], apartar=it["apartar"], moneda=it["moneda"],
+                                  observaciones=it["observaciones"])
+        else:
+            raw = cj.fila_nueva(raw, fecha=it["fecha"], concepto=it["concepto"], entrada=it["entrada"],
+                                salida=it["salida"], moneda=it["moneda"], rubro=it["rubro"], quien=it["quien"],
+                                medio=it["medio"], observaciones=it["observaciones"], inicial=it["inicial"],
+                                caja=it.get("caja_interna") or cj.EFECTIVO, frasco=it.get("frasco", ""))
     guardar(accion["tabla"], raw)
     n = len(accion["items"])
     return (f"Listo ✅ Cargué {n} movimiento{'s' if n > 1 else ''} en {accion['modulo']}. "
@@ -854,7 +977,12 @@ INSTRUCCIONES_CAJA = """- Caja VMR / VM: proponer_movimiento_caja carga una entr
   Moneda ARS salvo que digan dólares. El rubro y quién se completan solos si el movimiento ya se usó antes
   (mirá caja_frecuentes para escribir la descripción igual que siempre).
 - proponer_correccion_caja corrige o borra un movimiento ya cargado (se busca por fecha, descripción o importe;
-  si hay varios, preguntá cuál)."""
+  si hay varios, preguntá cuál).
+- Caja VMR tiene 3 cajas internas: Efectivo (por defecto), Mercado Pago y Medicación. Si dicen «en Mercado Pago» o
+  «en medicación», pasá caja_interna. Pases entre ellas: proponer_transferencia_caja (no son gastos ni ingresos).
+- Frascos: apartar plata dentro de una caja sin que salga (p. ej. el frasco Reserva de Mercado Pago):
+  proponer_frasco_caja con accion apartar o devolver. Un gasto pagado con plata de un frasco: proponer_movimiento_caja
+  con frasco=<nombre> (baja la caja y el frasco)."""
 
 INSTRUCCIONES = INSTRUCCIONES_GENERALES + "\n" + INSTRUCCIONES_CIRUGIA
 
@@ -985,23 +1113,7 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
             except Exception:
                 return c, pd.DataFrame()
 
-        def proponer_movimiento_caja(caja: str, tipo: str, importe: str, descripcion: str = "", fecha: str = "",
-                                     moneda: str = "ARS", rubro: str = "", quien: str = "", medio: str = "Efectivo",
-                                     observaciones: str = "") -> str:
-            """Prepara un movimiento de caja (NO lo guarda: el usuario confirma en el chat). Varios llamados se
-            juntan en una sola tarjeta. caja: VMR o VM. tipo: entrada, salida o saldo inicial. importe: número.
-            fecha: AAAA-MM-DD (vacío = hoy). moneda: ARS o USD. rubro: General, Alquileres o Caja gastos
-            comunes. quien: responsable. medio: Efectivo, Transferencia, Tarjeta, Cheque u Otro."""
-            try:
-                datos.consultas.append(f"proponer_movimiento_caja({caja}, {tipo}, {importe})")
-            except Exception:
-                pass
-            c, raw = _raw_caja(caja)
-            if c is None:
-                return _json({"resultado": "no se armó", "error": "Decime Caja VMR o Caja VM (con acceso del usuario)."})
-            r = movimiento_caja_datos(raw, c, tipo=tipo, importe=importe, descripcion=descripcion, fecha=fecha,
-                                      moneda=moneda, rubro=rubro, quien=quien, medio=medio,
-                                      observaciones=observaciones, hoy=hoy)
+        def _a_la_tarjeta(c: str, raw: pd.DataFrame, r: dict[str, Any]) -> str:
             if not r["ok"]:
                 return _json({"resultado": "no se armó", **{k: v for k, v in r.items() if k != "ok"}})
             previa = next((a for a in acciones if a.get("tipo") == "caja_movimientos" and a.get("caja") == c), None)
@@ -1013,6 +1125,58 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
             return _json({"resultado": "agregado a la tarjeta, todavía NO está guardado",
                           "movimientos_en_la_tarjeta": len(items), "movimiento": _linea_item(r["item"]),
                           "avisos": accion["avisos"]})
+
+        def proponer_movimiento_caja(caja: str, tipo: str, importe: str, descripcion: str = "", fecha: str = "",
+                                     moneda: str = "ARS", rubro: str = "", quien: str = "", medio: str = "Efectivo",
+                                     observaciones: str = "", caja_interna: str = "", frasco: str = "") -> str:
+            """Prepara un movimiento de caja (NO lo guarda: el usuario confirma en el chat). Varios llamados se
+            juntan en una sola tarjeta. caja: VMR o VM. tipo: entrada, salida o saldo inicial. importe: número.
+            fecha: AAAA-MM-DD (vacío = hoy). moneda: ARS o USD. rubro: General, Alquileres o Caja gastos
+            comunes. quien: responsable. medio: Efectivo, Transferencia, Tarjeta, Cheque u Otro.
+            caja_interna (sólo Caja VMR): Efectivo (por defecto), Mercado Pago o Medicación.
+            frasco: si el gasto (o ingreso) es con la plata de un frasco de esa caja interna."""
+            try:
+                datos.consultas.append(f"proponer_movimiento_caja({caja}, {tipo}, {importe})")
+            except Exception:
+                pass
+            c, raw = _raw_caja(caja)
+            if c is None:
+                return _json({"resultado": "no se armó", "error": "Decime Caja VMR o Caja VM (con acceso del usuario)."})
+            return _a_la_tarjeta(c, raw, movimiento_caja_datos(
+                raw, c, tipo=tipo, importe=importe, descripcion=descripcion, fecha=fecha, moneda=moneda, rubro=rubro,
+                quien=quien, medio=medio, observaciones=observaciones, caja_interna=caja_interna, frasco=frasco,
+                hoy=hoy))
+
+        def proponer_transferencia_caja(caja: str, desde: str, hacia: str, importe: str, fecha: str = "",
+                                        moneda: str = "ARS", observaciones: str = "") -> str:
+            """Prepara un pase de plata entre cajas internas de la Caja VMR (Efectivo, Mercado Pago, Medicación):
+            sale de una y entra en la otra; no es entrada ni salida del total. NO lo guarda: va a la tarjeta."""
+            try:
+                datos.consultas.append(f"proponer_transferencia_caja({caja}, {desde}→{hacia}, {importe})")
+            except Exception:
+                pass
+            c, raw = _raw_caja(caja)
+            if c is None:
+                return _json({"resultado": "no se armó", "error": "Decime Caja VMR (con acceso del usuario)."})
+            return _a_la_tarjeta(c, raw, transferencia_caja_datos(raw, c, desde=desde, hacia=hacia, importe=importe,
+                                                                  fecha=fecha, moneda=moneda,
+                                                                  observaciones=observaciones, hoy=hoy))
+
+        def proponer_frasco_caja(caja: str, frasco: str, accion: str, importe: str, caja_interna: str = "Mercado Pago",
+                                 fecha: str = "", moneda: str = "ARS", observaciones: str = "") -> str:
+            """Prepara apartar plata en un frasco (accion=apartar) o devolverla al disponible (accion=devolver)
+            dentro de una caja interna de la Caja VMR. La plata no sale: el saldo no cambia, sólo cuánto queda
+            disponible. Si el frasco no existe, se crea. NO lo guarda: va a la tarjeta."""
+            try:
+                datos.consultas.append(f"proponer_frasco_caja({caja}, {frasco}, {accion}, {importe})")
+            except Exception:
+                pass
+            c, raw = _raw_caja(caja)
+            if c is None:
+                return _json({"resultado": "no se armó", "error": "Decime Caja VMR (con acceso del usuario)."})
+            return _a_la_tarjeta(c, raw, frasco_caja_datos(raw, c, caja_interna=caja_interna, frasco=frasco,
+                                                           accion=accion, importe=importe, fecha=fecha, moneda=moneda,
+                                                           observaciones=observaciones, hoy=hoy))
 
         def proponer_correccion_caja(caja: str, fecha: str = "", descripcion: str = "", importe: str = "",
                                      set_fecha: str = "", set_descripcion: str = "", set_entrada: str = "",
@@ -1041,6 +1205,8 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
                           "resumen": r["accion"]["resumen"]})
 
         out += [proponer_movimiento_caja, proponer_correccion_caja]
+        if "VMR" in cajas_ok:
+            out += [proponer_transferencia_caja, proponer_frasco_caja]
     return out
 
 
