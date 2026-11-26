@@ -51,12 +51,6 @@ NOMBRES = {"hoy": "Mes", "cargar": "1 · Cargar", "facturar": "2 · Facturar", "
            "tabla": "Tabla", "importar": "Importar", "exportar": "Exportar"}
 LEGACY = {"tabla": "Editar tabla", "importar": "Importar"}
 ANALISIS = ["Resumen", "Cobranza", "Producción", "Calidad"]
-# Regla principal: dos empresas, dos facturaciones que no se mezclan.
-REGLA = {"VMR": "VMR es fertilidad: acá van sólo FIV, FIV OVO, FIV OVO SDA, FIV SDA, TE, TEC, aspiración folicular, "
-                "crio, criopreservación de semen e IIU. Todo lo demás va en Facturación VM.",
-         "VM": "VM es el quirófano: acá va todo lo que no es de fertilidad. FIV, FIV OVO, FIV SDA, TE, TEC, aspiración "
-               "folicular, crio, criopreservación de semen e IIU van en Facturación VMR (aunque se registren en la "
-               "Agenda)."}
 
 _CSS = """<style>
 .fp-paso{display:flex;align-items:baseline;gap:.6rem;margin:.6rem 0 .1rem}
@@ -161,8 +155,6 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     n["cierre"] = len(sin_cerrar)
 
     tarjetas_kpi(indicadores(ctx))
-    st.markdown(f'<div class="fp-sub" style="margin:-.2rem 0 .5rem">{_esc(REGLA.get(empresa, ""))}</div>',
-                unsafe_allow_html=True)
 
     # ---- Navegación: pasos numerados y, aparte, Análisis y Planilla -------------------
     k_v, k_p, k_e = f"{key}_vista", f"{key}_pasos", f"{key}_extras"
