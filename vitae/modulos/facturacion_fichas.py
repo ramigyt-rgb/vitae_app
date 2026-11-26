@@ -26,7 +26,7 @@ import vitae.modulos.control_facturacion as cf
 from vitae.modulos.pagos_pendientes import _texto, pesos
 
 POR_PAGINA = 10
-FILTROS = ["Para facturar", "Por cobrar", "Vencidas", "Débitos", "Cobradas", "Anuladas", "Todas"]
+FILTROS = ["Para facturar", "Plazo vencido", "Por cobrar", "Vencidas", "Débitos", "Cobradas", "Anuladas", "Todas"]
 ORDENES = ["Más urgentes", "Más recientes", "Mayor importe", "Paciente (A-Z)"]
 ESTADOS = ["Pendiente", "Completo", "Parcial", "Vencido", "Anulado"]
 
@@ -60,6 +60,9 @@ def etapa(r: pd.Series) -> str:
         return "incluida"
     if not r["_facturada"]:
         return "cargado"
+    # Cobrada sólo si tiene importe y no queda saldo: sin importe no hay nada cobrado.
+    if r["_monto"] <= 0.004:
+        return "facturado"
     return "facturado" if r["_pendiente"] > 0.004 else "cobrado"
 
 
@@ -87,6 +90,8 @@ def aviso(r: pd.Series, hoy: date | None = None) -> tuple[str, str]:
         return (f"quedan {d} días para facturar", "ambar" if d <= cf.AVISO_PRESENTACION else "gris")
     if r["_debito_abierto"]:
         return f"débito {pesos(r['_debito'], 0)} · {(r['_debito_estado'] or 'a reclamar').lower()}", "rojo"
+    if r["_monto"] <= 0.004:
+        return "facturada sin importe", "ambar"
     if e == "cobrado":
         return (f"cobrada el {_f(r['_fecha_pago'])}" if pd.notna(r.get("_fecha_pago")) else "cobrada"), "verde"
     v = r.get("_vencimiento")
@@ -106,6 +111,8 @@ def accion(r: pd.Series, incompleta: bool = False) -> tuple[str, str]:
     if e == "cargado":
         return "facturar", "Facturar"
     if e == "facturado":
+        if r["_monto"] <= 0.004:
+            return "editar", "Completar importe"
         return ("debito", "Débito") if r["_debito_abierto"] and r["_pendiente"] <= r["_debito"] + 0.5 else (
             "cobro", "Registrar cobro")
     if e == "cobrado" and r["_debito_abierto"]:
@@ -181,6 +188,8 @@ def filtrar(d: pd.DataFrame, filtro: str) -> pd.DataFrame:
     et = d.apply(etapa, axis=1)
     if filtro == "Para facturar":
         return d[et == "cargado"]
+    if filtro == "Plazo vencido":
+        return d[(et == "cargado") & (d["_dias_plazo"] < 0)]
     if filtro == "Por cobrar":
         return d[et == "facturado"]
     if filtro == "Vencidas":
@@ -215,6 +224,11 @@ def pendiente_pago(x: pd.DataFrame) -> pd.Series:
     m = (x["_pendiente"] > 0.004) | x["_debito_abierto"]
     if "_facturada" in x.columns:
         m = m | ~x["_facturada"]
+        # facturada sin importe: falta completarla (no está cobrada)
+        sin_imp = x["_facturada"] & (x["_monto"] <= 0.004)
+        if "_incluida" in x.columns:
+            sin_imp = sin_imp & ~x["_incluida"]
+        m = m | sin_imp
     if "_sin_cargo" in x.columns:
         m = m & ~x["_sin_cargo"]
     return m & ~x["_cancelado"]

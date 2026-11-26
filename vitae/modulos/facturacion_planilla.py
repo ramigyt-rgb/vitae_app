@@ -78,13 +78,28 @@ def _estado(r: pd.Series, hoy: date, forzar_incompleta: bool, nota: str) -> tupl
                                  ("importe", r["_monto"] <= 0 and not r["_sin_cargo"] and not r["_incluida"])) if ok]
         return "falta " + ", ".join(falta), "ambar"
     texto, tono = ff.aviso(r, hoy)
+    if not r["_facturada"] and not r["_cancelado"] and not r["_sin_cargo"] and r["_monto"] <= 0.004:
+        texto += " · falta importe"
+        tono = "rojo" if tono == "rojo" else "ambar"
     return texto, tono
 
 
+def pendiente_fila(r: pd.Series) -> float:
+    """Lo que falta cobrar de la fila: sin facturar, todo el importe; facturada, su saldo."""
+    if r["_cancelado"] or r["_sin_cargo"]:
+        return 0.0
+    return float(r["_monto"]) if not r["_facturada"] else float(r["_pendiente"])
+
+
+def pendiente_total(x: pd.DataFrame) -> float:
+    vivos = x[~x["_cancelado"] & ~x["_sin_cargo"]]
+    return float(vivos.loc[~vivos["_facturada"], "_monto"].sum() + vivos.loc[vivos["_facturada"], "_pendiente"].sum())
+
+
 def _saldo(r: pd.Series) -> float | None:
-    if r["_cancelado"] or not r["_facturada"]:
+    if r["_cancelado"] or r["_sin_cargo"] or r.get("_incluida", False):
         return None
-    return float(r["_pendiente"])
+    return pendiente_fila(r)
 
 
 def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, columna_os: bool,
@@ -107,6 +122,7 @@ def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, colum
             venc = _f(limite)
             es_venc = int(dias) < 0
     saldo = _saldo(r)
+    estilo_saldo = ' style="color:#9A6200"' if saldo is not None and not r["_facturada"] else ""
     meta = " · ".join(x for x in (r["_obra_social"] if columna_os else (f"Fact. {grupo}" if grupo and primera else ""),
                                    _f(r.get("_prestacion")), texto) if x)
     return (f'<div class="fz-row{" fz-grp" if primera else ""}{" fz-ok" if cobrada else ""}" '
@@ -117,7 +133,7 @@ def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, colum
             f'<div class="fz-c">{_e(_f(r.get("_prestacion")))}</div>'
             f'<div class="fz-c{" fz-venc" if es_venc else ""}">{_e(venc)}</div>'
             f'<div class="fz-n fz-dt">{pesos(r["_monto"]) if r["_monto"] else ("en el total" if r["_incluida"] else "—")}</div>'
-            f'<div class="fz-n fz-x">{pesos(saldo) if saldo is not None else ""}</div>'
+            f'<div class="fz-n fz-x"{estilo_saldo}>{pesos(saldo) if saldo is not None else ""}</div>'
             f'<div class="fz-e fz-x" style="color:{COLOR[tono]}">{_e(texto)}</div>'
             f'<div class="fz-meta">{_e(meta)}</div></div>')
 
@@ -125,24 +141,30 @@ def _fila(r: pd.Series, *, grupo: str, sub: str, primera: bool, hoy: date, colum
 def _encabezado(primera: str, vence: str) -> str:
     return (f'<div class="fz-cols" style="grid-template-columns:{_GRID}"><div>{_e(primera)}</div><div>Paciente</div>'
             f'<div style="text-align:center">Prestación</div><div style="text-align:center">{_e(vence)}</div>'
-            '<div style="text-align:right">Importe</div><div style="text-align:right">Saldo</div><div>Estado</div></div>')
+            '<div style="text-align:right">Importe</div><div style="text-align:right">Pendiente</div><div>Estado</div></div>')
 
 
 def _total(x: pd.DataFrame) -> str:
     vivos = x[~x["_cancelado"]]
     imp = float(vivos["_monto"].sum())
-    sal = float(vivos.loc[vivos["_facturada"], "_pendiente"].sum())
+    sal = pendiente_total(x)
     return (f'<div class="fz-row fz-tot" style="grid-template-columns:{_GRID}"><div class="fz-g">TOTAL</div><div></div>'
             f'<div></div><div></div><div class="fz-n">{pesos(imp)}</div><div class="fz-n fz-x">{pesos(sal)}</div><div></div>'
-            f'<div class="fz-meta">Importe {pesos(imp)} · saldo {pesos(sal)}</div></div>')
+            f'<div class="fz-meta">Importe {pesos(imp)} · pendiente {pesos(sal)}</div></div>')
 
 
 def resumen_txt(x: pd.DataFrame) -> str:
     vivos = x[~x["_cancelado"]]
     partes = [f"{len(vivos)} paciente(s)"]
-    sin = int((~vivos["_facturada"] & ~vivos["_sin_cargo"]).sum())
-    if sin:
-        partes.append(f"{sin} sin facturar")
+    sf = vivos[~vivos["_facturada"] & ~vivos["_sin_cargo"]]
+    if len(sf):
+        partes.append(f"{len(sf)} sin facturar ({pesos(float(sf['_monto'].sum()), 0)})")
+        pv = int((sf["_dias_plazo"] < 0).sum())
+        if pv:
+            partes.append(f"{pv} con el plazo vencido")
+        si = int((sf["_monto"] <= 0.004).sum())
+        if si:
+            partes.append(f"{si} sin importe")
     pend = float(vivos.loc[vivos["_facturada"], "_pendiente"].sum())
     if pend > 0.5:
         partes.append(f"por cobrar {pesos(pend, 0)}")
@@ -570,8 +592,7 @@ def render_edicion(st: Any, ctx: dict[str, Any], x: pd.DataFrame, *, guardar: Ca
         st.caption(f"Se muestran {MAX_EDICION} de {len(x)} (lo pendiente de pago primero). Elegí un mes o buscá para "
                    "ver el resto.")
         x = x.head(MAX_EDICION)
-    st.caption(f"{len(x)} registro(s). Cambiá lo que necesites (cualquier celda) y tocá «Guardar cambios»: se escribe "
-               "en la planilla con su formato. Para anular, poné el estado «Anulado».")
+    st.caption(f"{len(x)} registro(s)")
     base = tabla_edicion(ctx, x)
     cc = st.column_config
     obras = ff.opciones(ctx["d"], "_obra_social", "SIN OBRA SOCIAL")

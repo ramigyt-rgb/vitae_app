@@ -296,7 +296,11 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     today = pd.Timestamp.today().normalize()
     data["_dias_vencido"] = (today - data["_vencimiento"]).dt.days
     data["_dias_vencido"] = data["_dias_vencido"].where(data["_vencimiento"].notna(), pd.NA)
-    data["_vencido"] = (data["_pendiente"] > 0) & data["_vencimiento"].notna() & (data["_vencimiento"] < today)
+    # Sin N° de factura no hay factura: no puede estar vencida (si la planilla tiene columna de N°).
+    data["_tiene_numero"] = ((data["_numero_factura"].astype(str).str.strip() != "") if cols.get("numero_factura")
+                             else pd.Series(True, index=data.index))
+    data["_vencido"] = ((data["_pendiente"] > 0) & data["_vencimiento"].notna() & (data["_vencimiento"] < today)
+                        & data["_tiene_numero"])
     data["_dias_cobro"] = (data["_fecha_pago"] - data["_fecha_factura"].combine_first(data["_fecha_servicio"])).dt.days
     data.loc[data["_dias_cobro"] < 0, "_dias_cobro"] = pd.NA
 
@@ -921,7 +925,8 @@ def _ajustar_estado_manual(data: pd.DataFrame) -> pd.DataFrame:
     """Si la planilla marca la fila como 'Vencido', se considera vencida aunque
     no tenga fecha de vencimiento cargada (antes quedaba como 'Pendiente')."""
     marcado = data["_estado_norm"].astype(str).str.contains("vencid", na=False)
-    aplicar = marcado & (data["_pendiente"] > 0) & ~data["_cancelado"]
+    con_numero = data["_tiene_numero"] if "_tiene_numero" in data.columns else True
+    aplicar = marcado & (data["_pendiente"] > 0) & ~data["_cancelado"] & con_numero
     if aplicar.any():
         data.loc[aplicar, "_vencido"] = True
         data.loc[aplicar, "_estado_ejecutivo"] = "Vencido"
