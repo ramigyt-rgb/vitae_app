@@ -83,7 +83,7 @@ def cuentas(ctx: dict[str, Any]) -> dict[str, int]:
 
     hoy_ = ctx["hoy"]
     del_mes = fm.registros(ctx["d"], f"{hoy_.year:04d}-{hoy_.month:02d}")
-    return {"cargar": int(len(c["agenda"])) + n("incompletos", "repetidas"),
+    return {"cargar": int(len(c["agenda"])) + n("incompletos", "repetidas", "fecha_sin_numero"),
             "facturar": n("sin_facturar"), "cobrar": n("vencidas", "por_vencer", "sin_vencimiento"),
             "debitos": n("debitos", "parcial_sin_debito")}
 
@@ -110,7 +110,7 @@ def indicadores(ctx: dict[str, Any]) -> list[tuple[str, str, str, str]]:
 def _titulo(numero: str, titulo: str, que: str) -> str:
     num = f'<span class="fp-num">{html.escape(numero)}</span>' if numero else ""
     return (f'<div class="fp-paso">{num}<span class="fp-tit">{html.escape(titulo)}</span></div>'
-            f'<div class="fp-que">{html.escape(que)}</div>')
+            + (f'<div class="fp-que">{html.escape(que)}</div>' if que else ""))
 
 
 def _chips(items: list[tuple[str, str, str]]) -> str:
@@ -263,9 +263,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
     # ---- Registros: todos, en planilla ------------------------------------------------------
     if vista == "fichas":
         d = ctx["d"]
-        st.markdown(_titulo("", "Registros", "Todos los pacientes cargados, en planilla por obra social (lo pendiente "
-                            "de pago, arriba). «Ver y avanzar»: elegí el paciente o la factura en la barra. «Editar en "
-                            "tabla»: cambiá cualquier dato y guardá todo junto."), unsafe_allow_html=True)
+        st.markdown(_titulo("", "Registros", ""), unsafe_allow_html=True)
         d, periodo = filtro_periodo(st, d, ctx["hoy"], key=f"{key}_reg")
         modo = st.segmented_control("Modo", ["Ver y avanzar", "Editar en tabla"], default="Ver y avanzar",
                                     key=f"{key}_reg_modo", label_visibility="collapsed") or "Ver y avanzar"
@@ -303,6 +301,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                         'completos.</div>', unsafe_allow_html=True)
         fz.render_solicitudes(st, ctx, guardar=guardar, guardar_tabla=guardar_tabla, descartadas=descartadas, key=key,
                               usuario=usuario)
+        _fechas_sin_numero(st, ctx, guardar=guardar, key=key)
         x, _, _ = cf.grupo(c, "Completar datos")
         if len(x):
             rep_ = c["repetidas"].index if len(c["repetidas"]) else []
@@ -639,6 +638,39 @@ def _presentaciones(st: Any, ctx: dict[str, Any], *, key: str, guardar: Callable
         if st.button("Guardar documentación", key=f"{key}_req_ok", icon=":material/save:"):
             guardar_tabla(pr.TABLA_REQ, pr.guardar_req(req, empresa, ed))
             _ok("Documentación por obra social guardada")
+
+
+def cambios_fechas_sin_numero(x: pd.DataFrame) -> list[dict[str, Any]]:
+    """Borra la fecha de factura y el vencimiento de las filas sin N° (no son facturas)."""
+    out: list[dict[str, Any]] = []
+    for i in x.index:
+        if pd.notna(x.loc[i, "_fecha_factura"]):
+            out.append({"fila": int(i), "campo": "fecha_factura", "valor": ""})
+        if pd.notna(x.loc[i, "_vencimiento"]):
+            out.append({"fila": int(i), "campo": "vencimiento", "valor": ""})
+    return out
+
+
+def _fechas_sin_numero(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
+    x = ctx["c"].get("fecha_sin_numero")
+    if x is None or x.empty:
+        return
+    st.markdown(f'<div class="cf-tit">Fecha de factura sin N° · {len(x)}</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns([3, 1.6], vertical_alignment="center")
+    c1.markdown('<div class="fp-sub">Tienen fecha de factura o vencimiento pero no N° de factura: no cuentan como '
+                'facturadas. Si se facturaron, poné el N° en Registros; si no, borrá esas fechas.</div>',
+                unsafe_allow_html=True)
+    if c2.button(f"Borrar esas fechas ({len(x)})", key=f"{key}_fsn_borrar", use_container_width=True,
+                 icon=":material/event_busy:"):
+        try:
+            guardar(cf.aplicar(ctx["raw"], ctx["cols"], cambios_fechas_sin_numero(x), ctx["hoy"]))
+        except Exception as exc:
+            st.error(f"No se pudo guardar: {exc}")
+            return
+        st.toast(f"Fechas borradas en {len(x)} registro(s)", icon=":material/check_circle:")
+        st.rerun()
+    st.markdown(fz.html_planilla(x, ctx["hoy"], "Por paciente", titulo="Fecha de factura sin N°"),
+                unsafe_allow_html=True)
 
 
 TODOS_ANIOS = "Todos los años"

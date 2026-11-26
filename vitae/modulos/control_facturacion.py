@@ -93,7 +93,16 @@ def preparar(raw: pd.DataFrame | None, hoy: date | None = None) -> tuple[pd.Data
         data["_prestacion"] = data["_fecha_servicio"].combine_first(data["_prestacion"])
     data["_plazo"] = data["_prestacion"] + pd.Timedelta(days=PLAZO_PRESENTACION)
     data["_dias_plazo"] = (data["_plazo"] - h).dt.days
-    data["_facturada"] = (data["_numero_factura"].astype(str).str.strip() != "") | data["_fecha_factura"].notna()
+    # REGLA: sin N° de factura no hay factura. La fecha de factura o el vencimiento solos (por ejemplo,
+    # autocompletados al cargar) no la hacen facturada, ni vencida, ni cobrada.
+    if cols.get("numero_factura"):
+        data["_facturada"] = data["_numero_factura"].astype(str).str.strip() != ""
+        data["_fecha_sin_numero"] = ~data["_facturada"] & ~data["_cancelado"] & (
+            data["_fecha_factura"].notna() | data["_vencimiento"].notna())
+    else:  # planilla sin columna de N° de factura: manda la fecha de factura
+        data["_facturada"] = data["_fecha_factura"].notna()
+        data["_fecha_sin_numero"] = False
+    data["_vencido"] = data["_vencido"] & data["_facturada"]
     for clave, nombre in COLS_DEBITO.items():
         c = _col_raw(raw, nombre)
         cols[f"debito_{clave}" if clave != "debito" else "debito"] = c
@@ -274,10 +283,10 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         vacio = pd.DataFrame()
         return {k: vacio for k in ("sin_facturar_vencido", "sin_facturar_proximo", "sin_facturar", "vencidas",
                                    "por_vencer", "sin_vencimiento", "debitos", "parcial_sin_debito", "repetidas",
-                                   "incompletos")} | {"agenda": agenda, "salteados": vacio}
+                                   "incompletos", "fecha_sin_numero")} | {"agenda": agenda, "salteados": vacio}
     h = _hoy(hoy)
     a = d[~d["_cancelado"]]
-    sin_f = a[~a["_facturada"] & (a["_monto"] > 0)]
+    sin_f = a[~a["_facturada"] & ~a["_sin_cargo"]]
     fact = a[a["_facturada"]]
     pend = fact[fact["_pendiente"] > 0.004]
     rep = a["_numero_factura"].astype(str).str.strip()
@@ -292,6 +301,8 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         "debitos": a[a["_debito_abierto"]],
         "parcial_sin_debito": a[a["_parcial"] & (a["_debito"] <= 0.004)],
         "repetidas": _repetidas(a, rep),
+        # Fecha de factura o vencimiento sin N° (no cuentan como facturadas: hay que limpiarlas o poner el N°)
+        "fecha_sin_numero": a[a["_fecha_sin_numero"]] if "_fecha_sin_numero" in a.columns else a.iloc[0:0],
         # El médico no es obligatorio: criopreservaciones y mantenimientos no llevan profesional.
         # Donantes, particulares y S/C no llevan importe (``_sin_cargo``).
         "incompletos": a[(a["_obra_social"] == "SIN OBRA SOCIAL") | (a["_procedimiento"] == "SIN PROCEDIMIENTO")
