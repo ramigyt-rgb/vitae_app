@@ -517,28 +517,6 @@ def dialogo_nuevo(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame]
     st.dialog(titulo, width="medium")(cuerpo)()
 
 
-def filas_agenda(ctx: dict[str, Any]) -> pd.DataFrame:
-    """Todas las cirugías sin cargar → la planilla con sus filas nuevas (importe sugerido)."""
-    nuevo, d, hoy = ctx["raw"], ctx["d"], ctx["hoy"]
-    for _, r in ctx["c"]["agenda"].iterrows():
-        imp = importe_sugerido(d, _texto(r["Procedimiento"]), _texto(r["Obra social"]))
-        nuevo = cf.nueva_fila(nuevo, ctx["cols"], r.to_dict(), _txt_imp(imp), hoy,
-                              observaciones="Cargada desde la Agenda de Quirófano")
-    return nuevo
-
-
-def agregar_todas(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
-    n = len(ctx["c"]["agenda"])
-    try:
-        guardar(filas_agenda(ctx))
-    except Exception as exc:
-        st.error(f"No se pudo guardar: {exc}")
-        return
-    st.session_state[f"{key}_cf_rev"] = int(st.session_state.get(f"{key}_cf_rev", 0)) + 1
-    st.toast(f"{n} cirugía(s) agregada(s)", icon=":material/check_circle:")
-    st.rerun()
-
-
 # ---------------------------------------------------------------------------
 # Agrupado por obra social y por factura (facturas conjuntas); la planilla está en facturacion_planilla
 # ---------------------------------------------------------------------------

@@ -298,8 +298,8 @@ def herramientas(datos: Any, hoy: pd.Timestamp | None = None) -> list[Callable[.
         return _json(salida)
 
     def facturacion_control(empresa: str = "ambas", limite: int = 25) -> str:
-        """La bandeja de control (sección Control): qué hay que hacer hoy, por urgencia. Cirugías realizadas en la
-        Agenda sin cargar en facturación, registros sin facturar (plazo de presentación de 60 días desde la
+        """La bandeja de control (sección Control): qué hay que hacer hoy, por urgencia. VMR (fertilidad) y VM
+        (quirófano) son distintas y no se mezclan. Registros sin facturar (plazo de presentación de 60 días desde la
         prestación: vencido o por vencer), facturas vencidas o por vencer, débitos para reclamar, cobros parciales
         sin débito anotado, facturas repetidas y datos incompletos. Usala para «¿qué tengo que hacer?», «¿qué se me
         está pasando?» o el resumen de la mañana."""
@@ -308,20 +308,12 @@ def herramientas(datos: Any, hoy: pd.Timestamp | None = None) -> list[Callable[.
 
         salida: dict[str, Any] = {}
         pedidas = _empresas(empresa, disponibles)
-        agenda = None
-        if "Agenda Quirófano" in disponibles:
-            try:
-                agenda = datos.df("Agenda Quirófano")
-            except Exception:
-                agenda = None
         for emp in pedidas:
-            # Las cirugías sin cargar de cada empresa son sólo las de sus procedimientos.
-            otras = [datos.df(EMPRESAS[o]) for o in EMPRESAS if o != emp and EMPRESAS[o] in disponibles]
-            r = cf.resumen(datos.df(EMPRESAS[emp]), agenda, otras, hoy.date() if hoy is not None else None,
-                           empresa=emp)
+            # VMR y VM no se mezclan: cada una sólo con su planilla.
+            r = cf.resumen(datos.df(EMPRESAS[emp]), hoy=hoy.date() if hoy is not None else None, empresa=emp)
             salida[emp] = {
                 "urgentes": r["urgentes"], "esta_semana": r["esta_semana"], "sin_facturar": r["sin_facturar"],
-                "sin_facturar_plazo_vencido": r["sin_facturar_vencido"], "cirugias_sin_cargar": r["agenda_sin_cargar"],
+                "sin_facturar_plazo_vencido": r["sin_facturar_vencido"],
                 "debitos_abiertos": _r(r["debitos"]), "facturas_vencidas": r["vencidas"],
                 "controles": _tabla(r["controles"].drop(columns=["_clave", "_nivel", ""], errors="ignore"), 20),
                 "bandeja": _tabla(r["bandeja"].drop(columns=["_fila"], errors="ignore"), limite),

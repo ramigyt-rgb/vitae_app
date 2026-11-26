@@ -161,8 +161,6 @@ def situacion(ctx: dict[str, Any], mes: str) -> list[dict[str, Any]]:
     def en(k: str) -> pd.DataFrame:
         return cfx._en_mes(c.get(k), mes)
 
-    ag = c["agenda"]
-    ag_mes = ag[_mes(pd.to_datetime(ag["Fecha"], errors="coerce")) == mes] if not ag.empty else ag
     sf, sfv = en("sin_facturar"), en("sin_facturar_vencido")
     ven = en("vencidas")
     pv = pd.concat([en("por_vencer"), en("sin_vencimiento")])
@@ -173,8 +171,6 @@ def situacion(ctx: dict[str, Any], mes: str) -> list[dict[str, Any]]:
         return float(x[col].sum()) if len(x) and col in x.columns else 0.0
 
     return [
-        {"punto": "Cirugías de la Agenda sin cargar", "casos": len(ag_mes), "importe": 0.0, "paso": "cargar",
-         "detalle": "Realizadas en quirófano y todavía no están en Facturación.", "grave": True},
         {"punto": "Datos para completar", "casos": len(inc), "importe": 0.0, "paso": "cargar",
          "detalle": "Falta obra social, procedimiento o importe, o el N° de factura está repetido.", "grave": False},
         {"punto": "Sin facturar", "casos": len(sf), "importe": imp(sf, "_monto"), "paso": "facturar",
