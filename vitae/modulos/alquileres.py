@@ -145,10 +145,27 @@ def _estado(v: Any) -> str:
     return ""
 
 
+def sin_columnas_repetidas(df: pd.DataFrame) -> pd.DataFrame:
+    """Si la pestaña tiene dos columnas con el mismo título (o el mismo salvo mayúsculas, acentos o
+    espacios), se juntan en una: en cada fila, el primer valor que no esté vacío."""
+    claves = [re.sub(r"[^a-z0-9]+", "_", _sin_acentos(c)).strip("_") for c in df.columns]
+    if len(set(claves)) == len(claves):
+        return df
+    out = {}
+    for j, k in enumerate(claves):
+        col = df.iloc[:, j].map(_texto)
+        if k not in out:
+            out[k] = col
+        else:
+            out[k] = out[k].where(out[k] != "", col)
+    return pd.DataFrame(out, index=df.index)
+
+
 def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
     """La pestaña (formato nuevo o el anterior) → una fila por médico y mes, con tipos limpios."""
     if df is None or not isinstance(df, pd.DataFrame) or df.empty:
         return pd.DataFrame(columns=COLUMNAS)
+    df = sin_columnas_repetidas(df.reset_index(drop=True))
 
     def serie(*nombres: str) -> pd.Series:
         c = _col(df, *nombres)
@@ -181,8 +198,8 @@ def normalizar(df: pd.DataFrame | None) -> pd.DataFrame:
     sin_cargo = d["condicion"].isin([SIN_CARGO, BAJA])
     d.loc[sin_cargo, "estado"] = ""
     d.loc[sin_cargo, ["alquiler", "servicio"]] = 0.0
-    d.loc[~sin_cargo & (d["estado"] == ""), "estado"] = [COMPENSADO if c == A_CUENTA else PENDIENTE
-                                                         for c in d.loc[~sin_cargo & (d["estado"] == ""), "condicion"]]
+    falta = ~sin_cargo & (d["estado"] == "")
+    d["estado"] = d["estado"].where(~falta, d["condicion"].map(lambda c: COMPENSADO if c == A_CUENTA else PENDIENTE))
     # Un médico y mes, una sola fila (la última manda).
     d = d.drop_duplicates(["medico", "periodo"], keep="last")
     return d[COLUMNAS].reset_index(drop=True)
