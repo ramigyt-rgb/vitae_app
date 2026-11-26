@@ -60,6 +60,10 @@ def _txt(value: Any) -> str:
     return str(value).strip()
 
 
+# Usuarios (exactos, del login) que pueden editar registros de Facturación.
+EDITORES_FACTURACION = {"rchar"}
+
+
 def obra_sin_cargo(valor: Any) -> bool:
     """Donantes, particulares y S/C: no se les factura a una obra social (a las donantes les paga la
     institución; de las particulares todavía no hay registro), así que el importe no es obligatorio."""
@@ -1488,7 +1492,10 @@ def render_facturacion_ultra_pro(
             return None
 
     usuario = st.session_state.get("vitae_auth_user") or {}
+    # Sólo el usuario exacto «rchar» puede editar registros de Facturación.
+    puede_editar = str(usuario.get("usuario") or "").strip().lower() in EDITORES_FACTURACION
     render_pasos(module_name=module_name, cfg=cfg, table=table, empresa=company, key=key, raw=df_raw,
                  guardar=lambda nuevo: sync_df_to_sheet(table, nuevo), leer_tabla=_leer,
                  guardar_tabla=lambda t, df: sync_df_to_sheet(t, df), legacy_renderer=legacy_renderer,
-                 usuario=str(usuario.get("nombre") or usuario.get("usuario") or ""), movil=bool(es_movil()))
+                 usuario=str(usuario.get("nombre") or usuario.get("usuario") or ""), movil=bool(es_movil()),
+                 puede_editar=puede_editar)
