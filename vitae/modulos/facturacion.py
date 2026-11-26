@@ -257,7 +257,21 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
         collected.loc[paid_by_state] = data.loc[paid_by_state, "_monto"]
 
     data["_cobrado"] = collected.clip(lower=0, upper=data["_monto"])
+    # Débitos (lo que la obra social pagó de menos): no es cobrado. Si se reclama, sigue pendiente;
+    # si se aceptó (no se recupera), deja de ser deuda; si se recuperó, se cobró.
+    exactas = {_norm(c): c for c in data.columns}
+    col_deb = exactas.get(_norm("debito"))
+    debito = _series_number(data, col_deb).clip(lower=0) if col_deb else pd.Series(0.0, index=data.index)
+    col_deb_est = exactas.get(_norm("debito_estado"))
+    deb_est = _series_text(data, col_deb_est).map(_norm) if col_deb_est else pd.Series("", index=data.index)
+    recuperado = deb_est.str.contains("recuper", na=False)
+    aceptado = deb_est.str.contains("acept", na=False)
+    con_debito = (debito > 0) & ~recuperado
+    data.loc[con_debito, "_cobrado"] = (data.loc[con_debito, "_cobrado"]
+                                        .clip(upper=(data.loc[con_debito, "_monto"] - debito[con_debito]).clip(lower=0)))
     data["_pendiente"] = (data["_monto"] - data["_cobrado"]).clip(lower=0)
+    data.loc[con_debito & aceptado, "_pendiente"] = 0.0
+    data["_debito"] = debito.where(~recuperado, 0.0)
     data.loc[cancelled, ["_monto", "_cobrado", "_pendiente"]] = 0.0
     data["_cancelado"] = cancelled
 
@@ -800,7 +814,8 @@ _EMPRESAS = {
     "VM": "Vitae Medical",
 }
 
-_SECCIONES_ANALISIS = [":material/insights: Resumen", ":material/payments: Cobranza", ":material/stethoscope: Producción", ":material/verified: Calidad"]
+_SECCION_CONTROL = ":material/task_alt: Control"
+_SECCIONES_ANALISIS = [_SECCION_CONTROL, ":material/insights: Resumen", ":material/payments: Cobranza", ":material/stethoscope: Producción", ":material/verified: Calidad"]
 _SECCIONES_GESTION = [":material/table_view: Registros", ":material/add_circle: Cargar", ":material/upload_file: Importar", ":material/download: Exportar"]
 
 # Sección de la pantalla → área de trabajo del flujo de gestión existente.
@@ -1413,6 +1428,23 @@ def render_facturacion_ultra_pro(
         return
     if df_raw is None or df_raw.empty:
         st.info("Todavía no hay registros. Podés cargarlos desde Cargar o Importar.")
+        return
+
+    if seccion == _SECCION_CONTROL:
+        # Control de todo (sin filtros): bandeja de hoy, controles y cierre de mes.
+        from vitae.core.database import sync_df_to_sheet
+        from vitae.modulos.control_facturacion import render_control
+
+        otra = "facturacion_vm" if company == "VMR" else "facturacion_vmr"
+
+        def _leer(t: str) -> pd.DataFrame | None:
+            try:
+                return get_df(t)
+            except Exception:
+                return None
+
+        render_control(df_raw, empresa=company, guardar=lambda nuevo: sync_df_to_sheet(table, nuevo),
+                       agenda_raw=_leer("agenda_quirofano"), otras_facturaciones=[_leer(otra)], key=f"{key}_cf")
         return
 
     data, cols = _prepare_facturacion(df_raw)

@@ -165,8 +165,13 @@ INSTRUCCIONES = """EXPERTA EN FACTURACIÓN VMR Y VM (sabés todo del módulo; us
   Cobranza % = cobrado / facturado. Mora % = vencido / pendiente. Días de cobro = promedio entre factura y pago.
 - Estados: Cobrado, Pendiente, Vencido, Anulado, Sin importe.
 - Cuando hablen de «lo que nos deben», es el pendiente; «lo atrasado», el vencido.
-- Si te preguntan cómo hacer algo en la pantalla: Facturación VMR/VM tiene Resumen, Cobranza, Producción y
-  Calidad (análisis) y Registros, Cargar, Importar y Exportar (gestión). En Registros («Editar registros») se
+- CONTROL: para «qué tengo que hacer», «qué se me pasa», alertas o el resumen de la mañana usá facturacion_control
+  (bandeja por urgencia: cirugías realizadas sin cargar, sin facturar con plazo de 60 días vencido o por vencer,
+  facturas vencidas o por vencer, débitos para reclamar, datos incompletos). Empezá por lo urgente.
+- Débitos: lo que la obra social pagó de menos (columnas debito, debito_estado: A reclamar, Reclamado, Recuperado,
+  Aceptado; debito_motivo). Un débito no recuperado no es cobrado; si se aceptó, deja de ser deuda.
+- Si te preguntan cómo hacer algo en la pantalla: Facturación VMR/VM tiene Control (bandeja de hoy, controles y
+  cierre de mes, donde se resuelve todo ahí mismo), Resumen, Cobranza, Producción y Calidad (análisis) y Registros, Cargar, Importar y Exportar (gestión). En Registros («Editar registros») se
   filtra por obra social y por cobro (Pendientes, Vencidos, Cobrados, Sin importe) y muestra el total facturado y
   pendiente de lo filtrado."""
 
@@ -291,5 +296,37 @@ def herramientas(datos: Any, hoy: pd.Timestamp | None = None) -> list[Callable[.
                 for nombre, m in mascaras.items() if int(m.sum())}}
         return _json(salida)
 
+    def facturacion_control(empresa: str = "ambas", limite: int = 25) -> str:
+        """La bandeja de control (sección Control): qué hay que hacer hoy, por urgencia. Cirugías realizadas en la
+        Agenda sin cargar en facturación, registros sin facturar (plazo de presentación de 60 días desde la
+        prestación: vencido o por vencer), facturas vencidas o por vencer, débitos para reclamar, cobros parciales
+        sin débito anotado, facturas repetidas y datos incompletos. Usala para «¿qué tengo que hacer?», «¿qué se me
+        está pasando?» o el resumen de la mañana."""
+        registrar(f"facturacion_control({empresa})")
+        from vitae.modulos import control_facturacion as cf
+
+        salida: dict[str, Any] = {}
+        pedidas = _empresas(empresa, disponibles)
+        agenda = None
+        if "Agenda Quirófano" in disponibles:
+            try:
+                agenda = datos.df("Agenda Quirófano")
+            except Exception:
+                agenda = None
+        for i, emp in enumerate(pedidas):
+            otras = [datos.df(EMPRESAS[o]) for o in EMPRESAS if o != emp and EMPRESAS[o] in disponibles]
+            r = cf.resumen(datos.df(EMPRESAS[emp]), agenda if i == 0 else None, otras, hoy.date() if hoy is not None
+                           else None)
+            salida[emp] = {
+                "urgentes": r["urgentes"], "esta_semana": r["esta_semana"], "sin_facturar": r["sin_facturar"],
+                "sin_facturar_plazo_vencido": r["sin_facturar_vencido"], "cirugias_sin_cargar": r["agenda_sin_cargar"],
+                "debitos_abiertos": _r(r["debitos"]), "facturas_vencidas": r["vencidas"],
+                "controles": _tabla(r["controles"].drop(columns=["_clave", "_nivel", ""], errors="ignore"), 20),
+                "bandeja": _tabla(r["bandeja"].drop(columns=["_fila"], errors="ignore"), limite),
+            }
+        if not salida:
+            return _json({"error": "No tenés acceso a Facturación VMR ni VM."})
+        return _json(salida)
+
     return [facturacion_resumen, facturacion_agrupado, facturacion_pendientes, facturacion_buscar,
-            facturacion_calidad]
+            facturacion_calidad, facturacion_control]

@@ -342,6 +342,15 @@ def calcular(dfs: dict[str, pd.DataFrame], mes: str, hoy: pd.Timestamp | None = 
     m: dict[str, Any] = {"mes": mes, "hoy": hoy}
     m["disponible"] = _seguro(lambda: disponible(dfs, mes, hoy))
     m["fact"] = {e: _seguro(lambda t=t: facturacion(g(t), mes)) for e, t in (("VMR", "facturacion_vmr"), ("VM", "facturacion_vm"))}
+    # Control de facturación (mismo cálculo que la sección Control de cada Facturación). La Agenda se
+    # controla una sola vez, contra las dos facturaciones.
+    from vitae.modulos import control_facturacion as cf
+
+    m["control_fact"] = {
+        "VMR": _seguro(lambda: cf.resumen(g("facturacion_vmr"), g("agenda_quirofano"), [g("facturacion_vm")],
+                                          hoy.date())),
+        "VM": _seguro(lambda: cf.resumen(g("facturacion_vm"), None, None, hoy.date())),
+    }
     m["pagos"] = _seguro(lambda: pagos_pendientes(g("pagos_pendientes_vitae")))
     m["honorarios"] = _seguro(lambda: honorarios(g("honorarios_medicos"), p.get("honorarios")))
     m["impuestos"] = {e: _seguro(lambda t=t: impuestos(g(t), t, p.get("impuestos"), hoy))
@@ -380,6 +389,18 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
             add("alta", f"Facturación {e}: cobros vencidos",
                 f"{pesos(f['vencido'], 0)} en {f['facturas_vencidas']} facturas" + (f" · {os_txt}" if os_txt else ""),
                 f"Facturación {e}")
+    for e, cfe in m.get("control_fact", {}).items():
+        if cfe.get("agenda_sin_cargar"):
+            add("alta", "Cirugías realizadas sin cargar en facturación",
+                f"{cfe['agenda_sin_cargar']} en la Agenda de Quirófano", f"Facturación {e}")
+        if cfe.get("sin_facturar_vencido"):
+            add("alta", f"Facturación {e}: sin facturar con el plazo de 60 días vencido",
+                f"{cfe['sin_facturar_vencido']} registro(s)", f"Facturación {e}")
+        if cfe.get("debitos", 0) > 0.5:
+            add("media", f"Facturación {e}: débitos para reclamar", pesos(cfe["debitos"], 0), f"Facturación {e}")
+        if cfe.get("esta_semana"):
+            add("media", f"Facturación {e}: para hacer esta semana",
+                f"{cfe['esta_semana']} (plazos y facturas por vencer)", f"Facturación {e}")
     for e, i in m["impuestos"].items():
         if i.get("vencido", 0) > 0.5:
             add("alta", f"Impuestos vencidos {e}", pesos(i["vencido"], 0), f"Deudas Impositivas {e}")
@@ -414,7 +435,8 @@ def alertas(m: dict[str, Any]) -> list[dict[str, str]]:
         add("baja", "Inscripciones sin contactar", f"{fo['sin_contactar']} en Gine Vitae · Formularios", "Gine Vitae")
     if c.get("vencen_60"):
         add("baja", "Contratos por vencer", f"{c['vencen_60']} en los próximos 60 días", "Contratos")
-    return out
+    orden = {"alta": 0, "media": 1, "baja": 2}
+    return sorted(out, key=lambda a: orden.get(a["nivel"], 3))  # estable: dentro de cada nivel, mismo orden
 
 
 # ---------------------------------------------------------------------------
