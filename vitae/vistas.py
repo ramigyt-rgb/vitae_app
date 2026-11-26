@@ -1511,14 +1511,25 @@ def _auth_ve_luz(user: dict[str, Any] | None = None) -> bool:
     return _auth_en_lista("LUZ_USUARIOS", LUZ_USUARIOS_POR_DEFECTO, user)
 
 
-# Pacientes (datos sensibles, Ley 25.326): sólo quienes figuren en el secreto
-# PACIENTES_USUARIOS (nombres o usuarios separados por coma). Ni siquiera el
-# perfil Administrador lo ve si no está en la lista.
-PACIENTES_USUARIOS_POR_DEFECTO = "Ramiro Char"
+# Pacientes (datos sensibles, Ley 25.326): sólo los usuarios del secreto
+# PACIENTES_USUARIOS (usuarios exactos separados por coma; por defecto rchar).
+# Ni siquiera el perfil Administrador lo ve si no está en la lista.
+PACIENTES_USUARIOS_POR_DEFECTO = "rchar"
 
 
 def _auth_ve_pacientes(user: dict[str, Any] | None = None) -> bool:
-    return _auth_en_lista("PACIENTES_USUARIOS", PACIENTES_USUARIOS_POR_DEFECTO, user)
+    """Sólo el USUARIO exacto (no se compara con el nombre, para que nadie entre por llamarse parecido)."""
+    user = user or _auth_current_user()
+    if not user:
+        return False
+    try:
+        from vitae.core.config import _secret
+
+        lista = str(_secret("PACIENTES_USUARIOS", "") or "").strip() or PACIENTES_USUARIOS_POR_DEFECTO
+    except Exception:
+        lista = PACIENTES_USUARIOS_POR_DEFECTO
+    habilitados = {u.strip().lower() for u in lista.split(",") if u.strip()}
+    return str(user.get("usuario") or "").strip().lower() in habilitados
 
 
 def _auth_en_lista(secreto: str, por_defecto: str, user: dict[str, Any] | None = None) -> bool:
