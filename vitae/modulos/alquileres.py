@@ -13,8 +13,10 @@ Se guarda una fila por médico y mes en la pestaña ``valores_alquileres``:
     estado        Pendiente / Cobrado / Parcial / Compensado (a cuenta)
     cobrado, fecha_cobro, medio, observaciones, orden (orden de la planilla)
 
-A cobrar = el alquiler de los que tienen cargo (o a cuenta). El servicio WPP va aparte: se muestra
-como en la planilla (fila amarilla) y con su propio total, pero no se suma al alquiler. Lo que no se cobró de meses
+Cada médico paga alquiler + servicio WPP (los totales de alquileres y de WPP se llevan por separado).
+«Pagó» es lo que pagó del mes; «Debe» = alquiler + WPP − pagó, más lo que le quedó de meses
+anteriores. El estado sale solo del pago: todo = Cobrado, algo = Parcial, nada = Pendiente
+(A cuenta = Compensado). Lo que no se cobró de meses
 anteriores es deuda. Los cobros se pueden tomar de las cajas (rubro Alquileres o «alquiler» en la
 descripción, con el apellido del médico). El formato anterior de la pestaña (inmueble_area,
 valor_mensual, periodo…) se sigue leyendo.
@@ -231,15 +233,57 @@ def servicio_total(d: pd.DataFrame, mes: str) -> float:
     return float(x["servicio"].sum())
 
 
+def total_mes(d: pd.DataFrame) -> pd.Series:
+    """Lo que tiene que pagar cada médico en el mes: alquiler + servicio WPP."""
+    return (d["alquiler"] + d["servicio"]).where(d["condicion"].isin([CARGO, A_CUENTA]), 0.0)
+
+
 def cobrado_efectivo(d: pd.DataFrame) -> pd.Series:
-    """Lo cobrado: Cobrado/Compensado = todo lo que había que cobrar; Parcial = lo anotado."""
-    ac = a_cobrar(d)
+    """Lo que pagó: Cobrado/Compensado = todo (alquiler + WPP); Parcial o Pendiente = lo anotado."""
+    tot = total_mes(d)
     full = d["estado"].isin([COBRADO, COMPENSADO])
-    return ac.where(full, d["cobrado"].clip(lower=0).where(d["estado"] == PARCIAL, 0.0))
+    return tot.where(full, d["cobrado"].clip(lower=0).where(d["estado"].isin([PARCIAL, PENDIENTE]), 0.0))
 
 
 def saldo(d: pd.DataFrame) -> pd.Series:
-    return (a_cobrar(d) - cobrado_efectivo(d)).clip(lower=0.0)
+    """Debe = alquiler + WPP − pagó."""
+    return (total_mes(d) - cobrado_efectivo(d)).clip(lower=0.0)
+
+
+def estado_por_pago(total: float, pagado: float, condicion: str) -> str:
+    if condicion in (SIN_CARGO, BAJA):
+        return ""
+    if condicion == A_CUENTA and pagado <= 0.004:
+        return COMPENSADO
+    if pagado >= total - 0.5:
+        return COBRADO
+    return PARCIAL if pagado > 0.004 else PENDIENTE
+
+
+def registrar_pago(d: pd.DataFrame, id_registro: str, pagado: float, *, fecha: str = "", medio: str = "",
+                   notas: str | None = None) -> pd.DataFrame:
+    """Anota lo que pagó un médico en un mes; el estado y lo que debe se calculan solos."""
+    nuevo = d.copy()
+    m = nuevo["id_registro"] == id_registro
+    if not m.any():
+        return nuevo
+    i = nuevo.index[m][0]
+    tot = float(total_mes(nuevo.loc[[i]]).iloc[0])
+    pagado = max(float(pagado or 0.0), 0.0)
+    est = estado_por_pago(tot, pagado, nuevo.loc[i, "condicion"])
+    nuevo.loc[i, "estado"] = est
+    nuevo.loc[i, "cobrado"] = tot if est in (COBRADO, COMPENSADO) and pagado >= tot - 0.5 else pagado
+    nuevo.loc[i, "fecha_cobro"] = fecha if pagado > 0.004 else ""
+    nuevo.loc[i, "medio"] = medio if pagado > 0.004 else ""
+    if notas is not None:
+        nuevo.loc[i, "observaciones"] = notas
+    nuevo.loc[i, "updated_at"] = _ahora()
+    return nuevo
+
+
+def pagado_mes(d: pd.DataFrame, medico: str, mes: str) -> float:
+    x = d[(d["medico"] == medico) & (d["periodo"] == mes)]
+    return float(cobrado_efectivo(x).sum()) if len(x) else 0.0
 
 
 def meses(d: pd.DataFrame) -> list[str]:
@@ -300,7 +344,7 @@ def resumen(d: pd.DataFrame, hoy: date | None = None) -> dict[str, Any]:
     return {
         "hay": True, "mes": mes, "ultimo_mes": ms[-1],
         "a_cobrar": float(ac[x.index].sum()), "cobrado": float(ce[x.index].sum()),
-        "pendiente": float(sa[x.index].sum()),
+        "total": float(total_mes(x).sum()), "pendiente": float(sa[x.index].sum()),
         "alquileres": float(x.loc[x["condicion"].isin([CARGO, A_CUENTA]), "alquiler"].sum()),
         "servicio": servicio_total(d, mes), "con_servicio": int(((x["servicio"] > 0)
                                                                    & x["condicion"].isin([CARGO, A_CUENTA])).sum()),
@@ -426,6 +470,26 @@ def aplicar_servicio(d: pd.DataFrame, original: pd.DataFrame, editada: pd.DataFr
     return nuevo, cambios
 
 
+def aplicar_pagos(d: pd.DataFrame, original: pd.DataFrame, editada: pd.DataFrame, mes: str, columna: str,
+                  fecha: str = "") -> tuple[pd.DataFrame, int]:
+    """La columna «Pagó» de la grilla editable → lo que pagó cada médico ese mes (el estado sale solo)."""
+    nuevo = d.copy()
+    antes = dict(zip(original["Médico"], original[columna])) if len(original) else {}
+    cambios = 0
+    for _, f in editada.iterrows():
+        med = nombre_medico(f.get("Médico"))
+        v = _n(f.get(columna))
+        if not med or abs(v - _n(antes.get(med, 0.0))) < 0.005:
+            continue
+        m = (nuevo["medico"] == med) & (nuevo["periodo"] == mes) & nuevo["condicion"].isin([CARGO, A_CUENTA])
+        if m.any():
+            i = nuevo.index[m][0]
+            f_ = nuevo.loc[i, "fecha_cobro"] or fecha
+            nuevo = registrar_pago(nuevo, nuevo.loc[i, "id_registro"], v, fecha=f_, medio=nuevo.loc[i, "medio"])
+            cambios += 1
+    return nuevo, cambios
+
+
 def generar_mes(d: pd.DataFrame, mes: str, *, aumento_pct: float = 0.0, redondeo: int = 0,
                 servicio: float | None = None) -> pd.DataFrame:
     """Las filas del mes nuevo a partir del último mes cargado antes: mismo médico y condición,
@@ -492,7 +556,7 @@ def marcar(d: pd.DataFrame, ids: list[str], estado: str, *, cobrado: float | Non
     if cobrado is not None:
         nuevo.loc[m, "cobrado"] = float(cobrado)
     elif estado in (COBRADO, COMPENSADO):
-        nuevo.loc[m, "cobrado"] = a_cobrar(nuevo[m])
+        nuevo.loc[m, "cobrado"] = total_mes(nuevo[m])
     elif estado == PENDIENTE:
         nuevo.loc[m, "cobrado"] = 0.0
     nuevo.loc[m, "fecha_cobro"] = fecha if estado != PENDIENTE else ""
@@ -561,7 +625,7 @@ def cobros_en_caja(d: pd.DataFrame, mes: str, cajas: dict[str, pd.DataFrame | No
 def sugerencias_caja(d: pd.DataFrame, mes: str, encontrados: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """Para cada médico pendiente del mes con cobros en caja: estado sugerido (Cobrado si alcanza, si no Parcial)."""
     x = d[(d["periodo"] == mes) & d["estado"].isin([PENDIENTE, PARCIAL])]
-    ac = a_cobrar(x)
+    ac = total_mes(x)
     sug = []
     for i, r in x.iterrows():
         movs = encontrados.get(r["medico"], [])
@@ -604,28 +668,29 @@ def resumen_medicos(d: pd.DataFrame, hoy: date | None = None) -> pd.DataFrame:
             "Médico": med, "Situación": u["condicion"], "Desde": etiqueta_mes(x["periodo"].iloc[0]),
             "Último mes": etiqueta_mes(x["periodo"].iloc[-1]),
             "Alquiler": float(u["alquiler"]) if u["condicion"] in (CARGO, A_CUENTA) else 0.0,
-            "Servicio": float(u["servicio"]),
+            "WPP": float(u["servicio"]),
             "Último aumento": f"{ult_aum:+.1f}% ({etiqueta_mes(ult_aum_mes)})" if ult_aum is not None else "",
             "Meses sin aumento": meses_sin,
             "Subió desde el inicio": (f"{(u['alquiler'] / base12 - 1) * 100:+.0f}%"
                                       if base12 and u["condicion"] == CARGO and u["alquiler"] > 0 else ""),
-            "Debe": float(sa[x.index][x["periodo"] < mes].sum()),
+            "Pagó este mes": float(cobrado_efectivo(x[x["periodo"] == mes]).sum()) if (x["periodo"] == mes).any() else 0.0,
+            "Debe": float(sa[x.index][x["periodo"] <= mes].sum()),
             "Cobrado en el año": float(ce[x.index][x["periodo"].str[:4] == mes[:4]].sum()),
         })
     return pd.DataFrame(filas)
 
 
 def evolucion(d: pd.DataFrame) -> pd.DataFrame:
-    """Por mes: alquileres a cobrar, cobrado, pendiente, médicos que pagan, servicio WPP (aparte) y aumento."""
+    """Por mes: alquileres a cobrar, cobrado y pendiente (alquiler + WPP), médicos que pagan, WPP y aumento."""
     if d.empty:
         return pd.DataFrame()
-    ac, ce = a_cobrar(d), cobrado_efectivo(d)
+    ac, ce, sa = a_cobrar(d), cobrado_efectivo(d), saldo(d)
     filas = []
     for m in meses(d):
         x = d[d["periodo"] == m]
         a = aumento(d, m)
         filas.append({"Mes": etiqueta_mes(m), "_mes": m, "A cobrar": float(ac[x.index].sum()),
-                      "Cobrado": float(ce[x.index].sum()), "Pendiente": float((ac - ce)[x.index].clip(lower=0).sum()),
+                      "Cobrado": float(ce[x.index].sum()), "Pendiente": float(sa[x.index].sum()),
                       "Con cargo": int((x["condicion"] == CARGO).sum()),
                       "Sin cargo": int((x["condicion"] == SIN_CARGO).sum()),
                       "Servicio WPP c/u": servicio_del_mes(d, m), "Servicio WPP total": servicio_total(d, m),
@@ -788,7 +853,7 @@ def plan_importacion(actual: pd.DataFrame, leido: dict[str, Any], *, cobrados_ha
             est = COMPENSADO
         else:
             est = COBRADO if cobrados_hasta and r["periodo"] < cobrados_hasta else PENDIENTE
-        ac = r["alquiler"] if r["condicion"] in (CARGO, A_CUENTA) else 0.0
+        ac = (r["alquiler"] + r["servicio"]) if r["condicion"] in (CARGO, A_CUENTA) else 0.0
         filas.append({
             "id_registro": p["id_registro"] if p is not None else _id(), "medico": r["medico"], "periodo": r["periodo"],
             "condicion": r["condicion"], "alquiler": float(r["alquiler"]), "servicio": float(r["servicio"]),
@@ -882,6 +947,7 @@ _CSS = """<style>
 .al-tab td.debe{font-weight:700;color:#8C2853}
 .al-tab th.wpp{background:#FFF3A6;color:#5E4B00}
 .al-tab td.wpp{background:#FFFBD6;color:#5E4B00;font-weight:600;border-left:2px solid #F0DE6E}
+.al-tab th.pago{background:#E3F1E6;color:#1F5130}.al-tab td.pago{background:#F1F9F2;color:#1F5130;font-weight:600}
 .al-tab tr.tot td{font-weight:800;border-top:2px solid #CFC6CB;background:#FAF7F8}
 .al-ley{display:flex;gap:1rem;flex-wrap:wrap;font-size:.78rem;color:#6B5F66;margin:.2rem 0 .4rem}
 .al-ley i{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:4px;vertical-align:-2px;border:1px solid #ddd}
@@ -890,16 +956,17 @@ _CSS = """<style>
 .al-sub{color:#8A7F85;font-size:.8rem}
 </style>"""
 
-LEYENDA = ('<div class="al-ley"><span><i style="background:#DDEFD5"></i>Cobrado</span>'
-           '<span><i style="background:#FFF1C9"></i>Cobrado en parte</span>'
+LEYENDA = ('<div class="al-ley"><span><i style="background:#DDEFD5"></i>Pagó todo</span>'
+           '<span><i style="background:#FFF1C9"></i>Pagó una parte</span>'
            '<span><i style="background:#F6C9C9"></i>Debe (mes que ya pasó)</span>'
            '<span><i style="background:#E3ECF7"></i>A cuenta</span><span><i style="background:#fff"></i>Por cobrar</span>'
            '<span><i style="background:#fff;outline:2px solid #8C2853"></i>Mes actual</span></div>')
 
 
 def html_planilla(d: pd.DataFrame, meses_v: list[str], hoy: date | None = None, mostrar_bajas: bool = False) -> str:
-    """La grilla como la planilla, con el estado de cobro de cada celda y los totales. Al costado, lo
-    que debe cada médico y su servicio WPP del mes (aparte: su total no se suma a los alquileres)."""
+    """La grilla como la planilla, con el estado de cobro de cada celda. Al costado, del mes actual:
+    WPP de cada médico, lo que pagó y lo que debe (alquiler + WPP − pagó, más meses anteriores).
+    Los totales de alquileres y de WPP van por separado."""
     t = tabla_planilla(d, meses_v, mostrar_bajas)
     if t.empty:
         return '<div class="al-sub">No hay alquileres en esos meses.</div>'
@@ -908,8 +975,10 @@ def html_planilla(d: pd.DataFrame, meses_v: list[str], hoy: date | None = None, 
     ref = mes_referencia(d, hoy)
     sa = saldo(d)
     cab = ('<tr><th class="l fijo">Médico</th>' + "".join(f"<th>{e(mes_largo(m))}</th>" for m in meses_v) +
-           f'<th>Debe</th><th class="wpp" title="Servicio de WhatsApp de {e(mes_largo(ref))}, aparte del alquiler">'
-           f'WPP {e(etiqueta_mes(ref))}</th></tr>')
+           f'<th class="wpp" title="Servicio de WhatsApp de {e(mes_largo(ref))}, aparte del alquiler">'
+           f'WPP {e(etiqueta_mes(ref))}</th><th class="pago" title="Lo que pagó en {e(mes_largo(ref))} (alquiler + WPP)">'
+           f'Pagó {e(etiqueta_mes(ref))}</th><th title="Alquiler + WPP − pagó, más lo que quedó de meses anteriores">'
+           'Debe</th></tr>')
     cuerpo = []
     idx = d.set_index(["medico", "periodo"])
     for _, fila in t.iterrows():
@@ -943,22 +1012,26 @@ def html_planilla(d: pd.DataFrame, meses_v: list[str], hoy: date | None = None, 
                 tip += f" · cobrado {r['fecha_cobro']}"
             celdas.append(f'<td class="{clase}" title="{e(tip)}">{e(txt)}</td>')
         x = d[d["medico"] == med]
-        debe = float(sa[x.index][x["periodo"] < ref].sum())
+        debe = float(sa[x.index][x["periodo"] <= ref].sum())
         wpp = servicio_medico(d, med, ref)
+        pago = pagado_mes(d, med, ref)
         cuerpo.append(f'<tr><td class="l fijo">{e(med)}</td>{"".join(celdas)}'
-                      f'<td class="debe">{pesos(debe, 0) if debe > 0.5 else ""}</td>'
-                      f'<td class="wpp">{pesos(wpp, 0) if wpp > 0.5 else ""}</td></tr>')
+                      f'<td class="wpp">{pesos(wpp, 0) if wpp > 0.5 else ""}</td>'
+                      f'<td class="pago">{pesos(pago, 0) if pago > 0.5 else ""}</td>'
+                      f'<td class="debe">{pesos(debe, 0) if debe > 0.5 else ""}</td></tr>')
     ac, ce = a_cobrar(d), cobrado_efectivo(d)
     tot = [float(ac[d["periodo"] == m].sum()) for m in meses_v]
     cob = [float(ce[d["periodo"] == m].sum()) for m in meses_v]
-    deuda = float(sa[d["periodo"] < ref].sum())
+    deuda = float(sa[d["periodo"] <= ref].sum())
     wpp_tot = servicio_total(d, ref)
-    cuerpo.append('<tr class="tot"><td class="l fijo">Alquileres a cobrar</td>' + "".join(f"<td>{pesos(v)}</td>" for v in tot) +
-                  f'<td class="debe">{pesos(deuda, 0) if deuda > 0.5 else ""}</td>'
+    pago_tot = float(ce[d["periodo"] == ref].sum())
+    cuerpo.append('<tr class="tot"><td class="l fijo">Alquileres</td>' + "".join(f"<td>{pesos(v)}</td>" for v in tot) +
                   f'<td class="wpp" title="Total del servicio WPP (aparte de los alquileres)">'
-                  f'{pesos(wpp_tot, 0) if wpp_tot > 0.5 else ""}</td></tr>')
-    cuerpo.append('<tr><td class="l fijo">Cobrado</td>' + "".join(f"<td>{pesos(v)}</td>" for v in cob) +
-                  '<td></td><td class="wpp"></td></tr>')
+                  f'{pesos(wpp_tot, 0) if wpp_tot > 0.5 else ""}</td>'
+                  f'<td class="pago">{pesos(pago_tot, 0) if pago_tot > 0.5 else ""}</td>'
+                  f'<td class="debe">{pesos(deuda, 0) if deuda > 0.5 else ""}</td></tr>')
+    cuerpo.append('<tr><td class="l fijo">Pagado (alquiler + WPP)</td>' + "".join(f"<td>{pesos(v)}</td>" for v in cob) +
+                  '<td class="wpp"></td><td class="pago"></td><td></td></tr>')
     return f'<div class="al-wrap"><table class="al-tab">{cab}{"".join(cuerpo)}</table></div>'
 
 
@@ -992,11 +1065,11 @@ def render_alquileres(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFra
     if r.get("hay"):
         mt = mes_largo(r["mes"])
         tarjetas_kpi([
-            (f"Alquileres a cobrar {mt}", pesos(r["a_cobrar"], 0),
-             f"Servicio WPP aparte: {pesos(r['servicio'], 0)}"
+            (f"Alquileres {mt}", pesos(r["a_cobrar"], 0),
+             f"WPP aparte: {pesos(r['servicio'], 0)}"
              + (f" ({r['con_servicio']} × {pesos(r['servicio_valor'], 0)})" if r["servicio_valor"] else ""), "#8C2853"),
-            ("Cobrado", pesos(r["cobrado"], 0), f"Falta {pesos(r['pendiente'], 0)} · {r['por_cobrar_mes']} médico(s)",
-             "#5E9C76"),
+            ("Pagaron", pesos(r["cobrado"], 0), f"de {pesos(r['total'], 0)} (alquiler + WPP) · deben "
+             f"{pesos(r['pendiente'], 0)} · {r['por_cobrar_mes']} médico(s)", "#5E9C76"),
             ("Deben meses anteriores", pesos(r["adeudado"], 0), f"{len(r['deudores'])} médico(s)",
              "#BD4B4B" if r["adeudado"] > 0.5 else "#8A7F85"),
             ("Consultorios", f"{r['con_cargo']} con cargo",
@@ -1040,23 +1113,31 @@ def render_alquileres(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFra
             st.markdown('<div class="al-hall"><ul style="margin:0;padding-left:1.1rem">' +
                         "".join(f"<li>{html.escape(h)}</li>" for h in hl) + "</ul></div>", unsafe_allow_html=True)
         with st.expander("Editar la planilla", icon=":material/edit:"):
-            col_wpp = f"WPP {etiqueta_mes(ref)}"
+            col_wpp, col_pago, col_debe = (f"WPP {etiqueta_mes(ref)}", f"Pagó {etiqueta_mes(ref)}", "Debe")
             st.caption("Escribí como en la planilla: un importe ($ 584.000), SIN CARGO, BAJA o A CTA INFORMES. "
-                       f"Vacío = no figura ese mes. «{col_wpp}» es el servicio de WhatsApp de cada médico ese mes "
-                       "(aparte del alquiler). Agregá un médico en la última fila. Lo cobrado no se pierde.")
+                       f"Vacío = no figura ese mes. «{col_wpp}» es el servicio de WhatsApp y «{col_pago}» lo que pagó "
+                       f"ese mes (alquiler + WPP); «Debe» se recalcula al guardar. Agregá un médico en la última fila.")
             original = tabla_planilla(d, meses_v, True)
             original[col_wpp] = [servicio_medico(d, m_, ref) for m_ in original["Médico"]]
+            original[col_pago] = [pagado_mes(d, m_, ref) for m_ in original["Médico"]]
+            sa_ed = saldo(d)
+            original[col_debe] = [float(sa_ed[(d["medico"] == m_) & (d["periodo"] <= ref)].sum())
+                                  for m_ in original["Médico"]]
             vista = original.rename(columns={m: mes_largo(m) for m in meses_v})
             ed = st.data_editor(vista, hide_index=True, use_container_width=True, num_rows="dynamic",
-                                key=f"{k}ed_{rango}_{rev}",
+                                key=f"{k}ed_{rango}_{rev}", disabled=[col_debe],
                                 column_config={"Médico": st.column_config.TextColumn(required=True, width="medium"),
-                                               col_wpp: st.column_config.NumberColumn(format="localized", min_value=0.0)})
+                                               col_wpp: st.column_config.NumberColumn(format="localized", min_value=0.0),
+                                               col_pago: st.column_config.NumberColumn(format="localized", min_value=0.0),
+                                               col_debe: st.column_config.NumberColumn(format="localized")})
             if st.button("Guardar la planilla", type="primary", key=f"{k}ed_ok", icon=":material/save:"):
                 ed = ed.rename(columns={mes_largo(m): m for m in meses_v})
-                nuevo, n = aplicar_planilla(d, original.drop(columns=col_wpp), ed.drop(columns=col_wpp), meses_v)
+                extra = [col_wpp, col_pago, col_debe]
+                nuevo, n = aplicar_planilla(d, original.drop(columns=extra), ed.drop(columns=extra), meses_v)
                 nuevo, n_wpp = aplicar_servicio(nuevo, original, ed, ref, col_wpp)
-                if n + n_wpp:
-                    _guardar(nuevo, f"{n + n_wpp} cambio(s) guardado(s)")
+                nuevo, n_pago = aplicar_pagos(nuevo, original, ed, ref, col_pago, hoy.strftime("%d/%m/%Y"))
+                if n + n_wpp + n_pago:
+                    _guardar(nuevo, f"{n + n_wpp + n_pago} cambio(s) guardado(s)")
                 else:
                     st.info("No hay cambios.")
         return
@@ -1082,64 +1163,67 @@ def render_alquileres(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFra
         if z.empty:
             st.info("No hay nada para cobrar en ese mes.")
             return
-        ac = a_cobrar(z)
+        tot_z, pag_z = total_mes(z), cobrado_efectivo(z)
         tabla = pd.DataFrame({
             "id": z["id_registro"], "Médico": z["medico"], "Mes": z["periodo"].map(etiqueta_mes),
-            "A cobrar": ac,
-            "Estado": z["estado"], "Cobrado": z["cobrado"].where(z["estado"] == PARCIAL, ac.where(
-                z["estado"].isin([COBRADO, COMPENSADO]), 0.0)),
-            "Fecha": z["fecha_cobro"], "Medio": z["medio"], "Notas": z["observaciones"],
+            "Alquiler": z["alquiler"], "WPP": z["servicio"], "Total": tot_z,
+            "Pagó todo": z["estado"].isin([COBRADO, COMPENSADO]), "Pagó": pag_z,
+            "Debe": (tot_z - pag_z).clip(lower=0), "Fecha": z["fecha_cobro"], "Medio": z["medio"],
+            "Notas": z["observaciones"],
             "En caja": [" · ".join(f"{m_['caja']} {pesos(m_['importe'], 0)}" for m_ in encontrados.get(med, []))
                         if not atr else "" for med, atr in zip(z["medico"], z["_atr"])],
         }).reset_index(drop=True)
-        st.caption("Cambiá el estado de cada uno y guardá (Cobrado = todo; Parcial = poné cuánto). Arriba figuran "
-                   "los meses anteriores que siguen sin cobrar. «En caja» muestra las entradas de alquiler que "
-                   "encontré en las cajas con ese apellido.")
+        st.caption("Anotá cuánto pagó cada uno (alquiler + WPP) o tildá «Pagó todo»: lo que debe se calcula solo. "
+                   "Arriba figuran los meses anteriores que siguen con saldo. «En caja» muestra las entradas de "
+                   "alquiler que encontré en las cajas con ese apellido.")
         if not leer_cajas or not any(tabla["En caja"]):
             tabla = tabla.drop(columns="En caja")
         ed = st.data_editor(tabla, hide_index=True, use_container_width=True, key=f"{k}c_ed_{mes}_{rev}",
-                            disabled=["id", "Médico", "Mes", "A cobrar", "En caja"],
+                            disabled=["id", "Médico", "Mes", "Alquiler", "WPP", "Total", "Debe", "En caja"],
                             column_config={
                                 "id": None,
-                                "A cobrar": st.column_config.NumberColumn(format="localized", help="Alquiler (sin el servicio WPP)"),
-                                "Cobrado": st.column_config.NumberColumn(format="localized", min_value=0.0),
-                                "Estado": st.column_config.SelectboxColumn(options=ESTADOS, required=True),
+                                "Alquiler": st.column_config.NumberColumn(format="localized"),
+                                "WPP": st.column_config.NumberColumn(format="localized", help="Servicio de WhatsApp"),
+                                "Total": st.column_config.NumberColumn(format="localized", help="Alquiler + WPP"),
+                                "Pagó": st.column_config.NumberColumn(format="localized", min_value=0.0),
+                                "Debe": st.column_config.NumberColumn(format="localized",
+                                                                      help="Total − pagó (se recalcula al guardar)"),
                                 "Medio": st.column_config.SelectboxColumn(options=MEDIOS),
                                 "Fecha": st.column_config.TextColumn(help="dd/mm/aaaa")})
-        tot = float(tabla["A cobrar"].sum())
-        st.caption(f"Total {pesos(tot)} · cobrado {pesos(float(ed['Cobrado'].sum()))}")
+        pag_ed = [float(t_) if todo else float(p_ or 0) for t_, todo, p_ in zip(ed["Total"], ed["Pagó todo"], ed["Pagó"])]
+        st.caption(f"Alquileres {pesos(float(tabla['Alquiler'].sum()))} · WPP {pesos(float(tabla['WPP'].sum()))} · "
+                   f"pagado {pesos(sum(pag_ed))} · debe {pesos(max(float(tabla['Total'].sum()) - sum(pag_ed), 0))}")
         sug = sugerencias_caja(d, mes, encontrados)
         b1, b2, b3 = st.columns(3)
-        if b1.button("Guardar cobros", type="primary", key=f"{k}c_ok", icon=":material/save:", use_container_width=True):
+        if b1.button("Guardar pagos", type="primary", key=f"{k}c_ok", icon=":material/save:", use_container_width=True):
             nuevo = d.copy()
             hoy_t = hoy.strftime("%d/%m/%Y")
-            for (_, f), (_, o) in zip(ed.iterrows(), tabla.iterrows()):
-                if (f["Estado"], float(f["Cobrado"] or 0), _texto(f["Fecha"]), _texto(f["Medio"]), _texto(f["Notas"])) == \
-                        (o["Estado"], float(o["Cobrado"] or 0), _texto(o["Fecha"]), _texto(o["Medio"]), _texto(o["Notas"])):
+            cambios = 0
+            for (_, f), (_, o), p_nuevo in zip(ed.iterrows(), tabla.iterrows(), pag_ed):
+                p_viejo = float(o["Total"]) if o["Pagó todo"] else float(o["Pagó"] or 0)
+                if abs(p_nuevo - p_viejo) < 0.005 and (_texto(f["Fecha"]), _texto(f["Medio"]), _texto(f["Notas"])) == \
+                        (_texto(o["Fecha"]), _texto(o["Medio"]), _texto(o["Notas"])):
                     continue
-                est = f["Estado"]
-                cob = float(f["Cobrado"] or 0)
-                if est == PENDIENTE and cob > 0.5 and abs(cob - float(o["Cobrado"] or 0)) > 0.5:
-                    est = PARCIAL  # anotó un importe: cobrado en parte
-                fecha = _texto(f["Fecha"]) or (hoy_t if est != PENDIENTE else "")
-                nuevo = marcar(nuevo, [f["id"]], est, cobrado=cob if est == PARCIAL else None, fecha=fecha,
-                               medio=_texto(f["Medio"]))
-                nuevo.loc[nuevo["id_registro"] == f["id"], "observaciones"] = _texto(f["Notas"])
-            _guardar(nuevo, "Cobros guardados")
-        if b2.button(f"Todo {mes_largo(mes).split()[0]} cobrado", key=f"{k}c_todos", icon=":material/done_all:",
+                cambios += 1
+                nuevo = registrar_pago(nuevo, f["id"], p_nuevo, fecha=_texto(f["Fecha"]) or (hoy_t if p_nuevo else ""),
+                                       medio=_texto(f["Medio"]), notas=_texto(f["Notas"]))
+            if cambios:
+                _guardar(nuevo, f"{cambios} pago(s) guardado(s)")
+            else:
+                st.info("No hay cambios.")
+        if b2.button(f"Todos pagaron {mes_largo(mes).split()[0]}", key=f"{k}c_todos", icon=":material/done_all:",
                      use_container_width=True):
             ids = list(x.loc[x["estado"].isin([PENDIENTE, PARCIAL]), "id_registro"])
             _guardar(marcar(d, ids, COBRADO, fecha=hoy.strftime("%d/%m/%Y")), "Mes cobrado")
         if b3.button(f"Tomar de las cajas ({len(sug)})", key=f"{k}c_caja", icon=":material/account_balance_wallet:",
                      disabled=not sug, use_container_width=True,
-                     help="Marca como cobrados los que tienen la entrada en la caja (o parcial si es menos)."):
+                     help="Anota como pagado lo que figura en la caja (todo o una parte)."):
             nuevo = d.copy()
-            for s in sug:
-                nuevo = marcar(nuevo, [s["id"]], s["estado"], cobrado=s["cobrado"] if s["estado"] == PARCIAL else None,
-                               fecha=s["fecha"], medio=s["caja"])
-            _guardar(nuevo, f"{len(sug)} cobro(s) tomados de las cajas")
+            for s_ in sug:
+                nuevo = registrar_pago(nuevo, s_["id"], s_["cobrado"], fecha=s_["fecha"], medio=s_["caja"])
+            _guardar(nuevo, f"{len(sug)} pago(s) tomados de las cajas")
         if len(r.get("deudores", [])) and mes == ref:
-            st.markdown("##### Quién debe")
+            st.markdown("##### Quién debe de meses anteriores")
             dd = r["deudores"].rename(columns={"medico": "Médico", "deuda": "Debe", "meses": "Meses"})
             st.dataframe(dd.assign(Debe=dd["Debe"].map(pesos)), hide_index=True, use_container_width=True)
         return
@@ -1201,7 +1285,7 @@ def render_alquileres(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFra
             filtro = st.pills("Mostrar", ["Activos", "Todos", "Bajas"], default="Activos", key=f"{k}m_filtro") or "Activos"
             v = rm if filtro == "Todos" else (rm[rm["Situación"] == BAJA] if filtro == "Bajas" else rm[rm["Situación"] != BAJA])
             st.dataframe(v.assign(**{c: v[c].map(lambda n: pesos(n, 0) if n else "") for c in
-                                     ("Alquiler", "Servicio", "Debe", "Cobrado en el año")}),
+                                     ("Alquiler", "WPP", "Pagó este mes", "Debe", "Cobrado en el año")}),
                          hide_index=True, use_container_width=True,
                          column_config={"Meses sin aumento": st.column_config.NumberColumn(format="%d")})
         ref = mes_referencia(d, hoy) if todos else ma
@@ -1269,7 +1353,7 @@ def render_alquileres(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFra
         if hl:
             st.markdown('<div class="al-hall"><ul style="margin:0;padding-left:1.1rem">' +
                         "".join(f"<li>{html.escape(h)}</li>" for h in hl) + "</ul></div>", unsafe_allow_html=True)
-        st.markdown("##### A cobrar y cobrado por mes")
+        st.markdown("##### Pagado y adeudado por mes (alquiler + WPP)")
         st.bar_chart(ev.set_index("Mes")[["Cobrado", "Pendiente"]], stack=True, color=["#5E9C76", "#BD4B4B"])
         st.dataframe(ev.drop(columns="_mes").assign(**{c: ev[c].map(lambda v: pesos(v, 0)) for c in
                                                        ("A cobrar", "Cobrado", "Pendiente", "Servicio WPP c/u",

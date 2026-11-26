@@ -328,7 +328,7 @@ def alquileres(df: pd.DataFrame | None, hoy: pd.Timestamp) -> dict[str, Any]:
     r = alq.resumen(alq.normalizar(df), hoy.date())
     if not r.get("hay"):
         return {"hay": False}
-    return {"hay": True, "mes": r["mes"], "a_cobrar": r["a_cobrar"], "cobrado": r["cobrado"],
+    return {"hay": True, "mes": r["mes"], "a_cobrar": r["a_cobrar"], "cobrado": r["cobrado"], "servicio": r["servicio"],
             "pendiente": r["pendiente"], "por_cobrar": r["por_cobrar_mes"], "adeudado": r["adeudado"],
             "deudores": len(r["deudores"]), "falta_mes": r["falta_mes"], "proximo": r["proximo"]}
 
@@ -584,7 +584,8 @@ def html_tarjetas(m: dict[str, Any]) -> str:
     aq = m.get("alquileres", {})
     if aq.get("hay"):
         t += _linea(f"Alquileres de consultorios ({nombre_mes(aq['mes']).lower()})", pesos(aq["a_cobrar"], 0),
-                    sub_k=f"Cobrado {pesos(aq['cobrado'], 0)} · falta {pesos(aq['pendiente'], 0)}",
+                    sub_k=(f"WPP aparte {pesos(aq.get('servicio', 0.0), 0)} · pagaron {pesos(aq['cobrado'], 0)} · "
+                           f"deben {pesos(aq['pendiente'], 0)}"),
                     sub_v=(f"{aq['deudores']} deben {pesos(aq['adeudado'], 0)} de meses anteriores"
                            if aq["adeudado"] > 0.5 else "nadie debe meses anteriores"),
                     alerta_sub=aq["adeudado"] > 0.5)
