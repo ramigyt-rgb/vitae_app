@@ -126,6 +126,13 @@ class Memoria:
         texto = re.sub(r"\s+", " ", _texto(texto))[:500]
         if len(texto) < 4:
             raise ValueError("No hay nada para recordar.")
+        try:
+            from vitae.ia.clave import tapar
+
+            if tapar(texto) != texto:
+                raise ValueError("Las claves no se guardan en la memoria.")
+        except ImportError:  # pragma: no cover
+            pass
         df = self._df().copy()
         tipo = _tipo(tipo)
         activos = df[(df["usuario"].isin([self.usuario, TODOS])) & (df["activa"].str.upper() != "NO")]

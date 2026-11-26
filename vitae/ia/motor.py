@@ -145,6 +145,17 @@ class _Datos:
     def nombre(self, modulo: str) -> str:
         return self.resolver(modulo) or modulo
 
+    def crudo(self, modulo: str) -> pd.DataFrame:
+        """La pestaña tal como está en Google Sheets (para editarla), sin la vista de pantalla."""
+        nombre = self.resolver(modulo)
+        tabla = self.modulos().get(nombre or "", "")
+        if not tabla or tabla in _TABLAS_PROHIBIDAS:
+            raise ValueError(f"«{modulo}» no se puede editar.")
+        datos = get_df(tabla) if get_df is not None else pd.DataFrame()
+        datos = datos.copy() if isinstance(datos, pd.DataFrame) else pd.DataFrame()
+        datos.columns = [str(c) for c in datos.columns]
+        return datos
+
 
 def _columna(df: pd.DataFrame, nombre: str) -> str:
     objetivo = _norm(nombre)
