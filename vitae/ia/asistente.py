@@ -223,7 +223,8 @@ def _descartar_pendientes() -> None:
             m["accion"]["estado"] = "descartada"
 
 
-def _confirmar(i: int, ejecutar_fn: Callable[[dict[str, Any]], str] | None, permitidos: set[str] | None) -> None:
+def _confirmar(i: int, ejecutar_fn: Callable[[dict[str, Any]], str] | None, permitidos: set[str] | None,
+               clave_ok: bool = False) -> None:
     lista = mensajes()
     accion = lista[i].get("accion") if i < len(lista) else None
     if not accion or accion.get("estado") != "pendiente":
@@ -236,6 +237,22 @@ def _confirmar(i: int, ejecutar_fn: Callable[[dict[str, Any]], str] | None, perm
         accion["estado"] = "error"
         _agregar("assistant", "Desde acá no puedo guardar cambios. Cargalo desde el módulo, porfa.")
         return
+    if accion.get("requiere_clave") and not clave_ok:
+        from vitae.ia import clave as _clave
+
+        escrita = st.session_state.get(f"asis_acc_clave_{i}", "")
+        st.session_state[f"asis_acc_clave_{i}"] = ""
+        if not _clave.es_correcta(escrita):
+            accion["intentos"] = int(accion.get("intentos", 0)) + 1
+            quedan = _clave.MAX_INTENTOS - accion["intentos"]
+            if quedan <= 0:
+                accion["estado"] = "cancelada"
+                _agregar("assistant", "La clave no coincidió 3 veces, así que lo cancelé por seguridad. "
+                                      "Si querés, pedímelo de nuevo.")
+            else:
+                _agregar("assistant", ("Esa clave no es 🔒" if str(escrita or "").strip() else "Me falta la clave 🔒")
+                         + f". Probá de nuevo (te quedan {quedan}).")
+            return
     try:
         texto = ejecutar_fn(accion)
         accion["estado"] = "hecha"
@@ -265,6 +282,9 @@ def _tarjeta_accion(lugar: Any, ejecutar_fn: Callable[[dict[str, Any]], str] | N
 
     with lugar.container(key=f"asis_accion_{i}"):
         st.markdown(html_tarjeta(accion), unsafe_allow_html=True)
+        if accion.get("requiere_clave"):
+            st.text_input("Clave de Luz", key=f"asis_acc_clave_{i}", type="password",
+                          placeholder="🔒 Clave para confirmar", label_visibility="collapsed")
         with _fila(f"asis_accion_botones_{i}"):
             _boton("✅ Confirmar", key=f"asis_acc_ok_{i}", type="primary", on_click=_confirmar,
                    args=(i, ejecutar_fn, permitidos))
@@ -679,6 +699,25 @@ def _conversacion(modulo_actual: str, permitidos: set[str] | None, responder_fn:
     pregunta = pregunta or st.session_state.pop(PENDIENTE, None)
     if not pregunta:
         return
+    from vitae.ia import clave as _clave
+
+    tapada = _clave.tapar(pregunta)
+    if tapada != pregunta:
+        # Escribió la clave en el chat: nunca se manda a la IA ni se guarda. Si había una acción
+        # esperando clave, se confirma con ella.
+        _agregar("user", tapada)
+        pend = accion_pendiente()
+        if pend and pend[1].get("requiere_clave") and not re.sub(r"[•\s.,!¡¿?]", "", tapada):
+            _confirmar(pend[0], ejecutar_fn, permitidos, clave_ok=True)
+            lugar_accion.empty()
+            caja.markdown(html_conversacion(mensajes(), saludo=saludo, inicial=inicial), unsafe_allow_html=True)
+            _guardar_chat()
+            if st.session_state.pop(REFRESCAR, False):
+                st.rerun()  # se guardó: recargar la pantalla para ver el cambio
+            return
+        pregunta = tapada
+        lista = mensajes()
+        lista.pop()
     historial = _historial_para_motor(lista)
     _descartar_pendientes()
     lugar_accion.empty()

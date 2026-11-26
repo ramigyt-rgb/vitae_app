@@ -899,7 +899,7 @@ def correccion_caja_datos(raw: pd.DataFrame, caja: str, *, fecha: str = "", desc
         "titulo": ("Borrar de " if borrar else "Corregir en ") + nombre, "pos": idx,
         "huella": _huella(raw.iloc[idx]), "mes": mes, "cambios_crudos": {k: (str(v) if k == "fecha" else v)
                                                                        for k, v in editada.loc[idx].items()},
-        "borrar": bool(borrar), "filas": filas, "cambios": detalle, "avisos": [],
+        "borrar": bool(borrar), "requiere_clave": bool(borrar), "filas": filas, "cambios": detalle, "avisos": [],
         "resumen": filas[0][1] + (" (se borra)" if borrar else ": " + ", ".join(f"{a} → {c_}" for a, _, c_ in detalle)),
         "estado": "pendiente"}}
 
@@ -941,6 +941,10 @@ EJECUTORES: dict[str, Callable[..., str]] = {
 def ejecutar(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
              guardar: Callable[[str, pd.DataFrame], Any]) -> str:
     funcion = EJECUTORES.get(accion.get("tipo", ""))
+    if funcion is None and str(accion.get("tipo", "")).startswith("datos_"):
+        from vitae.ia import editora
+
+        funcion = editora.ejecutar
     if funcion is None:
         raise RuntimeError("No sé hacer esa acción.")
     return funcion(accion, leer, guardar)
@@ -966,6 +970,7 @@ INSTRUCCIONES_GENERALES = """ACCIONES (podés HACER cosas, siempre con confirmac
 - Pasá las fechas como AAAA-MM-DD calculándolas desde HOY («el jueves», «mañana», «el 3») y las horas como HH:MM.
 - Si falta un dato obligatorio, preguntalo en una línea antes de proponer.
 - Si la herramienta avisa algo (superposiciones, filas repetidas, fechas pasadas), contalo en una frase.
+- Podés proponer varias acciones en una misma respuesta: se confirman de a una.
 - Si te piden algo que todavía no sabés hacer, decí que por ahora no podés y que se puede agregar."""
 
 INSTRUCCIONES_CIRUGIA = """- Agenda de Quirófano: proponer_cirugia programa una cirugía. Obligatorios: paciente, fecha, hora, médico y
@@ -996,6 +1001,10 @@ def instrucciones(herramientas_ofrecidas: list[Callable[..., str]]) -> str:
         texto += "\n" + INSTRUCCIONES_FACTURACION
     if nombres & {"proponer_movimiento_caja", "proponer_correccion_caja"}:
         texto += "\n" + INSTRUCCIONES_CAJA
+    if "proponer_modificacion_registro" in nombres:
+        from vitae.ia import editora
+
+        texto += "\n" + editora.INSTRUCCIONES
     return texto
 
 
@@ -1207,6 +1216,10 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
         out += [proponer_movimiento_caja, proponer_correccion_caja]
         if "VMR" in cajas_ok:
             out += [proponer_transferencia_caja, proponer_frasco_caja]
+    # Cualquier dato de cualquier módulo (con clave): vitae/ia/editora.py
+    from vitae.ia import editora
+
+    out += editora.herramientas(datos, acciones, hoy)
     return out
 
 
@@ -1229,8 +1242,9 @@ def html_tarjeta(accion: dict[str, Any]) -> str:
             filas.append(f'<div class="asis-acc-k">{html.escape(etiqueta)}</div>'
                          f'<div class="asis-acc-v">{antes_t}{html.escape(_texto(despues))}</div>')
         avisos = "".join(f'<div class="asis-acc-aviso">⚠️ {html.escape(a)}</div>' for a in accion.get("avisos", []))
+        espera = "🔒 confirmá con tu clave" if accion.get("requiere_clave") else "esperando tu confirmación"
         return (f'<div class="asis-acc"><div class="asis-acc-tit">{accion.get("icono", "📝")} '
-                f'{html.escape(accion.get("titulo", "Acción"))}<span>esperando tu confirmación</span></div>'
+                f'{html.escape(accion.get("titulo", "Acción"))}<span>{espera}</span></div>'
                 f'<div class="asis-acc-grid">{"".join(filas)}</div>{avisos}</div>')
     d = accion.get("datos", {})
     filas = []
