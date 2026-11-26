@@ -1,7 +1,8 @@
 """Facturación VMR / VM con el estilo de Deudas Impositivas: planillas por bloque, sin tarjetas.
 
 Cada bloque es una obra social (o «Todas»): barra de título con el resumen, encabezado de columnas,
-un renglón por paciente y la fila TOTAL. Las facturas conjuntas (varios pacientes con el mismo N°)
+un renglón por paciente y la fila TOTAL. Regla: lo pendiente de pago (sin cobrar, aunque sea viejo)
+siempre va arriba; después lo cobrado y lo anulado (``facturacion_fichas.pendiente_pago``). Las facturas conjuntas (varios pacientes con el mismo N°)
 quedan agrupadas: el número aparece una sola vez, en el primer renglón, como los F931 por período.
 
 Para actuar hay una sola barra arriba de la planilla: se elige el paciente o la factura (el selector
@@ -171,7 +172,8 @@ def html_obra_social(x: pd.DataFrame, titulo: str, hoy: date, *, forzar_incomple
                                     forzar_incompleta=forzar_incompleta, nota=(notas or {}).get(i, "")))
         else:
             for k, i in enumerate(filas):
-                partes.append(_fila(x.loc[i], grupo="SIN FACTURA", sub=f"{len(g)}" if len(g) > 1 else "", primera=k == 0,
+                partes.append(_fila(x.loc[i], grupo="ANULADAS" if bool(g["_cancelado"].all()) else "SIN FACTURA",
+                                    sub=f"{len(g)}" if len(g) > 1 else "", primera=k == 0,
                                     hoy=hoy, columna_os=False, forzar_incompleta=forzar_incompleta,
                                     nota=(notas or {}).get(i, "")))
     partes.append(_total(x))
