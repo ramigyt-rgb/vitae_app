@@ -167,7 +167,8 @@ INSTRUCCIONES = """EXPERTA EN FACTURACIÓN VMR Y VM (sabés todo del módulo; us
 - Cuando hablen de «lo que nos deben», es el pendiente; «lo atrasado», el vencido.
 - CONTROL: para «qué tengo que hacer», «qué se me pasa», alertas o el resumen de la mañana usá facturacion_control
   (bandeja por urgencia: cirugías realizadas sin cargar, sin facturar con plazo de 60 días vencido o por vencer,
-  facturas vencidas o por vencer, débitos para reclamar, datos incompletos). Empezá por lo urgente.
+  facturas vencidas o por vencer, débitos para reclamar, datos incompletos). Empezá por lo urgente. Las cirugías
+  sin cargar van a la empresa de su procedimiento: en VMR sólo las de VMR (reproducción); el resto, en VM.
 - Débitos: lo que la obra social pagó de menos (columnas debito, debito_estado: A reclamar, Reclamado, Recuperado,
   Aceptado; debito_motivo). Un débito no recuperado no es cobrado; si se aceptó, deja de ser deuda.
 - Si te preguntan cómo hacer algo en la pantalla: Facturación VMR/VM tiene Control (bandeja de hoy, controles y
@@ -313,10 +314,11 @@ def herramientas(datos: Any, hoy: pd.Timestamp | None = None) -> list[Callable[.
                 agenda = datos.df("Agenda Quirófano")
             except Exception:
                 agenda = None
-        for i, emp in enumerate(pedidas):
+        for emp in pedidas:
+            # Las cirugías sin cargar de cada empresa son sólo las de sus procedimientos.
             otras = [datos.df(EMPRESAS[o]) for o in EMPRESAS if o != emp and EMPRESAS[o] in disponibles]
-            r = cf.resumen(datos.df(EMPRESAS[emp]), agenda if i == 0 else None, otras, hoy.date() if hoy is not None
-                           else None)
+            r = cf.resumen(datos.df(EMPRESAS[emp]), agenda, otras, hoy.date() if hoy is not None else None,
+                           empresa=emp)
             salida[emp] = {
                 "urgentes": r["urgentes"], "esta_semana": r["esta_semana"], "sin_facturar": r["sin_facturar"],
                 "sin_facturar_plazo_vencido": r["sin_facturar_vencido"], "cirugias_sin_cargar": r["agenda_sin_cargar"],
