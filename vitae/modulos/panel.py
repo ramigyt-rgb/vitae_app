@@ -120,30 +120,27 @@ def _seguro(fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
 # Cálculos (cada uno igual que su módulo)
 # ---------------------------------------------------------------------------
 def disponible(dfs: dict[str, pd.DataFrame], mes: str, hoy: pd.Timestamp) -> dict[str, Any]:
-    """Cajas (módulo Caja) y bancos (mismo libro de entradas y salidas)."""
+    """Cajas y bancos: el SALDO de la planilla del mes, exactamente como lo muestra cada módulo
+    (cj.saldo_planilla). El mes actual incluye lo ya cargado con fecha posterior a hoy; los
+    movimientos sin fecha no se suman (el módulo los marca para corregir)."""
     actual = mes >= str(pd.Period(hoy, freq="M"))
+    mes_calc = str(pd.Period(hoy, freq="M")) if actual else mes
     filas = []
     for tabla in ("caja_vmr", "banco_macro_vmr", "caja_vm", "banco_galicia_vm"):
         df = dfs.get(tabla)
         dolar_txt = tabla == "caja_vmr"
-        fila = {"tabla": tabla, "nombre": TABLAS[tabla], "ars": 0.0, "usd": 0.0, "hay": not _vacio(df)}
+        fila = {"tabla": tabla, "nombre": TABLAS[tabla], "ars": 0.0, "usd": 0.0, "hay": not _vacio(df), "sin_fecha": 0}
         if not _vacio(df):
             d = cj.preparar(df, dolar_por_texto=dolar_txt)
             internas = cj.cajas_internas(tabla) if tabla.startswith("caja_") else []
-            if actual:
-                fila["ars"] = cj.saldo_actual(df, "ARS", dolar_por_texto=dolar_txt)
-                fila["usd"] = cj.saldo_actual(df, "USD", dolar_por_texto=dolar_txt)
-                if len(internas) > 1:
-                    fila["internas"] = {c: cj.saldo_hoy(cj.de_caja(d, c), "ARS") for c in internas}
-            else:
-                # Cada caja interna con su propio libro (Caja VM: una sola).
-                fila["ars"] = cj.saldo_al_cierre(d, mes, "ARS")
-                fila["usd"] = cj.saldo_al_cierre(d, mes, "USD")
-                if len(internas) > 1:
-                    fila["internas"] = {c: cj.saldo_al_cierre(cj.de_caja(d, c), mes, "ARS") for c in internas}
+            fila["ars"] = cj.saldo_planilla(d, mes_calc, "ARS")
+            fila["usd"] = cj.saldo_planilla(d, mes_calc, "USD")
+            fila["sin_fecha"] = cj.sin_fecha(d)
+            if len(internas) > 1:
+                fila["internas"] = {c: cj.saldo_planilla(cj.de_caja(d, c), mes_calc, "ARS") for c in internas}
         filas.append(fila)
-    return {"filas": filas, "ars": sum(f["ars"] for f in filas), "usd": sum(f["usd"] for f in filas),
-            "al": "hoy" if actual else f"cierre de {nombre_mes(mes).lower()}"}
+    return {"filas": filas, "ars": round(sum(f["ars"] for f in filas), 2), "usd": round(sum(f["usd"] for f in filas), 2),
+            "al": f"planilla de {nombre_mes(mes_calc).lower()}" if actual else f"cierre de {nombre_mes(mes).lower()}"}
 
 
 def facturacion(df: pd.DataFrame | None, mes: str) -> dict[str, Any]:
@@ -511,12 +508,15 @@ def html_tarjetas(m: dict[str, Any]) -> str:
             if not f["hay"]:
                 cuerpo += _linea(f["nombre"], "Sin datos", clase_v="pg-na")
                 continue
+            detalle = " · ".join(f"{c} {pesos(v, 0)}" for c, v in f.get("internas", {}).items())
+            if f.get("sin_fecha"):
+                detalle = (detalle + " · " if detalle else "") + f"⚠ {f['sin_fecha']} sin fecha (no suman)"
             cuerpo += _linea(f["nombre"], pesos(f["ars"]), sub_v=(cj.dinero(f["usd"], "USD") if abs(f["usd"]) > 0.004 else ""),
-                             sub_k=" · ".join(f"{c} {pesos(v, 0)}" for c, v in f.get("internas", {}).items()),
-                             clase_v="pg-mal" if f["ars"] < -0.5 else "")
+                             sub_k=detalle, clase_v="pg-mal" if f["ars"] < -0.5 else "")
         cuerpo += _linea("Total en pesos", pesos(d["ars"]), tot=True,
                          sub_v=(f"+ {cj.dinero(d['usd'], 'USD')} en dólares" if abs(d["usd"]) > 0.004 else ""))
-    tarjetas.append(_tarjeta("Cajas y bancos", f"Saldo al {d.get('al', 'día')}", AZUL, cuerpo))
+    tarjetas.append(_tarjeta("Cajas y bancos", f"Saldo de la {d.get('al', 'planilla')}" if str(d.get("al", "")).startswith("planilla")
+                             else f"Saldo al {d.get('al', 'día')}", AZUL, cuerpo))
 
     # Facturación
     fv, fm = m["fact"].get("VMR", {}), m["fact"].get("VM", {})
@@ -668,7 +668,8 @@ def render_panel(
         st.download_button("Descargar resumen", data=excel_resumen(m), file_name=f"panel_general_{mes}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                            icon=":material/download:", use_container_width=True, key="pg_xls")
-    st.caption(f"Saldos y deudas al {hoy:%d/%m/%Y}" if mes == actual else
+    st.caption(f"Cajas y bancos: saldo de la planilla de {nombre_mes(mes).lower()} (igual que en cada módulo) · "
+               f"deudas al {hoy:%d/%m/%Y}" if mes == actual else
                f"Cajas al cierre de {nombre_mes(mes).lower()} · deudas al {hoy:%d/%m/%Y}")
 
     d = m["disponible"]

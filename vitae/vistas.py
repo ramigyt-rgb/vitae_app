@@ -21045,9 +21045,11 @@ def render_facturacion_pro(
         return
 
 
-    # CAJA VM / CAJA VMR: la planilla mensual de efectivo (saldo inicial,
-    # entradas, salidas, saldo, rubros por color, quién y caja en dólares).
-    if str(table).lower() in ("caja_vm", "caja_vmr"):
+    # CAJA VM / CAJA VMR / BANCO GALICIA VM: la planilla mensual (saldo inicial,
+    # entradas, salidas, saldo, rubros por color —alquileres y caja gastos
+    # comunes—, quién u observación y lo que esté en dólares). El banco usa la
+    # misma planilla que la caja: así el módulo y el Panel general cuentan igual.
+    if str(table).lower() in ("caja_vm", "caja_vmr", "banco_galicia_vm"):
         render_caja(
             df_base.copy(),
             tabla=str(table).lower(),
@@ -23104,7 +23106,8 @@ def total_mod(nombre, dfs):
     # como una posición independiente y jamás se suman nominalmente a la liquidez ARS.
     # Cajas: mismo saldo que muestra el módulo (respeta los SALDO INICIAL
     # cargados y nunca suma dólares como pesos).
-    if str(nombre).strip().lower() in ("caja vmr", "caja vm"):
+    # Bancos: la misma planilla (antes se sumaban todos los ingresos, que no es un saldo).
+    if str(nombre).strip().lower() in ("caja vmr", "caja vm", "banco galicia vm", "banco macro vmr"):
         try:
             return float(_caja_saldo_actual(df, "ARS", dolar_por_texto=str(nombre).strip().lower() == "caja vmr"))
         except Exception:
