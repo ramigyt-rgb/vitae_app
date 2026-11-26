@@ -51,7 +51,7 @@ ETAPAS = [
     ("Anotar el débito", 8, "Anotar los débitos de cobros parciales", "debitos", "Cuánto debitaron y por qué."),
     ("Cargar vencimiento", 9, "Cargar los vencimientos que faltan", "cobrar",
      "Sin vencimiento no se puede seguir la cobranza."),
-    ("Completar datos", 10, "Completar datos", "cargar", "Obra social, procedimiento, médico o importe."),
+    ("Completar datos", 10, "Completar datos", "cargar", "Obra social, procedimiento o importe."),
     ("Factura repetida", 11, "Revisar números de factura repetidos", "facturar", "Error de carga o duplicada."),
 ]
 _ETAPA = {t: (n, titulo, paso, por_que) for t, n, titulo, paso, por_que in ETAPAS}
@@ -231,7 +231,7 @@ def checklist(ctx: dict[str, Any], mes: str) -> list[dict[str, Any]]:
          "Cirugías realizadas en la Agenda que no están en ninguna facturación."),
         ("Todo facturado", len(_en_mes(c["sin_facturar"], mes)), True, "facturar", "Prestaciones sin N° de factura."),
         ("Datos completos", len(_en_mes(c["incompletos"], mes)), True, "cargar",
-         "Falta obra social, procedimiento, médico o importe."),
+         "Falta obra social, procedimiento o importe."),
         ("Sin números de factura repetidos", len(_en_mes(c["repetidas"], mes)), True, "facturar",
          "Un mismo N° de factura en más de una fila."),
         ("Facturas con vencimiento", len(_en_mes(c["sin_vencimiento"], mes)), True, "cobrar",

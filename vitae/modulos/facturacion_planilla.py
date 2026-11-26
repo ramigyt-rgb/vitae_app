@@ -75,7 +75,7 @@ def _estado(r: pd.Series, hoy: date, forzar_incompleta: bool, nota: str) -> tupl
     if forzar_incompleta and ff.incompleta(r):
         falta = [t for t, ok in (("obra social", r["_obra_social"] == "SIN OBRA SOCIAL"),
                                  ("procedimiento", r["_procedimiento"] == "SIN PROCEDIMIENTO"),
-                                 ("médico", r["_medico"] == "SIN MÉDICO"), ("importe", r["_monto"] <= 0)) if ok]
+                                 ("importe", r["_monto"] <= 0)) if ok]
         return "falta " + ", ".join(falta), "ambar"
     texto, tono = ff.aviso(r, hoy)
     return texto, tono
