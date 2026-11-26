@@ -54,6 +54,8 @@ TONOS = {"rojo": ("#FBE4E4", "#8A1F1F"), "ambar": ("#FDF0DC", "#7A4B00"), "gris"
 def etapa(r: pd.Series) -> str:
     if r["_cancelado"]:
         return "anulado"
+    if r.get("_sin_cargo", False):
+        return "sin_cargo"
     if not r["_facturada"]:
         return "cargado"
     return "facturado" if r["_pendiente"] > 0.004 else "cobrado"
@@ -69,6 +71,8 @@ def aviso(r: pd.Series, hoy: date | None = None) -> tuple[str, str]:
     e = etapa(r)
     if e == "anulado":
         return "anulado", "gris"
+    if e == "sin_cargo":
+        return "no se factura", "gris"
     if e == "cargado":
         dias = r.get("_dias_plazo")
         if dias is None or pd.isna(dias):
@@ -107,7 +111,7 @@ def accion(r: pd.Series, incompleta: bool = False) -> tuple[str, str]:
 
 def incompleta(r: pd.Series) -> bool:
     return (r["_obra_social"] == "SIN OBRA SOCIAL" or r["_procedimiento"] == "SIN PROCEDIMIENTO"
-            or r["_monto"] <= 0)
+            or (r["_monto"] <= 0 and not r.get("_sin_cargo", False)))
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +211,8 @@ def pendiente_pago(x: pd.DataFrame) -> pd.Series:
     m = (x["_pendiente"] > 0.004) | x["_debito_abierto"]
     if "_facturada" in x.columns:
         m = m | ~x["_facturada"]
+    if "_sin_cargo" in x.columns:
+        m = m & ~x["_sin_cargo"]
     return m & ~x["_cancelado"]
 
 
@@ -539,8 +545,9 @@ def agregar_todas(st: Any, ctx: dict[str, Any], guardar: Callable[[pd.DataFrame]
 def _urgencia(x: pd.DataFrame) -> pd.Series:
     """0 = plazo vencido sin facturar / factura vencida / débito; 1 = por vencer; 2 = resto."""
     u = pd.Series(2, index=x.index)
-    u[(~x["_facturada"]) & x["_dias_plazo"].between(0, cf.AVISO_PRESENTACION)] = 1
-    u[((~x["_facturada"]) & (x["_dias_plazo"] < 0)) | x["_vencido"] | x["_debito_abierto"]] = 0
+    sin_f = ~x["_facturada"] & ~x["_sin_cargo"] if "_sin_cargo" in x.columns else ~x["_facturada"]
+    u[sin_f & x["_dias_plazo"].between(0, cf.AVISO_PRESENTACION)] = 1
+    u[(sin_f & (x["_dias_plazo"] < 0)) | x["_vencido"] | x["_debito_abierto"]] = 0
     return u
 
 
@@ -556,7 +563,7 @@ def resumen_obras(x: pd.DataFrame) -> pd.DataFrame:
     for os_, g in x.groupby("_obra_social"):
         num = g["_numero_factura"].astype(str).str.strip()
         filas.append({"Obra social": os_, "Prestaciones": len(g), "Importe": float(g["_monto"].sum()),
-                      "Para facturar": int((~g["_facturada"] & ~g["_cancelado"]).sum()),
+                      "Para facturar": int((~g["_facturada"] & ~g["_cancelado"] & ~g["_sin_cargo"]).sum()),
                       "Pendiente": float(g.loc[g["_facturada"], "_pendiente"].sum()),
                       "Vencidas": int(g["_vencido"].sum()), "Débitos": float(g.loc[g["_debito_abierto"], "_debito"].sum()),
                       "Conjuntas": int(num[num.isin(conj.index)].nunique()), "Urgencia": int(u[g.index].min()),
@@ -580,9 +587,13 @@ def grupos_factura(x: pd.DataFrame) -> list[tuple[str, list[int]]]:
     sin = x[num == ""]
     if len(sin):
         # Sin N°: lo pendiente (falta facturar) entra con lo pendiente; lo anulado va al final.
-        vivos, anulados = sin[pp[sin.index]], sin[~pp[sin.index]]
+        vivos, resto = sin[pp[sin.index]], sin[~pp[sin.index]]
         if len(vivos):
             grupos.append(("", list(vivos.index), 0, int(u[vivos.index].min()), float(vivos["_monto"].sum())))
+        sin_cargo = resto[~resto["_cancelado"]]  # donantes, particulares y S/C sin importe
+        if len(sin_cargo):
+            grupos.append(("", list(sin_cargo.index), 1, 9, 0.0))
+        anulados = resto[resto["_cancelado"]]
         if len(anulados):
             grupos.append(("", list(anulados.index), 2, 9, 0.0))
     grupos.sort(key=lambda t: (t[2], t[3], -t[4]))

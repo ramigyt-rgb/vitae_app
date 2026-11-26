@@ -60,6 +60,16 @@ def _txt(value: Any) -> str:
     return str(value).strip()
 
 
+def obra_sin_cargo(valor: Any) -> bool:
+    """Donantes, particulares y S/C: no se les factura a una obra social (a las donantes les paga la
+    institución; de las particulares todavía no hay registro), así que el importe no es obligatorio."""
+    t = _norm(valor)
+    if not t:
+        return False
+    return ("donant" in t or "particular" in t or "sin_cargo" in t or t in {"s_c", "sc"}
+            or t.startswith("s_c_") or t.endswith("_s_c") or "_s_c_" in t)
+
+
 def _norm(value: Any) -> str:
     txt = _txt(value).lower()
     txt = unicodedata.normalize("NFKD", txt)
@@ -274,6 +284,8 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     data["_debito"] = debito.where(~recuperado, 0.0)
     data.loc[cancelled, ["_monto", "_cobrado", "_pendiente"]] = 0.0
     data["_cancelado"] = cancelled
+    # Donantes, particulares y S/C sin importe: registro completo, no hay nada para facturar ni cobrar.
+    data["_sin_cargo"] = data["_obra_social"].map(obra_sin_cargo) & (data["_monto"] <= 0) & ~cancelled
 
     today = pd.Timestamp.today().normalize()
     data["_dias_vencido"] = (today - data["_vencimiento"]).dt.days
@@ -285,6 +297,8 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     def exec_state(row: pd.Series) -> str:
         if row["_cancelado"]:
             return "Anulado"
+        if row["_sin_cargo"]:
+            return "No se factura"
         if row["_pendiente"] <= 0 and row["_monto"] > 0:
             return "Cobrado"
         if row["_vencido"]:
@@ -436,7 +450,7 @@ def _filter_panel(data: pd.DataFrame, key: str) -> pd.DataFrame:
     obras = sorted(v for v in filtered["_obra_social"].dropna().astype(str).unique() if v)
     procs = sorted(v for v in filtered["_procedimiento"].dropna().astype(str).unique() if v)
     medicos = sorted(v for v in filtered["_medico"].dropna().astype(str).unique() if v)
-    estados = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe"]
+    estados = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura"]
     obra = f1.selectbox("Obra social", ["Todas"] + obras, key=f"{key}_os")
     proc = f2.selectbox("Procedimiento", ["Todos"] + procs, key=f"{key}_proc")
     med = f3.selectbox("Médico", ["Todos"] + medicos, key=f"{key}_med")
@@ -660,7 +674,8 @@ def _quality(df: pd.DataFrame, cols: dict[str, str | None]) -> tuple[pd.DataFram
     invoice_nonempty = active["_numero_factura"].astype(str).str.strip() != ""
     duplicate_invoice = invoice_nonempty & _mascara_repetida(active)
     checks = [
-        ("Sin importe", int((active["_monto"] <= 0).sum()), "Revisar filas con importe cero o no reconocido."),
+        ("Sin importe", int(((active["_monto"] <= 0) & ~active["_sin_cargo"]).sum()),
+         "Revisar filas con importe cero o no reconocido (donantes, particulares y S/C no cuentan)."),
         ("Sin fecha base", int(active["_fecha_base"].isna().sum()), "Impide análisis temporal y proyecciones."),
         ("Sin número de factura", int((~invoice_nonempty & (active["_monto"] > 0)).sum()), "Reduce trazabilidad administrativa."),
         ("Factura repetida", int(duplicate_invoice.sum()), "Validar duplicados antes de consolidar totales."),
@@ -860,7 +875,7 @@ _PERIODOS = [
     "Personalizado",
 ]
 
-_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe"]
+_ESTADOS = ["Cobrado", "Pendiente", "Vencido", "Anulado", "Sin importe", "No se factura"]
 
 _COLOR_ESTADO = {
     "Cobrado": VITAE_GREEN,
@@ -1245,7 +1260,7 @@ def _seccion_produccion(f: pd.DataFrame) -> None:
 
 
 _DESCRIPCION_CONTROLES = {
-    "Sin importe": "Filas con importe vacío, cero o que no se pudo leer.",
+    "Sin importe": "Filas con importe vacío, cero o que no se pudo leer (sin contar donantes, particulares y S/C).",
     "Sin fecha base": "Filas sin «mes»: no entran en ningún período ni gráfico mensual.",
     "Sin número de factura": "Filas con importe pero sin N° de factura.",
     "Factura repetida": "El mismo N° en obras sociales distintas, o la misma prestación dos veces (varios pacientes "
@@ -1261,7 +1276,7 @@ def _mascaras_calidad(f: pd.DataFrame) -> dict[str, pd.Series]:
     a = f[~f["_cancelado"]]
     con_factura = a["_numero_factura"].astype(str).str.strip() != ""
     return {
-        "Sin importe": a["_monto"] <= 0,
+        "Sin importe": (a["_monto"] <= 0) & ~a["_sin_cargo"],
         "Sin fecha base": a["_fecha_base"].isna(),
         "Sin número de factura": ~con_factura & (a["_monto"] > 0),
         "Factura repetida": con_factura & _mascara_repetida(a),
