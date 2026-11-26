@@ -248,11 +248,13 @@ def planes(d: pd.DataFrame, hoy: date | None = None) -> pd.DataFrame:
     x = c.assign(vista=[estado_vista(e, p, hoy) for e, p in zip(c["estado"], c["periodo"])])
     filas = []
     for (emp, uni, acr, ide), g in x.groupby(["empresa", "unidad", "acreedor", "identificador"], sort=False):
+        tipo_g = g["tipo_financiacion"].iloc[0] if g["tipo_financiacion"].iloc[0] in ("Plan de pago", "Préstamo") \
+            else tipo_de(acr)
         pend = g[g["estado"] != PAGADA]
         atr = g[g["vista"].isin(["Atrasada", IMPAGA])]
         prox = pend[pend["periodo"] >= ma].sort_values("periodo")
         filas.append({
-            "empresa": emp, "unidad": uni, "acreedor": acr, "identificador": ide, "tipo": tipo_de(acr),
+            "empresa": emp, "unidad": uni, "acreedor": acr, "identificador": ide, "tipo": tipo_g,
             "cuotas": len(g), "pagadas": int((g["estado"] == PAGADA).sum()), "pendientes": len(pend),
             "atrasadas": len(atr), "total": float(g["importe_cuota"].sum()),
             "pagado": float(g.loc[g["estado"] == PAGADA, "importe_cuota"].sum()),
@@ -265,11 +267,28 @@ def planes(d: pd.DataFrame, hoy: date | None = None) -> pd.DataFrame:
     return pd.DataFrame(filas, columns=cols)
 
 
+def desde_planilla(hoy: date | None = None) -> str:
+    """Primer mes visible de la planilla: 3 meses antes del actual (ago-26 en noviembre 2026)."""
+    return str(pd.Period(mes_actual(hoy), freq="M") - 3)
+
+
+def total_planilla(d: pd.DataFrame, desde: str, empresa: str | None = None, tipo: str | None = None) -> float:
+    """Como la columna TOTAL de la planilla: todas las cuotas desde ``desde`` (pagadas o no)."""
+    c = cuotas(d)
+    c = c[c["periodo"] >= desde]
+    if empresa:
+        c = c[c["empresa"] == empresa]
+    if tipo:
+        c = c[c["tipo_financiacion"] == tipo]
+    return round(float(c["importe_cuota"].sum()), 2)
+
+
 def resumen(d: pd.DataFrame, hoy: date | None = None) -> dict[str, Any]:
     """Para la pantalla y el Panel general."""
     p = planes(d, hoy)
     c = cuotas(d)
     ma = mes_actual(hoy)
+    desde = desde_planilla(hoy)
     del_mes = c[c["periodo"] == ma]
     out: dict[str, Any] = {
         "hay": not c.empty, "pendiente": float(p["pendiente"].sum()) if len(p) else 0.0,
@@ -280,12 +299,15 @@ def resumen(d: pd.DataFrame, hoy: date | None = None) -> dict[str, Any]:
         "cuota_mes_pagada": float(del_mes.loc[del_mes["estado"] == PAGADA, "importe_cuota"].sum()),
         "por_empresa": {}, "por_tipo": {},
     }
+    out["desde"] = desde
     for e in EMPRESAS:
         pe = p[p["empresa"] == e]
         out["por_empresa"][e] = {"pendiente": float(pe["pendiente"].sum()), "planes": int((pe["pendiente"] > 0.004).sum()),
-                                 "cuota_mes": float(pe["cuota_mes"].sum())}
+                                 "cuota_mes": float(pe["cuota_mes"].sum()), "total": total_planilla(d, desde, e)}
     for t in ("Plan de pago", "Préstamo"):
         out["por_tipo"][t] = float(p.loc[p["tipo"] == t, "pendiente"].sum()) if len(p) else 0.0
+    out["prestamos_total"] = total_planilla(d, desde, tipo="Préstamo")
+    out["total"] = total_planilla(d, desde)
     ultimo = c.loc[c["estado"] != PAGADA, "periodo"].max() if len(c) else ""
     out["termina"] = ultimo if isinstance(ultimo, str) else ""
     return out
@@ -432,7 +454,7 @@ def leer_excel(contenido: bytes, hoja: str | None = None) -> tuple[dict[str, Any
             "cols_ocultas": cols_ocultas, "hoja": ws.title}, hojas
 
 
-def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = False, incluir_meses_ocultos: bool = True,
+def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = True, incluir_meses_ocultos: bool = True,
                   pasados_sin_color_pagados: bool = True, hoy: date | None = None) -> dict[str, Any]:
     """La planilla → cuotas, adelantos y controles (TOTALES por mes y total por empresa)."""
     valores, colores = m["valores"], m["colores"]
@@ -462,6 +484,9 @@ def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = False, inc
             continue
         primera = min(meses_f)
         ultima_mes = max(meses_f)
+        # Un bloque titulado PRÉSTAMOS (en las filas de arriba) es de préstamos.
+        titulo = " ".join(_sin_acentos(v) for f_ in valores[max(0, r - 3):r + 1] for v in f_[:primera + 1])
+        es_prestamo = "prestamo" in titulo
         etiquetas = list(range(primera))
         bloque: list[dict[str, Any]] = []
         ocultas_suma: dict[str, float] = {}
@@ -475,7 +500,8 @@ def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = False, inc
             if any(t.startswith("totales") or t == "total" for t in txt):
                 tot = {meses_f[j]: _n(fila[j]) for j in meses_f if j < len(fila) and fila[j] not in (None, "")}
                 derecha = [(j, v) for j, v in enumerate(fila) if j > ultima_mes]
-                etiqueta = next((_texto(v) for j, v in derecha if isinstance(v, str) and "plan" in _sin_acentos(v)), "")
+                etiqueta = next((_texto(v) for j, v in derecha if isinstance(v, str) and
+                                 ("plan" in _sin_acentos(v) or "prestamo" in _sin_acentos(v))), "")
                 monto = next((_n(v) for j, v in derecha if isinstance(v, (int, float)) or numero(v) is not None), None)
                 controles.append({"filas": bloque, "totales": tot, "etiqueta": etiqueta, "total_derecha": monto,
                                   "ocultas": ocultas_suma,
@@ -515,7 +541,8 @@ def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = False, inc
                     est = PAGADA if (pasados_sin_color_pagados and per < ma) else PENDIENTE
                 cuotas_l.append({"id_registro": _nuevo_id(), "registro_clase": CUOTA, "empresa": empresa,
                                  "unidad": unidad_actual.upper(), "acreedor": acreedor, "identificador": ident,
-                                 "tipo_financiacion": tipo_de(acreedor), "periodo": per, "importe_cuota": round(imp, 2),
+                                 "tipo_financiacion": "Préstamo" if es_prestamo else tipo_de(acreedor),
+                                 "periodo": per, "importe_cuota": round(imp, 2),
                                  "estado": est, "fecha_pago": "", "observaciones": "", "fuente": "Planilla",
                                  "updated_at": "", "_fila": r})
             bloque.append({"fila": r, "unidad": unidad_actual, "empresa": empresa})
@@ -524,6 +551,8 @@ def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = False, inc
     # Empresa del bloque: por la unidad, o por la etiqueta «PLANES DE PAGOS VM/VMR» de los totales.
     for ctl in controles:
         filas_b = {b["fila"] for b in ctl["filas"]}
+        if "prestamo" in _sin_acentos(ctl["etiqueta"]):
+            df.loc[df["_fila"].isin(filas_b), "tipo_financiacion"] = "Préstamo"
         emp_lbl = empresa_de(ctl["etiqueta"])
         if emp_lbl:
             m_ = df["_fila"].isin(filas_b) & (df["empresa"] == "")
@@ -544,9 +573,13 @@ def leer_planilla(m: dict[str, Any], *, incluir_filas_ocultas: bool = False, inc
                                  "Planilla": ctl["totales"][per], "Vitae": app, "En filas ocultas": oc,
                                  "Coincide": abs(app + oc - ctl["totales"][per]) < 0.02})
         if ctl["total_derecha"] is not None:
+            vis = ctl["meses_visibles"]
+            desde_v = min(vis) if vis else ""
+            app_tot = round(float(x.loc[x["periodo"] >= desde_v, "importe_cuota"].sum()), 2)
+            oc_tot = round(sum(v for per, v in ctl["ocultas"].items() if per >= desde_v), 2)
             totales_emp.append({"Empresa": ctl["empresa"], "Etiqueta": ctl["etiqueta"],
-                                "Planilla": ctl["total_derecha"], "Vitae": round(float(x["importe_cuota"].sum()), 2),
-                                "En filas ocultas": round(sum(ctl["ocultas"].values()), 2)})
+                                "Desde": etiqueta_mes(desde_v), "Planilla": ctl["total_derecha"], "Vitae": app_tot,
+                                "En filas ocultas": oc_tot})
     return {"cuotas": df.drop(columns="_fila").reset_index(drop=True), "adelantos": pd.DataFrame(adelantos, columns=COLUMNAS),
             "control": pd.DataFrame(control_rows), "totales": pd.DataFrame(totales_emp), "filas_ocultas_omitidas": omitidas}
 
@@ -691,12 +724,19 @@ _CSS = """<style>
 </style>"""
 
 
-def html_grilla(d: pd.DataFrame, empresa: str, meses_v: list[str], hoy: date | None = None) -> str:
-    imp, est = grilla(d, empresa, meses_v)
-    if imp.empty:
+def html_grilla(d: pd.DataFrame, empresa: str, meses_v: list[str], hoy: date | None = None,
+                mostrar_terminados: bool = False) -> str:
+    """La grilla como la planilla. Los planes terminados (todo pagado, como las filas ocultas) no se
+    muestran salvo que se pida, pero los TOTALES los incluyen, igual que en la planilla."""
+    imp_todo, est = grilla(d, empresa, meses_v)
+    if imp_todo.empty:
         return f'<div class="pl-sub">Sin planes de {html.escape(NOMBRE_EMPRESA[empresa])}.</div>'
     ma = mes_actual(hoy)
     pl = planes(d, hoy).set_index("clave")
+    terminados = [p_ for p_ in imp_todo.index if p_ in pl.index and pl.loc[p_, "pendiente"] <= 0.004
+                  and pl.loc[p_, "hasta"] < ma]
+    imp = imp_todo if mostrar_terminados else imp_todo.drop(index=terminados)
+    imp = imp[imp.notna().any(axis=1)]
     e = html.escape
     cab = ('<tr><th class="l fijo">Plan</th>' + "".join(f'<th>{e(etiqueta_mes(m))}</th>' for m in meses_v) +
            '<th>Pendiente</th></tr>')
@@ -719,8 +759,13 @@ def html_grilla(d: pd.DataFrame, empresa: str, meses_v: list[str], hoy: date | N
         cuerpo.append(f'<tr><td class="l fijo"><span class="pl-uni">{e(acr)} {e(ide)}</span>'
                       f'<div class="pl-sub">{e(uni)}</div></td>{"".join(celdas)}'
                       f'<td class="pend">{pesos(pend) if pend else "—"}</td></tr>')
-    tot = imp.sum(axis=0, min_count=1)
-    pend_tot = float(pl.loc[[p for p in imp.index if p in pl.index], "pendiente"].sum())
+    tot = imp_todo.sum(axis=0, min_count=1)
+    pend_tot = float(pl.loc[[p for p in imp_todo.index if p in pl.index], "pendiente"].sum())
+    ocultos = [p_ for p_ in terminados if p_ not in imp.index and imp_todo.loc[p_].notna().any()]
+    if ocultos:
+        cuerpo.append(f'<tr><td class="l fijo pl-sub" colspan="1">+ {len(ocultos)} plan(es) terminado(s)</td>' +
+                      "".join(f'<td class="pl-sub">{pesos(v) if pd.notna(v) else ""}</td>'
+                              for v in imp_todo.loc[ocultos].sum(axis=0, min_count=1)) + '<td></td></tr>')
     cuerpo.append('<tr class="tot"><td class="l fijo">TOTALES</td>' +
                   "".join(f'<td>{pesos(v) if pd.notna(v) else ""}</td>' for v in tot) +
                   f'<td class="pend">{pesos(pend_tot)}</td></tr>')
@@ -756,23 +801,25 @@ def render_planes(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFrame],
 
     rev = int(st.session_state.get(f"{k}rev", 0))
     r = resumen(d, hoy)
+    desde_t = etiqueta_mes(r["desde"])
     tarjetas_kpi([
-        ("Falta pagar", pesos(r["pendiente"], 0), f"{r['activos']} planes activos", "#8C2853"),
-        ("VM · Medical", pesos(r["por_empresa"]["VM"]["pendiente"], 0),
-         f"{r['por_empresa']['VM']['planes']} planes", "#4F7CAC"),
-        ("VMR · Reproductiva", pesos(r["por_empresa"]["VMR"]["pendiente"], 0),
-         f"{r['por_empresa']['VMR']['planes']} planes", "#5E9C76"),
+        ("Planes de pagos VMR", pesos(r["por_empresa"]["VMR"]["total"]),
+         f"Desde {desde_t} · falta pagar {pesos(r['por_empresa']['VMR']['pendiente'], 0)}", "#5E9C76"),
+        ("Planes de pagos VM", pesos(r["por_empresa"]["VM"]["total"]),
+         f"Desde {desde_t} · falta pagar {pesos(r['por_empresa']['VM']['pendiente'], 0)}", "#4F7CAC"),
+        ("Préstamos", pesos(r["prestamos_total"]),
+         f"Desde {desde_t} · falta pagar {pesos(r['por_tipo']['Préstamo'], 0)}", "#8C2853"),
         (f"Cuotas de {nombre_mes(ma).split()[0].lower()}", pesos(r["cuota_mes"], 0),
          f"Pagado {pesos(r['cuota_mes_pagada'], 0)}", "#C9895B"),
     ])
+    st.caption(f"Totales como la columna TOTAL de la planilla: todas las cuotas desde {desde_t} (pagadas y por pagar). "
+               f"Falta pagar en total: {pesos(r['pendiente'])} en {r['activos']} planes activos.")
     if r["atrasado"] > 0.5:
         st.markdown(f'<div style="background:#FFF3F3;border-left:4px solid #BD4B4B;border-radius:10px;padding:.5rem .8rem;'
                     f'margin:.2rem 0 .6rem">⚠️ {r["con_atraso"]} plan(es) con cuotas impagas o atrasadas: '
                     f'<b>{pesos(r["atrasado"])}</b>.</div>', unsafe_allow_html=True)
-    if r["por_tipo"]["Préstamo"] > 0.5:
-        st.caption(f"De lo que falta pagar: planes de pago {pesos(r['por_tipo']['Plan de pago'], 0)} · "
-                   f"préstamos {pesos(r['por_tipo']['Préstamo'], 0)}"
-                   + (f" · la última cuota pendiente es de {nombre_mes(r['termina']).lower()}." if r["termina"] else "."))
+    if r["termina"]:
+        st.caption(f"La última cuota pendiente es de {nombre_mes(r['termina']).lower()}.")
 
     if selector:
         seccion = selector("Sección", SECCIONES, key=f"{k}seccion")
@@ -800,11 +847,14 @@ def render_planes(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFrame],
                                file_name=f"planes_de_pago_{ma}.xlsx", key=f"{k}xls", icon=":material/download:",
                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                use_container_width=True)
+        terminados_v = st.toggle("Mostrar planes terminados", value=False, key=f"{k}terminados",
+                                 help="Los que ya se pagaron completos (en la planilla, filas ocultas).")
         st.markdown(LEYENDA, unsafe_allow_html=True)
         for emp in EMPRESAS:
-            st.markdown(f'<div class="pl-h">{html.escape(NOMBRE_EMPRESA[emp])} · falta pagar '
+            st.markdown(f'<div class="pl-h">{html.escape(NOMBRE_EMPRESA[emp])} · total desde {desde_t} '
+                        f'{pesos(r["por_empresa"][emp]["total"])} · falta pagar '
                         f'{pesos(r["por_empresa"][emp]["pendiente"])}</div>', unsafe_allow_html=True)
-            st.markdown(html_grilla(d, emp, meses_v, hoy), unsafe_allow_html=True)
+            st.markdown(html_grilla(d, emp, meses_v, hoy, terminados_v), unsafe_allow_html=True)
         return
 
     # ---- Este mes ----------------------------------------------------------
@@ -991,8 +1041,9 @@ def render_planes(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFrame],
                         key=f"{k}hoja") if len(hojas) > 1 else hojas[0]
     m = m0 if hoja == m0["hoja"] else leer_excel(contenido, hoja)[0]
     o1, o2, o3 = st.columns(3)
-    filas_oc = o1.toggle("Incluir filas ocultas", value=False, key=f"{k}imp_filas",
-                         help="Las filas ocultas suelen ser planes terminados.")
+    filas_oc = o1.toggle("Incluir filas ocultas", value=True, key=f"{k}imp_filas",
+                         help="Las filas ocultas suelen ser planes terminados: se traen (quedan en «Terminados») para "
+                              "que los totales den como la planilla.")
     meses_oc = o2.toggle("Incluir meses ocultos", value=True, key=f"{k}imp_meses",
                          help="Las columnas ocultas suelen ser meses anteriores: dan el historial de cada plan.")
     pasados = o3.toggle("Meses pasados sin color = pagados", value=True, key=f"{k}imp_pasados",
@@ -1027,8 +1078,8 @@ def render_planes(raw: pd.DataFrame | None, *, guardar: Callable[[pd.DataFrame],
                                 Planilla=tot["Planilla"].map(pesos), Vitae=tot["Vitae"].map(pesos),
                                 **{"En filas ocultas": tot["En filas ocultas"].map(pesos)}),
                      hide_index=True, use_container_width=True)
-        st.caption("Total de la derecha de la planilla contra todas las cuotas del bloque (importadas + filas ocultas). "
-                   "Si no coincide, suele ser porque la planilla suma meses fuera de la grilla.")
+        st.caption("Columna TOTAL de la planilla contra todas las cuotas del bloque desde el primer mes visible. Si no "
+                   "coincide, revisá el rango de la fórmula de ese TOTAL en la planilla (puede sumar meses ocultos).")
     prev = normalizar(pd.concat([leido["cuotas"], leido["adelantos"]], ignore_index=True))
     meses_prev = sorted(set(cuotas(prev)["periodo"]))
     with st.expander("Vista previa", expanded=True, icon=":material/visibility:"):
