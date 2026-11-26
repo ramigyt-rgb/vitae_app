@@ -311,6 +311,13 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     if not cols["cobrado"]:
         collected.loc[paid_by_state] = data.loc[paid_by_state, "_monto"]
 
+    # REGLA de la planilla de Facturación: estado «Completo» = pagado (cobro total); estado «Pendiente» = sin
+    # registro de cobro (nada cobrado, aunque tenga fecha de pago u otro dato). El estado manda.
+    est_completo = data["_estado_norm"].str.contains("completo", na=False)
+    est_pendiente = data["_estado_norm"].str.startswith("pendiente", na=False)
+    collected.loc[est_completo] = data.loc[est_completo, "_monto"]
+    collected.loc[est_pendiente] = 0.0
+
     data["_cobrado"] = collected.clip(lower=0, upper=data["_monto"])
     # Débitos (lo que la obra social pagó de menos): no es cobrado. Si se reclama, sigue pendiente;
     # si se aceptó (no se recupera), deja de ser deuda; si se recuperó, se cobró.
