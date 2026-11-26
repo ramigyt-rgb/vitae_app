@@ -94,7 +94,11 @@ def aviso(r: pd.Series, hoy: date | None = None) -> tuple[str, str]:
     if r["_debito_abierto"]:
         return f"débito {pesos(r['_debito'], 0)} · {(r['_debito_estado'] or 'a reclamar').lower()}", "rojo"
     if r["_monto"] <= 0.004:
-        return "facturada sin importe", "ambar"
+        # Sin importe: si la planilla dice «Completo», está pagada pero falta el importe; si no, es «Pendiente»
+        # = sin registro de cobro (regla de la planilla).
+        if r.get("_completo", False):
+            return "completa · sin importe", "ambar"
+        return "sin registro de cobro", "ambar"
     if e == "cobrado":
         return (f"cobrada el {_f(r['_fecha_pago'])}" if pd.notna(r.get("_fecha_pago")) else "cobrada"), "verde"
     v = r.get("_vencimiento")
