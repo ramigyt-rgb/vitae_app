@@ -211,6 +211,55 @@ def descartar(tabla: pd.DataFrame | None, filas: list[dict[str, Any]], empresa: 
                      ignore_index=True).astype(str)
 
 
+DIAS_MISMA_CIRUGIA = 3
+
+
+def procedimiento_parecido(a: Any, b: Any) -> bool:
+    """Mismo procedimiento aunque esté escrito distinto: igual, uno contenido en el otro, o la misma primera
+    palabra (p. ej. «HISTEROSCOPIA» y «HISTEROSCOPIA TERAPEUTICA»)."""
+    ta, tb = _proc_norm(a).split(), _proc_norm(b).split()
+    if not ta or not tb:
+        return False
+    return ta == tb or set(ta) <= set(tb) or set(tb) <= set(ta) or ta[0] == tb[0]
+
+
+def _mismo_procedimiento(a: Any, b: Any) -> bool:
+    """Estricto (para quitar duplicados): igual o uno contenido en el otro."""
+    ta, tb = set(_proc_norm(a).split()), set(_proc_norm(b).split())
+    return bool(ta) and bool(tb) and (ta == tb or ta <= tb or tb <= ta)
+
+
+def duplicados(d: pd.DataFrame) -> pd.DataFrame:
+    """Registros repetidos (por ejemplo, cargados dos veces desde la Agenda): misma paciente, fecha de prestación
+    a ±``DIAS_MISMA_CIRUGIA`` días y el mismo procedimiento (o parecido). Se queda el primero; sólo se proponen
+    para quitar las copias SIN N° de factura y que no están «Completo» (nada facturado ni cobrado)."""
+    if d is None or d.empty or "_prestacion" not in d.columns:
+        return pd.DataFrame() if d is None else d.iloc[0:0]
+    a = d[~d["_cancelado"]].copy()
+    if a.empty:
+        return a
+    a["_tk"] = a["_paciente"].map(_tokens)
+    a = a.sort_index()
+    quitar: list[Any] = []
+    vistos: list[tuple[Any, frozenset[str], Any, str]] = []
+    for i, r in a.iterrows():
+        t, f, pr_ = r["_tk"], r["_prestacion"], r["_procedimiento"]
+        removible = (_texto(r["_numero_factura"]) == "") and not bool(r.get("_completo", False))
+        dup = False
+        if t and pd.notna(f):
+            for j, tj, fj, prj in vistos:
+                misma = (len(t & tj) >= 2) if (len(t) >= 2 and len(tj) >= 2) else (t <= tj or tj <= t)
+                if misma and pd.notna(fj) and abs((f - fj).days) <= DIAS_MISMA_CIRUGIA and \
+                        _mismo_procedimiento(pr_, prj):
+                    dup = True
+                    break
+        if dup and removible:
+            quitar.append(i)
+        else:
+            vistos.append((i, t, f, pr_))
+    return d.loc[quitar]
+
+
 def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.DataFrame],
                         hoy: date | None = None, empresa: str | None = None,
                         historial: dict[str, str] | None = None, descartadas: set[str] | None = None) -> pd.DataFrame:
@@ -258,8 +307,17 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
         def misma_paciente(r: frozenset[str]) -> bool:
             return len(t & r) >= 2 if len(t) >= 2 and len(r) >= 2 else bool(t) and (t <= r or r <= t)
 
-        esta = any(misma_paciente(r) and (not pr_ or pr_ == proc_c)
-                   and (pd.isna(f) or abs((f - c["_fecha_dt"]).days) <= 62) for r, f, pr_ in registros)
+        def ya(r: frozenset[str], f: Any, pr_: str) -> bool:
+            if not misma_paciente(r):
+                return False
+            if pd.isna(f):
+                return True
+            dias = abs((f - c["_fecha_dt"]).days)
+            # misma cirugía aunque el procedimiento esté escrito distinto (±3 días), o el mismo procedimiento
+            # (o parecido) a 62 días o menos
+            return dias <= DIAS_MISMA_CIRUGIA or (dias <= 62 and (not pr_ or procedimiento_parecido(pr_, proc_c)))
+
+        esta = any(ya(r, f, pr_) for r, f, pr_ in registros)
         if not esta:
             faltan.append({"Fecha": c["_fecha_dt"], "Paciente": c["paciente"], "Procedimiento": c["procedimiento"],
                            "Médico": c["medico"], "Obra social": c["obra_social"],
@@ -295,7 +353,8 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         vacio = pd.DataFrame()
         return {k: vacio for k in ("sin_facturar_vencido", "sin_facturar_proximo", "sin_facturar", "vencidas",
                                    "por_vencer", "sin_vencimiento", "debitos", "parcial_sin_debito", "repetidas",
-                                   "incompletos", "fecha_sin_numero")} | {"agenda": agenda, "salteados": vacio}
+                                   "incompletos", "fecha_sin_numero", "duplicados")} | {"agenda": agenda,
+                                                                                        "salteados": vacio}
     h = _hoy(hoy)
     a = d[~d["_cancelado"]]
     sin_f = a[~a["_facturada"] & ~a["_sin_cargo"] & ~a["_incluida"]]
@@ -315,6 +374,7 @@ def controles(d: pd.DataFrame, agenda: pd.DataFrame, hoy: date | None = None) ->
         "repetidas": _repetidas(a, rep),
         # Fecha de factura o vencimiento sin N° (no cuentan como facturadas: hay que limpiarlas o poner el N°)
         "fecha_sin_numero": a[a["_fecha_sin_numero"]] if "_fecha_sin_numero" in a.columns else a.iloc[0:0],
+        "duplicados": duplicados(a),
         # El médico no es obligatorio: criopreservaciones y mantenimientos no llevan profesional.
         # Donantes, particulares y S/C no llevan importe (``_sin_cargo``).
         "incompletos": a[(a["_obra_social"] == "SIN OBRA SOCIAL") | (a["_procedimiento"] == "SIN PROCEDIMIENTO")

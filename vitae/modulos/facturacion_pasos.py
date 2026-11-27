@@ -83,7 +83,7 @@ def cuentas(ctx: dict[str, Any]) -> dict[str, int]:
 
     hoy_ = ctx["hoy"]
     del_mes = fm.registros(ctx["d"], f"{hoy_.year:04d}-{hoy_.month:02d}")
-    return {"cargar": int(len(c["agenda"])) + n("incompletos", "repetidas", "fecha_sin_numero"),
+    return {"cargar": int(len(c["agenda"])) + n("incompletos", "repetidas", "fecha_sin_numero", "duplicados"),
             "facturar": n("sin_facturar"), "cobrar": n("vencidas", "por_vencer", "sin_vencimiento"),
             "debitos": n("debitos", "parcial_sin_debito")}
 
@@ -304,6 +304,7 @@ def render_pasos(*, module_name: str, cfg: dict[str, Any], table: str, empresa: 
                         'completos.</div>', unsafe_allow_html=True)
         fz.render_solicitudes(st, ctx, guardar=guardar, guardar_tabla=guardar_tabla, descartadas=descartadas, key=key,
                               usuario=usuario)
+        _duplicados(st, ctx, guardar=guardar, key=key)
         _fechas_sin_numero(st, ctx, guardar=guardar, key=key)
         x, _, _ = cf.grupo(c, "Completar datos")
         if len(x):
@@ -652,6 +653,28 @@ def cambios_fechas_sin_numero(x: pd.DataFrame) -> list[dict[str, Any]]:
         if pd.notna(x.loc[i, "_vencimiento"]):
             out.append({"fila": int(i), "campo": "vencimiento", "valor": ""})
     return out
+
+
+def _duplicados(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
+    """Registros repetidos (misma paciente, fecha y procedimiento): quitar las copias sin N° ni cobro."""
+    x = ctx["c"].get("duplicados")
+    if x is None or x.empty:
+        return
+    st.markdown(f'<div class="cf-tit">Registros duplicados · {len(x)}</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns([3, 1.6], vertical_alignment="center")
+    c1.markdown('<div class="fp-sub">Repiten a otro registro (misma paciente, fecha y procedimiento). Se queda el '
+                'primero; estas copias no tienen N° de factura ni cobro.</div>', unsafe_allow_html=True)
+    if ctx.get("puede_editar", True) and c2.button(f"Quitar los {len(x)} duplicados", key=f"{key}_dup_quitar",
+                                                   use_container_width=True, type="primary",
+                                                   icon=":material/delete_sweep:"):
+        try:
+            guardar(ctx["raw"].drop(index=[i for i in x.index if i in ctx["raw"].index]).reset_index(drop=True))
+        except Exception as exc:
+            st.error(f"No se pudo guardar: {exc}")
+            return
+        st.toast(f"{len(x)} duplicado(s) quitado(s)", icon=":material/check_circle:")
+        st.rerun()
+    st.markdown(fz.html_planilla(x, ctx["hoy"], "Por paciente", titulo="Duplicados"), unsafe_allow_html=True)
 
 
 def _fechas_sin_numero(st: Any, ctx: dict[str, Any], *, guardar: Callable[[pd.DataFrame], Any], key: str) -> None:
