@@ -41,7 +41,8 @@ except Exception:  # pragma: no cover
 TABLA_CONOCIMIENTO = "ia_conocimiento"
 # Pestañas que la IA NUNCA lee (datos de acceso de usuarios).
 # (pacientes: datos sensibles de salud, Ley 25.326 → la IA no los lee).
-_TABLAS_PROHIBIDAS = {"usuarios_vitae", "pacientes", "pacientes_accesos", "mamografia"}  # mamografia: nombres de pacientes
+_TABLAS_PROHIBIDAS = {"usuarios_vitae", "pacientes", "pacientes_accesos", "mamografia",
+                      "fm_facturas", "fm_pagos", "fm_profesionales"}  # fm_*: Facturación Médicos (del profesional)  # mamografia: nombres de pacientes
 # Pestañas adicionales útiles fuera de MODULES.
 _TABLAS_EXTRA = {"Farmacia · movimientos": "farmacia_movimientos", "Gine Vitae · formularios web": "gine_vitae_formularios"}
 _MODULO_DE_EXTRA = {"Farmacia · movimientos": "Farmacia", "Gine Vitae · formularios web": "Gine Vitae"}
@@ -105,6 +106,7 @@ class _Datos:
         self._extra = extra or {}
         self._permitidos = permitidos
         self.consultas: list[str] = []
+        self.usuario = ""  # quien pregunta (algunas acciones son sólo de rchar)
 
     def modulos(self) -> dict[str, str]:
         nombres = {n: c.get("table", "") for n, c in MODULES.items()
@@ -464,7 +466,8 @@ _PRESENTACION = {
                  "VM · Vitae Medical). Conocés todos sus módulos y los consultás con herramientas."),
     "chat": ("Sos Luz, la asistente virtual de Vitae (VMR · Vitae Medicina Reproductiva y VM · Vitae Medical).\n"
              "Charlás por un chat chiquito, como alguien más del equipo que conoce todos los módulos y los consulta\n"
-             "con herramientas."),
+             "con herramientas. También sos la asistente de farmacia: sabés todo del stock interno (Farmacia) y del\n"
+             "stock dentro de Quirófano, y ayudás con todo lo del área."),
 }
 
 _RESPONDER_CHAT = """CÓMO RESPONDER (es un chat, no un informe)
@@ -504,7 +507,7 @@ def _cliente_y_modelos():
 def responder(pregunta: str, modulo_actual: str | None = None, historial: list[dict[str, str]] | None = None,
               datos_visibles: dict[str, pd.DataFrame] | None = None, cliente=None, modelos: list[str] | None = None,
               modulos_permitidos: set[str] | None = None, estilo: str = "analista",
-              acciones: list[dict[str, Any]] | None = None, memoria: Any = None) -> str:
+              acciones: list[dict[str, Any]] | None = None, memoria: Any = None, usuario: str = "") -> str:
     """Responde una pregunta usando herramientas de consulta sobre todos los datos.
 
     ``estilo``: "analista" (respuestas completas, con fuente) o "chat" (Luz:
@@ -525,6 +528,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
     if cliente is None or modelos is None:
         cliente, modelos = _cliente_y_modelos()
     datos = _Datos(extra=datos_visibles, permitidos=modulos_permitidos)
+    datos.usuario = str(usuario or "").strip().lower()
     herramientas = crear_herramientas(datos)
     from vitae.ia import experta_facturacion as _experta_fx
 
@@ -532,7 +536,10 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
 
     expertas = _experta_fx.herramientas(datos)
     expertas_caja = _experta_caja.herramientas(datos)
-    herramientas = herramientas + expertas + expertas_caja
+    from vitae.ia import experta_farmacia as _experta_farmacia
+
+    expertas_farmacia = _experta_farmacia.herramientas(datos)
+    herramientas = herramientas + expertas + expertas_caja + expertas_farmacia
     de_accion: list[Callable[..., str]] = []
     if acciones is not None:
         from vitae.ia import acciones as _acciones
@@ -559,6 +566,7 @@ def responder(pregunta: str, modulo_actual: str | None = None, historial: list[d
         f"{_instrucciones(estilo)}\n\n"
         + (f"{_experta_fx.INSTRUCCIONES}\n\n" if expertas else "")
         + (f"{_experta_caja.INSTRUCCIONES}\n\n" if expertas_caja else "")
+        + (f"{_experta_farmacia.INSTRUCCIONES}\n\n" if expertas_farmacia else "")
         + (f"{_acciones.instrucciones(de_accion)}\n\n" if de_accion else "")
         + bloque_memoria
         + f"HOY: {['lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado', 'domingo'][hoy.weekday()]} "

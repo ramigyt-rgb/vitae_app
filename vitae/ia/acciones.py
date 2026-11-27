@@ -938,6 +938,15 @@ EJECUTORES: dict[str, Callable[..., str]] = {
 }
 
 
+def _ejecutores_farmacia() -> None:
+    from vitae.ia import experta_farmacia
+
+    EJECUTORES.update(experta_farmacia.EJECUTORES)
+
+
+_ejecutores_farmacia()
+
+
 def ejecutar(accion: dict[str, Any], leer: Callable[[str], pd.DataFrame],
              guardar: Callable[[str, pd.DataFrame], Any]) -> str:
     funcion = EJECUTORES.get(accion.get("tipo", ""))
@@ -1001,6 +1010,10 @@ def instrucciones(herramientas_ofrecidas: list[Callable[..., str]]) -> str:
         texto += "\n" + INSTRUCCIONES_FACTURACION
     if nombres & {"proponer_movimiento_caja", "proponer_correccion_caja"}:
         texto += "\n" + INSTRUCCIONES_CAJA
+    if nombres & {"proponer_movimiento_farmacia", "proponer_articulo_farmacia"}:
+        from vitae.ia import experta_farmacia
+
+        texto += "\n" + experta_farmacia.INSTRUCCIONES_ACCIONES
     if "proponer_modificacion_registro" in nombres:
         from vitae.ia import editora
 
@@ -1216,6 +1229,10 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
         out += [proponer_movimiento_caja, proponer_correccion_caja]
         if "VMR" in cajas_ok:
             out += [proponer_transferencia_caja, proponer_frasco_caja]
+    # Farmacia: cargar y editar, sólo cuando lo pide rchar (vitae/ia/experta_farmacia.py).
+    from vitae.ia import experta_farmacia
+
+    out += experta_farmacia.herramientas_accion(datos, acciones)
     # Cualquier dato de cualquier módulo (con clave): vitae/ia/editora.py
     from vitae.ia import editora
 

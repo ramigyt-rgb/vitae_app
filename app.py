@@ -28,9 +28,11 @@ from vitae.vistas import (
     render_facturacion_pro as render_modulo,
     render_configuracion,
     render_pacientes_pagina,
+    render_facturacion_medicos_pagina,
     require_vitae_login,
     _auth_can_access,
     _auth_ve_pacientes,
+    _auth_ve_facturacion_medicos,
 )
 from vitae.modulos.facturacion import render_facturacion_ultra_pro
 
@@ -99,6 +101,16 @@ def _armar_menu() -> dict[str, list]:
     if ve_pacientes:
         menu["Pacientes"] = [st.Page(render_pacientes_pagina, title="Pacientes", icon=":material/groups:",
                                      url_path="pacientes", default=falta_inicio)]
+        falta_inicio = False
+    # Facturación Médicos: información de los profesionales, aparte de Vitae (sólo rchar; fuera de MODULES).
+    try:
+        ve_fm = _auth_ve_facturacion_medicos()
+    except Exception:
+        ve_fm = False
+    if ve_fm:
+        menu["Profesionales"] = [st.Page(render_facturacion_medicos_pagina, title="Facturación Médicos",
+                                         icon=":material/stethoscope:", url_path="facturacion-medicos",
+                                         default=falta_inicio)]
         falta_inicio = False
     ubicados: set[str] = set()
     for grupo, modulos in GRUPOS:

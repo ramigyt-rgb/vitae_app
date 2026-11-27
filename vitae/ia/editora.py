@@ -21,7 +21,9 @@ from vitae.ia.acciones import (_escribir_fecha, _escribir_importe, _escribir_mes
 
 MAX_FILAS = 100            # una sola acción no toca más de esto
 _PROHIBIDAS = {"usuarios_vitae", "luz_memoria", "luz_chat", "ia_conocimiento", "pacientes", "pacientes_accesos",
-               "mamografia"}
+               "mamografia", "fm_facturas", "fm_pagos", "fm_profesionales"}
+# Farmacia: Luz carga y edita sólo cuando lo pide rchar (con sus propias herramientas: vitae/ia/experta_farmacia.py).
+_SOLO_RCHAR = {"farmacia", "farmacia_movimientos"}
 TIPOS = ("datos_alta", "datos_cambio", "datos_baja")
 
 _PISTAS_FECHA = ("fecha", "vencim", "vto", "nacim", "ingreso", "egreso", "desde", "hasta")
@@ -364,6 +366,8 @@ def herramientas(datos: Any, acciones: list[dict[str, Any]], hoy: date | None = 
         tabla = datos.modulos().get(nombre, "")
         if not _tabla_ok(tabla):
             return f"{nombre} no se puede modificar desde el chat."
+        if tabla in _SOLO_RCHAR and str(getattr(datos, "usuario", "") or "").strip().lower() != "rchar":
+            return f"{nombre}: sólo Ramiro me autoriza a cargar o editar."
         try:
             # La planilla tal cual (no la vista de pantalla): así la huella coincide al guardar.
             raw = datos.crudo(nombre) if hasattr(datos, "crudo") else datos.df(nombre)
