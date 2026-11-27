@@ -80,6 +80,8 @@ def aviso(r: pd.Series, hoy: date | None = None) -> tuple[str, str]:
     if e == "sin_cargo":
         return "no se factura", "gris"
     if e == "incluida":
+        if r.get("_factura_asociada", ""):
+            return f"va en la factura {r['_factura_asociada']}", "gris"
         if r.get("_te_aspiracion", False):
             return "va en la aspiración folicular", "gris"
         return "importe en la factura conjunta", "gris"

@@ -78,7 +78,8 @@ def _estado(r: pd.Series, hoy: date, forzar_incompleta: bool, nota: str) -> tupl
                                  ("importe", r["_monto"] <= 0 and not r["_sin_cargo"] and not r["_incluida"])) if ok]
         return "falta " + ", ".join(falta), "ambar"
     texto, tono = ff.aviso(r, hoy)
-    if not r["_facturada"] and not r["_cancelado"] and not r["_sin_cargo"] and r["_monto"] <= 0.004:
+    if (not r["_facturada"] and not r["_cancelado"] and not r["_sin_cargo"] and not r.get("_incluida", False)
+            and r["_monto"] <= 0.004):
         texto += " · falta importe"
         tono = "rojo" if tono == "rojo" else "ambar"
     return texto, tono
@@ -693,10 +694,12 @@ def celdas_registro(r: pd.Series, hoy: date) -> list[tuple[str, dict[str, Any]]]
         (_f(r.get("_prestacion")), {"tenue": tenue}),
         (r["_paciente"] or "Sin nombre", {"chico": detalle, "tenue": tenue}),
         ("" if r["_obra_social"] == "SIN OBRA SOCIAL" else r["_obra_social"], {"tenue": tenue}),
-        (_texto(r["_numero_factura"]) or "—", {"tenue": tenue}),
+        (_texto(r["_numero_factura"]) or (f"→ {r['_factura_asociada']}" if r.get("_factura_asociada", "") else "—"),
+         {"tenue": tenue}),
         (_f(r.get("_fecha_factura")) if r["_facturada"] else "", {"tenue": tenue}),
         (_f(r.get("_vencimiento")) if r["_facturada"] else "", {"tenue": tenue, "color": COLOR["rojo"] if venc_rojo else ""}),
-        (pesos(r["_monto"]) if r["_monto"] else ("en la aspiración" if r.get("_te_aspiracion", False) else
+        (pesos(r["_monto"]) if r["_monto"] else ("en la factura" if r.get("_factura_asociada", "") else
+                                                 "en la aspiración" if r.get("_te_aspiracion", False) else
                                                  "en el total" if r.get("_incluida", False) else "—"),
          {"num": True, "tenue": tenue}),
         (pesos(saldo) if saldo is not None else "", {"num": True, "tenue": tenue,
