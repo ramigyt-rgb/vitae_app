@@ -994,6 +994,19 @@ _CSS = """
  .cj-titulo{flex-direction:column;align-items:flex-start;gap:.1rem;padding:.55rem .7rem}
 }
 .cj-movil{display:none}
+div[class*="st-key-cjblk_"]{border:1px solid #E8E3E6;border-radius:12px;overflow:hidden;background:#fff;gap:0 !important;
+ margin-bottom:.9rem}
+div[class*="st-key-cjblk_"] div[data-testid="stVerticalBlock"]{gap:0 !important}
+div[class*="st-key-cjblk_"] div[data-testid="stHorizontalBlock"]{gap:0 !important;flex-wrap:nowrap !important;
+ align-items:stretch}
+div[class*="st-key-cjblk_"] div[data-testid="stColumn"]{min-width:0 !important}
+div[class*="st-key-cjblk_"] div[data-testid="stColumn"]:first-child{flex:1 1 auto !important;width:auto !important}
+div[class*="st-key-cjblk_"] div[data-testid="stColumn"]:last-child{flex:0 0 40px !important;width:40px !important;
+ display:flex;align-items:center;justify-content:center;border-top:1px solid #F1ECEF}
+div[class*="st-key-cjblk_"] div[data-testid="stMarkdownContainer"] p{margin:0}
+div[class*="st-key-cjblk_"] div[data-testid="stElementContainer"]{margin:0}
+div[class*="st-key-cjrec_"] button{min-height:1.6rem;height:1.6rem;padding:0 .35rem;border-radius:6px;color:#8C2853}
+div[class*="st-key-cjrec_"] button:hover{background:#F7E9EF}
 </style>
 """
 
@@ -1011,6 +1024,14 @@ def _fila(fecha: str, desc: str, ent: str, sal: str, sdo: str, quien: str, *, cl
 
 def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str | None = None,
                   buscar: str = "", titulo: str = "", col_quien: str = "Quién") -> str:
+    cab, filas, pie = planilla_partes(d, mes, moneda, rubro=rubro, buscar=buscar, titulo=titulo, col_quien=col_quien)
+    return '<div class="cj-tabla">' + cab + "".join(h for _, h, _ in filas) + pie + "</div>"
+
+
+def planilla_partes(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str | None = None,
+                    buscar: str = "", titulo: str = "",
+                    col_quien: str = "Quién") -> tuple[str, list[tuple[Any, str, bool]], str]:
+    """(encabezado, [(índice de la fila, html, ¿lleva recibo?)], pie) de la planilla del mes."""
     r = resumen_mes(d, mes, moneda)
     m_ = _movs(d)
     filas = m_[(m_["_mes"] == mes) & (m_["_moneda"] == moneda) & (~m_["_inicial"])].sort_values(
@@ -1023,7 +1044,8 @@ def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str 
         mascara = [b in _sin_acentos(f"{c} {q} {o}") for c, q, o in zip(filas["_concepto"], filas["_quien"], filas["_obs"])]
         filas = filas[pd.Series(mascara, index=filas.index, dtype=bool)]  # lista vacía ≠ «ninguna columna»
     din = lambda v: dinero(v, moneda)  # noqa: E731
-    partes = ['<div class="cj-tabla">']
+    partes: list[str] = []
+    filas_html: list[tuple[Any, str, bool]] = []
     if titulo:
         partes.append(f'<div class="cj-titulo"><b>{html.escape(titulo)}</b>'
                       f'<span>{r["movimientos"]} movimientos · saldo {din(r["saldo"])}</span></div>')
@@ -1043,9 +1065,13 @@ def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str 
         movil = (f'<span class="cj-ent">+{din(f["_entrada"])}</span>' if f["_entrada"] else "") + \
                 (f'<span class="cj-sal">−{din(f["_salida"])}</span>' if f["_salida"] else "")
         meta = " · ".join(x for x in (fecha, f["_quien"], f["_rubro"] if f["_rubro"] != GENERAL else "") if x)
-        partes.append(_fila(fecha, f["_concepto"] or "(sin descripción)", din(f["_entrada"]) if f["_entrada"] else "",
-                            din(f["_salida"]) if f["_salida"] else "", "" if filtrado else din(corrido), f["_quien"],
-                            estilo=estilo, movil=movil, meta=meta, nota=f["_obs"]))
+        filas_html.append((f.name, _fila(fecha, f["_concepto"] or "(sin descripción)",
+                                         din(f["_entrada"]) if f["_entrada"] else "",
+                                         din(f["_salida"]) if f["_salida"] else "", "" if filtrado else din(corrido),
+                                         f["_quien"], estilo=estilo, movil=movil, meta=meta, nota=f["_obs"]),
+                           bool(f["_entrada"] > 0.004 and not f["_transferencia"])))
+    cabecera = "".join(partes)
+    partes = []
     if filtrado:
         ent, sal = float(filas["_entrada"].sum()), float(filas["_salida"].sum())
         partes.append(_fila("", f"TOTAL ({len(filas)})", din(ent), din(sal), "", "", clase="cj-tot",
@@ -1055,8 +1081,7 @@ def planilla_html(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, rubro: str 
         partes.append(_fila("", "TOTAL", din(tot_e), din(r["salidas"]), "", "", clase="cj-tot",
                             movil="", meta=f"Entradas {din(tot_e)} · Salidas {din(r['salidas'])}"))
         partes.append(_fila("", "SALDO", din(r["saldo"]), "", "", "", clase="cj-saldo", movil=din(r["saldo"])))
-    partes.append("</div>")
-    return "".join(partes)
+    return cabecera, filas_html, "".join(partes)
 
 
 def rubros_html(d: pd.DataFrame, mes: str) -> str:
@@ -1074,6 +1099,73 @@ def rubros_html(d: pd.DataFrame, mes: str) -> str:
                       f'<div class="v">{valor}</div></div>')
     partes.append("</div>")
     return "".join(partes)
+
+
+def _dialogo_recibo(d: pd.DataFrame, fila: Any, tabla: str, k: str) -> None:
+    """Recibo de pago de una entrada: se revisan los datos y se baja el PDF (original y duplicado)."""
+    from vitae.modulos import recibos as rc
+
+    if fila not in d.index:
+        return
+    r = d.loc[fila]
+    try:
+        pos = int(fila)  # el índice es el de la pestaña: fila de Sheets = índice + 2
+    except (TypeError, ValueError):
+        pos = int(list(d.index).index(fila))
+    base = rc.datos_recibo(r, tabla=tabla, fila=pos)
+    kk = f"{k}rec_{pos}_"
+
+    def cuerpo() -> None:
+        st.markdown(f"**{rc.dinero(base['importe'], base['moneda'])}** · recibo N° {base['numero']}")
+        c1, c2 = st.columns([1.6, 1])
+        de = c1.text_input("Recibimos de", value=base["recibimos_de"], key=f"{kk}de", placeholder="Apellido y nombre")
+        doc = c2.text_input("DNI / CUIT (opcional)", key=f"{kk}doc")
+        concepto = st.text_input("En concepto de", value=base["concepto"], key=f"{kk}con")
+        c3, c4 = st.columns(2)
+        forma = c3.text_input("Forma de pago", value=base["forma_pago"], key=f"{kk}forma")
+        fecha = c4.date_input("Fecha", value=base["fecha"], format="DD/MM/YYYY", key=f"{kk}fecha")
+        obs = st.text_input("Observaciones (opcional)", key=f"{kk}obs")
+        datos = {**base, "recibimos_de": de, "documento": doc, "concepto": concepto, "forma_pago": forma,
+                 "fecha": fecha or base["fecha"], "observaciones": obs}
+        try:
+            from vitae.core.config import LOGO_PATH
+
+            logo = LOGO_PATH if LOGO_PATH.exists() else None
+        except Exception:
+            logo = None
+        st.download_button("Descargar recibo (PDF)", data=rc.pdf_recibo(datos, logo),
+                           file_name=f"recibo_{base['numero']}.pdf", mime="application/pdf", type="primary",
+                           icon=":material/picture_as_pdf:", use_container_width=True, on_click="ignore",
+                           key=f"{kk}pdf")
+
+    st.dialog("Recibo de pago", width="medium")(cuerpo)()
+
+
+def mostrar_planilla(d: pd.DataFrame, mes: str, moneda: str = "ARS", *, tabla: str, k: str, clave: str,
+                     **opciones: Any) -> None:
+    """La planilla del mes; en las cajas, cada entrada lleva un botón para sacar el recibo de pago en PDF."""
+    if not str(tabla).startswith("caja_"):
+        st.markdown(planilla_html(d, mes, moneda, **opciones), unsafe_allow_html=True)
+        return
+    cab, filas, pie = planilla_partes(d, mes, moneda, **opciones)
+    if not any(rec for _, _, rec in filas):
+        st.markdown('<div class="cj-tabla">' + cab + "".join(h for _, h, _ in filas) + pie + "</div>",
+                    unsafe_allow_html=True)
+        return
+    bloque = re.sub(r"[^A-Za-z0-9_]+", "_", f"{k}{clave}_{moneda}")
+    abrir = None
+    with st.container(key=f"cjblk_{bloque}"):
+        izq, _ = st.columns([1, 0.04])
+        izq.markdown(cab, unsafe_allow_html=True)
+        for i, (idx, h, rec) in enumerate(filas):
+            a, b = st.columns([1, 0.04])
+            a.markdown(h, unsafe_allow_html=True)
+            if rec and b.button("🧾", key=f"cjrec_{bloque}_{i}", type="tertiary", help="Recibo de pago (PDF)"):
+                abrir = idx
+        izq, _ = st.columns([1, 0.04])
+        izq.markdown(pie, unsafe_allow_html=True)
+    if abrir is not None:
+        _dialogo_recibo(d, abrir, tabla, k)
 
 
 def render_caja(
@@ -1222,12 +1314,12 @@ def render_caja(
                     st.markdown(f'<div class="cj-usd-vacio"><b>{html.escape(c_)}</b> · sin movimientos este mes · '
                                 f'saldo {pesos(rc["saldo"])}</div>', unsafe_allow_html=True)
                     continue
-                st.markdown(planilla_html(dc, mes, "ARS", buscar=buscar_t, titulo=c_, col_quien=et["quien"]),
-                            unsafe_allow_html=True)
+                mostrar_planilla(dc, mes, "ARS", tabla=tabla, k=k, clave=f"tot_{c_}", buscar=buscar_t, titulo=c_,
+                                 col_quien=et["quien"])
                 ru_c = resumen_mes(dc, mes, "USD")
                 if ru_c["movimientos"] or abs(ru_c["inicial"]) > 0.004:
-                    st.markdown(planilla_html(dc, mes, "USD", buscar=buscar_t, titulo=f"{c_} · dólares",
-                                              col_quien=et["quien"]), unsafe_allow_html=True)
+                    mostrar_planilla(dc, mes, "USD", tabla=tabla, k=k, clave=f"tot_{c_}", buscar=buscar_t,
+                                     titulo=f"{c_} · dólares", col_quien=et["quien"])
             return
         d_full = d
         d = dv  # desde acá, la planilla de la caja interna elegida
@@ -1240,15 +1332,14 @@ def render_caja(
             rubro = st.pills("Rubro", ["Todos"] + RUBROS, default="Todos", key=f"{k}rubro") or "Todos"
         with f2:
             buscar = st.text_input("Buscar", key=f"{k}buscar", placeholder=et["buscar"])
-        st.markdown(planilla_html(d, mes, "ARS", rubro=None if rubro == "Todos" else rubro, buscar=buscar,
-                                  titulo=f"{vista} · pesos" if multi else et["pesos"], col_quien=et["quien"]),
-                    unsafe_allow_html=True)
+        mostrar_planilla(d, mes, "ARS", tabla=tabla, k=k, clave=f"v_{vista}", rubro=None if rubro == "Todos" else rubro,
+                         buscar=buscar, titulo=f"{vista} · pesos" if multi else et["pesos"], col_quien=et["quien"])
         lb_usd = libro(d, "USD")
         ru = resumen_mes(d, mes, "USD")
         if ru["movimientos"] or abs(ru["inicial"]) > 0.004:
-            st.markdown(planilla_html(d, mes, "USD", rubro=None if rubro == "Todos" else rubro, buscar=buscar,
-                                      titulo=f"{vista} · dólares" if multi else et["dolares"], col_quien=et["quien"]),
-                        unsafe_allow_html=True)
+            mostrar_planilla(d, mes, "USD", tabla=tabla, k=k, clave=f"v_{vista}",
+                             rubro=None if rubro == "Todos" else rubro, buscar=buscar,
+                             titulo=f"{vista} · dólares" if multi else et["dolares"], col_quien=et["quien"])
         elif mes != SIN_FECHA:
             ultimo = dinero(lb_usd["saldo"].iloc[-1], "USD") if not lb_usd.empty else "US$ 0,00"
             st.markdown(f'<div class="cj-usd-vacio"><b>{et["dolares"]}</b> · sin movimientos este mes · saldo {ultimo}</div>',
