@@ -7514,18 +7514,19 @@ def render_agenda_quirofano_ultra_pro(
 
 
 def parse_mes(series):
-    s = series.astype(str).str.strip()
-    fecha_ymd = pd.to_datetime(
-        s,
-        format="%Y-%m-%d",
-        errors="coerce"
-    )
-    fecha_dmy = pd.to_datetime(
-        s,
-        format="%d/%m/%Y",
-        errors="coerce"
-    )
-    return fecha_ymd.fillna(fecha_dmy)
+    """La fecha de la columna «mes» de Facturación: aaaa-mm-dd, dd/mm/aaaa y también dd/mm/aa, dd-mm-aaaa,
+    dd.mm.aaaa o con hora. Siempre día primero. Lo que no es fecha queda vacío (nunca se inventa otra)."""
+    s = series.astype(str).str.strip().replace({"nan": "", "NaT": "", "None": ""})
+    fecha = pd.to_datetime(s.str[:10], format="%Y-%m-%d", errors="coerce")
+    for formato in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%d.%m.%Y", "%d.%m.%y"):
+        faltan = fecha.isna() & (s != "")
+        if not faltan.any():
+            break
+        fecha = fecha.fillna(pd.to_datetime(s.where(faltan).str.split(" ").str[0], format=formato, errors="coerce"))
+    faltan = fecha.isna() & (s != "")
+    if faltan.any():
+        fecha = fecha.fillna(pd.to_datetime(s.where(faltan), dayfirst=True, errors="coerce", format="mixed"))
+    return fecha
 
 
 # =========================================================

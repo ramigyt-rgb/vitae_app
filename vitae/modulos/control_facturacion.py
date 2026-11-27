@@ -67,7 +67,7 @@ def fecha_prestacion(raw: pd.DataFrame, cols: dict[str, str | None]) -> pd.Serie
         t = _texto(v)
         if not t:
             return pd.NaT
-        if re.fullmatch(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}.*", t):
+        if re.fullmatch(r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}.*", t):
             return pd.to_datetime(t.split(" ")[0], dayfirst=True, errors="coerce")
         if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}.*", t):
             return pd.to_datetime(t[:10], errors="coerce")
@@ -87,10 +87,12 @@ def preparar(raw: pd.DataFrame | None, hoy: date | None = None) -> tuple[pd.Data
     # Fecha de la prestación (ingreso a quirófano): la de la columna «mes» con su día si lo tiene
     # (dd/mm/aaaa); si sólo dice el mes, el último día de ese mes. Una columna de fecha de servicio
     # propia, si existe (no la de factura), tiene prioridad.
-    data["_prestacion"] = fecha_prestacion(raw, cols)
+    # La fecha de prestación sale SIEMPRE de «mes» (la columna que se edita en Registros, Editar y Tabla). Otra
+    # columna de fecha de servicio sólo completa las filas donde «mes» está vacío.
+    data["_prestacion"] = pd.to_datetime(fecha_prestacion(raw, cols), errors="coerce")
     servicio_propio = cols.get("fecha_servicio") and cols.get("fecha_servicio") != cols.get("fecha_factura")
     if servicio_propio:
-        data["_prestacion"] = data["_fecha_servicio"].combine_first(data["_prestacion"])
+        data["_prestacion"] = data["_prestacion"].combine_first(data["_fecha_servicio"])
     data["_plazo"] = data["_prestacion"] + pd.Timedelta(days=PLAZO_PRESENTACION)
     data["_dias_plazo"] = (data["_plazo"] - h).dt.days
     # REGLA: sin N° de factura no hay factura. La fecha de factura o el vencimiento solos (por ejemplo,
