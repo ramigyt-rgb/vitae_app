@@ -352,6 +352,11 @@ def explicar_diagnostico(info: Dict[str, Any], table: str | None = None) -> str:
     return " ".join(partes)
 
 
+# Control de permisos por función (cargar / editar / borrar): lo instala vitae/vistas.py.
+# Recibe (pestaña, contenido nuevo) y levanta PermissionError si el usuario no puede hacer ese cambio.
+GUARDIA_ESCRITURA = None
+
+
 def sync_df_to_sheet(table: str, df: pd.DataFrame, limpiar_cache: bool = True) -> int:
     """Reemplaza el contenido de la pestaña por ``df``.
 
@@ -362,6 +367,8 @@ def sync_df_to_sheet(table: str, df: pd.DataFrame, limpiar_cache: bool = True) -
     limpia lo que sobra. Antes se borraba la pestaña y luego se escribía: si
     la escritura fallaba, la pestaña quedaba vacía.
     """
+    if GUARDIA_ESCRITURA is not None:
+        GUARDIA_ESCRITURA(table, df)
     df = df.copy()
     df = df.where(pd.notnull(df), "")
     df = df.astype(str)

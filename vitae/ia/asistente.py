@@ -99,9 +99,10 @@ def responder(pregunta: str, modulo_actual: str, historial: list[dict[str, str]]
             from vitae.ia.motor import responder as motor_responder
 
             propuestas: list[dict[str, Any]] = []
+            quien = str((st.session_state.get("vitae_auth_user") or {}).get("usuario") or "")
             texto = motor_responder(pregunta, modulo_actual, historial=historial,
                                     modulos_permitidos=permitidos, estilo="chat", acciones=propuestas,
-                                    memoria=memoria_actual())
+                                    memoria=memoria_actual(), usuario=quien)
             st.session_state[NUEVAS_ACCIONES] = propuestas
             return texto
         except Exception as exc:  # cuota, modelo, red: se informa y se prueba el respaldo

@@ -22,6 +22,7 @@ from vitae.core.movil import css_movil, es_movil
 from vitae.core.ui import encabezado_modulo, logo_data_uri, sin_icono, tarjetas_kpi
 from vitae.core.tablas import MODULES
 from vitae.core.database import *
+from vitae.core import permisos as _permisos_fn
 from vitae.core.helpers import *
 from vitae.modulos.farmacia import render_farmacia_pro
 from vitae.modulos.gine_formularios import TABLA as _GINE_FORMULARIOS_TABLA, render_formularios
@@ -419,7 +420,63 @@ def _auth_is_admin(user: dict[str, Any] | None = None) -> bool:
     user = user or _auth_current_user()
     if _auth_restriccion(user) is not None:
         return False
+    if _permisos_fn.es_superusuario(user):
+        return True  # rchar: todas las funciones de todos los módulos y Configuración
     return bool(user and str(user.get("rol", "")).strip().lower() == "administrador")
+
+
+# Funciones dentro de cada módulo (cargar / editar / borrar): vitae/core/permisos.py.
+_TABLAS_EXTRA_MODULO = {"farmacia_movimientos": "Farmacia", "gine_vitae_formularios": "Gine Vitae"}
+
+
+def _auth_funciones(modulo: str, user: dict[str, Any] | None = None) -> set[str]:
+    """Funciones que el usuario puede usar en el módulo (además de verlo)."""
+    user = user or _auth_current_user()
+    if not user:
+        return set()
+    if _auth_is_admin(user) or _auth_restriccion(user) is not None:
+        return set(_permisos_fn.CLAVES)
+    habilitadas = _permisos_fn.funciones_de(_auth_unpack(user.get("permisos", "")), modulo)
+    return set(_permisos_fn.CLAVES) if habilitadas is None else habilitadas
+
+
+def _auth_puede(modulo: str, funcion: str, user: dict[str, Any] | None = None) -> bool:
+    return funcion in _auth_funciones(modulo, user)
+
+
+def _vitae_guardia_escritura(table: str, df_nuevo: pd.DataFrame) -> None:
+    """Antes de guardar una pestaña: ¿el usuario puede cargar / editar / borrar en ese módulo?"""
+    if _permisos_fn.en_sistema():
+        return
+    try:
+        user = _auth_current_user()
+    except Exception:
+        return
+    if not user or _auth_is_admin(user) or _auth_restriccion(user) is not None:
+        return
+    modulo = _permisos_fn.modulo_de_tabla(table, MODULES, _TABLAS_EXTRA_MODULO)
+    if not modulo:
+        return
+    habilitadas = _permisos_fn.funciones_de(_auth_unpack(user.get("permisos", "")), modulo)
+    if habilitadas is None:
+        return
+    try:
+        antes = get_df(table)
+        necesita = _permisos_fn.cambios(antes, df_nuevo)
+    except Exception:
+        necesita = {"editar"}
+    faltan = necesita - habilitadas
+    if faltan:
+        raise PermissionError(_permisos_fn.mensaje(modulo, faltan))
+
+
+def _instalar_guardia_escritura() -> None:
+    try:
+        import vitae.core.database as _db_guardia
+
+        _db_guardia.GUARDIA_ESCRITURA = _vitae_guardia_escritura
+    except Exception:
+        pass
 
 
 # =========================================================
@@ -666,6 +723,9 @@ def _auth_can_access(permission: str | None, company: str | None = None, user: d
     if company and company in _VITAE_EMPRESAS and company not in _auth_user_companies(user):
         return False
     return True
+
+
+_instalar_guardia_escritura()
 
 
 def _auth_login_css() -> None:
@@ -1103,7 +1163,10 @@ def _auth_render_permissions_management() -> None:
             else:
                 users.loc[idx, "rol"] = new_role
                 users.loc[idx, "empresas"] = _auth_pack(companies)
-                users.loc[idx, "permisos"] = _auth_pack(selected_perms)
+                # Las funciones por módulo (Configuración → Funciones) se conservan.
+                marcas_fn = [p for p in _auth_unpack(row["permisos"]) if str(p).startswith("fn::")
+                             and f"mod::{str(p)[4:].split('::', 1)[0]}" in selected_perms]
+                users.loc[idx, "permisos"] = _auth_pack(selected_perms + marcas_fn)
                 users.loc[idx, "actualizado_en"] = _auth_now()
                 _auth_save_users(users)
                 st.success("Permisos guardados y aplicados.")
@@ -1121,6 +1184,63 @@ def _auth_render_permissions_management() -> None:
             company = str(MODULES.get(module, {}).get("empresa", "—"))
         rows.append({"Función / módulo": label, "Empresa": company, "Acceso": "Sí" if permission in current_permissions else "No"})
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True, height=480)
+
+
+def _auth_render_funciones_management() -> None:
+    """Qué puede hacer cada usuario dentro de cada módulo: ver, cargar, editar y borrar (sólo rchar)."""
+    yo = _auth_current_user() or {}
+    if not _permisos_fn.es_superusuario(yo):
+        st.info("Sólo Ramiro (usuario rchar) asigna las funciones de cada módulo.")
+        return
+    users = _auth_load_users(force=True)
+    if users.empty:
+        st.info("Creá al menos un usuario para asignar funciones.")
+        return
+    st.markdown("### Funciones por módulo")
+    st.caption("Tildá qué puede hacer cada persona en cada módulo. Vos tenés siempre todas.")
+    labels = {row["usuario"]: f"{row['nombre'] or row['usuario']} · {row['rol']}" for _, row in users.iterrows()}
+    selected = st.selectbox("Usuario", list(labels.keys()), format_func=lambda x: labels[x], key="fn_user_select")
+    idx = users.index[users["usuario"] == selected][0]
+    row = users.loc[idx].copy()
+    if _permisos_fn.es_superusuario(row.to_dict()):
+        st.success("Todas las funciones de todos los módulos.")
+        return
+    if _auth_restriccion(row.to_dict()) is not None:
+        st.info("Este usuario tiene acceso fijo definido en la app: " + ", ".join(_auth_restriccion(row.to_dict()) or [])
+                + ". Lo que se cambie acá no se aplica.")
+        return
+    if str(row["rol"]).strip().lower() == "administrador":
+        st.info("Es Administrador: hace todo en todos los módulos. Para limitarlo, cambiale el perfil en Permisos.")
+        return
+    permisos_usuario = _auth_unpack(row["permisos"])
+    actuales = set(permisos_usuario)
+    filas = []
+    for nombre in MODULES.keys():
+        fs = _permisos_fn.funciones_de(permisos_usuario, nombre)
+        fs = set(_permisos_fn.CLAVES) if fs is None else fs
+        filas.append({"Módulo": nombre, "Ver": f"mod::{nombre}" in actuales,
+                      **{etq: (k in fs) for k, etq in _permisos_fn.FUNCIONES}})
+    tabla = pd.DataFrame(filas)
+    cfg_cols = {"Módulo": st.column_config.TextColumn("Módulo", disabled=True)}
+    for c in ["Ver"] + [etq for _, etq in _permisos_fn.FUNCIONES]:
+        cfg_cols[c] = st.column_config.CheckboxColumn(c)
+    editada = st.data_editor(tabla, key=f"fn_matrix_{selected}", hide_index=True, use_container_width=True,
+                             column_config=cfg_cols, disabled=["Módulo"], height=min(42 + 35 * len(tabla), 760))
+    if st.button("Guardar funciones", type="primary", use_container_width=True, key=f"fn_save_{selected}"):
+        nuevos = [p for p in _permisos_fn.sin_marcas(permisos_usuario) if not str(p).startswith("mod::")]
+        for _, r in editada.iterrows():
+            modulo = str(r["Módulo"])
+            if not bool(r["Ver"]):
+                continue
+            nuevos.append(f"mod::{modulo}")
+            fs = [k for k, etq in _permisos_fn.FUNCIONES if bool(r[etq])]
+            if len(fs) < len(_permisos_fn.CLAVES):
+                nuevos.append(_permisos_fn.token(modulo, fs))
+        users.loc[idx, "permisos"] = _auth_pack(nuevos)
+        users.loc[idx, "actualizado_en"] = _auth_now()
+        _auth_save_users(users)
+        st.success("Funciones guardadas y aplicadas.")
+        st.rerun()
 
 
 def _auth_render_companies_management() -> None:
@@ -1631,6 +1751,47 @@ def render_pacientes_pagina() -> None:
     quien = str(user.get("usuario") or user.get("nombre") or "").strip()
     almacen = _pacientes.AlmacenSheets(sheet_id=_secret("PACIENTES_SHEET_ID", ""), usuario=quien)
     _pacientes.render_pacientes(almacen)
+
+
+# Facturación Médicos (lo que Ramiro factura a cada profesional): sólo los usuarios exactos del secreto
+# FACTURACION_MEDICOS_USUARIOS (por defecto rchar). Es información del profesional, aparte de Vitae: no está en
+# MODULES, ni en el Panel general, ni en la IA, ni en los permisos de los demás.
+FACTURACION_MEDICOS_USUARIOS_POR_DEFECTO = "rchar"
+
+
+def _auth_ve_facturacion_medicos(user: dict[str, Any] | None = None) -> bool:
+    user = user or _auth_current_user()
+    if not user or _auth_restriccion(user) is not None:
+        return False
+    try:
+        from vitae.core.config import _secret
+
+        lista = (str(_secret("FACTURACION_MEDICOS_USUARIOS", "") or "").strip()
+                 or FACTURACION_MEDICOS_USUARIOS_POR_DEFECTO)
+    except Exception:
+        lista = FACTURACION_MEDICOS_USUARIOS_POR_DEFECTO
+    habilitados = {u.strip().lower() for u in lista.split(",") if u.strip()}
+    return str(user.get("usuario") or "").strip().lower() in habilitados
+
+
+def render_facturacion_medicos_pagina() -> None:
+    st.session_state["vitae_current_module"] = "Facturación Médicos"
+    render_header()
+    if not _auth_ve_facturacion_medicos():
+        st.error("No tenés acceso a Facturación Médicos.")
+        st.stop()
+    from vitae.core.config import _secret
+    from vitae.modulos import facturacion_medicos as _fm
+
+    encabezado_modulo("Facturación Médicos", descripcion="CMS, facturación propia, OSDE y OSPE de cada profesional.")
+    almacen = _fm.Almacen(sheet_id=str(_secret("FACTURACION_MEDICOS_SHEET_ID", "") or "").strip(), leer=get_df,
+                          guardar=lambda t, df: sync_df_to_sheet(t, df, limpiar_cache=False))
+    try:
+        _fm.render(st, almacen)
+    except Exception as exc:
+        if type(exc).__name__ in {"RerunException", "StopException"}:
+            raise
+        _vitae_render_error("No pude abrir Facturación Médicos.", exc, context="facturacion_medicos")
 
 
 def _luz_memoria(usuario: dict[str, Any] | None) -> Any:
@@ -21279,7 +21440,8 @@ def render_facturacion_pro(
                     except Exception:
                         return None
 
-                avisos = al_guardar_agenda(_antes, df_nuevo, _leer_af, lambda t, df: sync_df_to_sheet(t, df))
+                with _permisos_fn.sistema():  # la carga automática en Facturación no la hace el usuario
+                    avisos = al_guardar_agenda(_antes, df_nuevo, _leer_af, lambda t, df: sync_df_to_sheet(t, df))
                 if avisos:
                     st.session_state["agenda_autofacturacion"] = avisos
             except Exception as exc:  # la Agenda se guardó igual; avisar sin romper
@@ -23620,13 +23782,17 @@ def render_configuracion() -> None:
         return
 
     config_section = _vitae_lazy_selector(
-        "Área de configuración", ["Usuarios", "Permisos", "Empresas", "IA", "Sistema"],
+        "Área de configuración",
+        ["Usuarios", "Permisos"] + (["Funciones"] if _permisos_fn.es_superusuario(_auth_current_user()) else [])
+        + ["Empresas", "IA", "Sistema"],
         key="config_active_section",
     )
     if config_section == "Usuarios":
         _auth_render_user_management()
     elif config_section == "Permisos":
         _auth_render_permissions_management()
+    elif config_section == "Funciones":
+        _auth_render_funciones_management()
     elif config_section == "Empresas":
         _auth_render_companies_management()
     elif config_section == "IA":
