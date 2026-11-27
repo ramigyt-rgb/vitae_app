@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from typing import Any, Callable, Dict, Iterable
+import difflib
 import math
 import re
 import unicodedata
@@ -102,6 +103,96 @@ def te_en_aspiracion(data: pd.DataFrame) -> pd.Series:
             continue
         f = fecha[i]
         out[i] = pd.isna(f) or any(pd.isna(x) or abs((f - x).days) <= DIAS_TE_ASPIRACION for x in fs)
+    return out
+
+
+DIAS_MISMA_FACTURA = 3
+
+
+def _tokens_nombre(p: Any) -> list[str]:
+    return [t for t in _norm(p).split("_") if len(t) > 1]
+
+
+def misma_paciente(a: Any, b: Any) -> bool:
+    """Mismo nombre aunque cambie el orden o una letra."""
+    ta, tb = _tokens_nombre(a), _tokens_nombre(b)
+    if not ta or not tb:
+        return False
+    if sorted(ta) == sorted(tb):
+        return True
+    comunes = set(ta) & set(tb)
+    ra = [t for t in ta if t not in comunes]
+    rb = [t for t in tb if t not in comunes]
+    if not comunes:
+        return False
+    if not ra or not rb:
+        return len(comunes) >= 2
+    usados: set[int] = set()
+    for t in ra:
+        ok = False
+        for j, u in enumerate(rb):
+            if j in usados:
+                continue
+            if t[0] == u[0] and difflib.SequenceMatcher(None, t, u).ratio() >= 0.8:
+                usados.add(j)
+                ok = True
+                break
+        if not ok:
+            return False
+    return True
+
+
+def _fecha_dia(serie: pd.Series) -> pd.Series:
+    """Fecha de prestación (día primero, como la planilla)."""
+    s = serie.astype(str).str.strip().replace({"nan": "", "NaT": "", "None": ""})
+    f = pd.to_datetime(s.str[:10], format="%Y-%m-%d", errors="coerce")
+    for formato in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%d.%m.%Y", "%d.%m.%y"):
+        faltan = f.isna() & (s != "")
+        if not faltan.any():
+            break
+        f = f.fillna(pd.to_datetime(s.where(faltan).str.split(" ").str[0], format=formato, errors="coerce"))
+    return f.dt.normalize()
+
+
+def asociar_a_factura(data: pd.DataFrame, cancelados: pd.Series | None = None) -> pd.Series:
+    """N° de la factura en la que va un renglón sin importe ni N° ("" si no se asocia)."""
+    out = pd.Series("", index=data.index, dtype=object)
+    if data.empty or "_numero_factura" not in data.columns:
+        return out
+    canc = cancelados if cancelados is not None else pd.Series(False, index=data.index)
+    num = data["_numero_factura"].astype(str).str.strip()
+    sin_cargo = data["_sin_cargo"] if "_sin_cargo" in data.columns else pd.Series(False, index=data.index)
+    fecha = pd.Series(pd.NaT, index=data.index, dtype="datetime64[ns]")
+    if "_fecha_dia" in data.columns:
+        fecha = pd.to_datetime(data["_fecha_dia"], errors="coerce")
+    if "_fecha_servicio" in data.columns:
+        fecha = fecha.fillna(pd.to_datetime(data["_fecha_servicio"], errors="coerce").dt.normalize())
+    cand = data.index[~canc & (data["_monto"] <= 0) & (num == "") & ~sin_cargo
+                      & (data["_paciente"].astype(str).str.strip() != "")]
+    if not len(cand):
+        return out
+    bases = data.index[~canc & (data["_monto"] > 0) & (num != "")]
+    if not len(bases):
+        return out
+    for i in cand:
+        f = fecha[i]
+        if pd.isna(f):
+            continue
+        es_te = _es_te(data.at[i, "_procedimiento"])
+        mejor: tuple[int, str] | None = None
+        for j in bases:
+            g = fecha[j]
+            if pd.isna(g) or not misma_paciente(data.at[i, "_paciente"], data.at[j, "_paciente"]):
+                continue
+            dias = abs((f - g).days)
+            proc_j = data.at[j, "_procedimiento"]
+            ok = dias <= DIAS_MISMA_FACTURA or (
+                es_te and dias <= DIAS_TE_ASPIRACION
+                and (_es_aspiracion(proc_j) or "fiv" in _norm(proc_j).split("_")))
+            if ok and (mejor is None or dias < mejor[0]):
+                mejor = (dias, num[j])
+        if mejor:
+            out[i] = mejor[1]
     return out
 
 
@@ -312,6 +403,7 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     else:
         data["_fecha_mes"] = pd.NaT
 
+    data["_fecha_dia"] = _fecha_dia(_series_text(data, cols["mes"])) if cols["mes"] else pd.NaT
     data["_fecha_base"] = data["_fecha_factura"].combine_first(data["_fecha_servicio"]).combine_first(data["_fecha_mes"])
     data["_monto"] = _monto_filas(data, cols["monto"]).clip(lower=0)
 
@@ -348,6 +440,12 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
     # importe va en la aspiración. Esa TE está completa (no es «sin importe»).
     data["_te_aspiracion"] = te_en_aspiracion(data) & ~cancelled & (data["_monto"] <= 0) & ~data["_sin_cargo"]
     data["_incluida"] = data["_incluida"] | data["_te_aspiracion"]
+    # Misma factura: un renglón sin importe ni N° de la misma paciente (el nombre puede variar en una letra)
+    # que otro renglón con importe y N° del mismo día (±3) —o una TE con su FIV/aspiración a 45 días o
+    # menos— va en esa factura.
+    data["_factura_asociada"] = asociar_a_factura(data, cancelled)
+    _asoc = data["_factura_asociada"] != ""
+    data.loc[_asoc, "_incluida"] = True
 
     today = pd.Timestamp.today().normalize()
     data["_dias_vencido"] = (today - data["_vencimiento"]).dt.days
@@ -367,6 +465,8 @@ def _prepare_facturacion(df_original: pd.DataFrame) -> tuple[pd.DataFrame, dict[
             return "No se factura"
         if row["_te_aspiracion"]:
             return "Va en aspiración folicular"
+        if row.get("_factura_asociada", ""):
+            return f"En factura {row['_factura_asociada']}"
         if row["_incluida"]:
             return "En factura conjunta"
         if row["_pendiente"] <= 0 and row["_monto"] > 0:
