@@ -215,7 +215,9 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
                         hoy: date | None = None, empresa: str | None = None,
                         historial: dict[str, str] | None = None, descartadas: set[str] | None = None) -> pd.DataFrame:
     """Solicitudes de la Agenda: cirugías «Realizado» (últimos ``VENTANA_AGENDA`` días) que todavía no están
-    en la facturación (mismo paciente, nombre en cualquier orden, y fecha a menos de 60 días) ni se descartaron.
+    en la facturación ni se descartaron. «Ya está» = misma paciente (nombre en cualquier orden; también de una
+    sola palabra), MISMO procedimiento (o sin procedimiento en la facturación) y fecha a 62 días o menos. Otra
+    prestación de la misma paciente no cuenta.
 
     Con ``empresa`` (regla principal): sólo las cirugías de esa empresa por su procedimiento, comparadas sólo
     contra SU facturación (``facturaciones[0]``): en VMR nunca aparece nada de VM, ni al revés."""
@@ -225,7 +227,8 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
 
     _, ag, _ = qx._preparar_dataframe(agenda_raw)
     h = _hoy(hoy)
-    ag = ag[(ag["estado"] == "Realizado") & ag["_fecha_dt"].notna() & (ag["_fecha_dt"] <= h)
+    # Realizadas (aunque la fecha cargada sea posterior a hoy) de los últimos VENTANA_AGENDA días.
+    ag = ag[(ag["estado"] == "Realizado") & ag["_fecha_dt"].notna()
             & (ag["_fecha_dt"] >= h - pd.Timedelta(days=VENTANA_AGENDA)) & (ag["paciente"].str.strip() != "")]
     if ag.empty:
         return pd.DataFrame()
@@ -235,7 +238,7 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
         if ag.empty:
             return pd.DataFrame()
     fuera = descartadas or set()
-    registros: list[tuple[frozenset[str], pd.Timestamp]] = []
+    registros: list[tuple[frozenset[str], pd.Timestamp, str]] = []
     for df in facturaciones:
         if not isinstance(df, pd.DataFrame) or df.empty:
             continue
@@ -243,13 +246,20 @@ def agenda_sin_facturar(agenda_raw: pd.DataFrame | None, facturaciones: list[pd.
         fechas = fecha_prestacion(df, cols_f).combine_first(d["_fecha_mes"]).combine_first(d["_fecha_factura"])
         fechas = fechas[~d["_cancelado"]]
         d = d[~d["_cancelado"]]
-        registros += [(_tokens(p), f) for p, f in zip(d["_paciente"], fechas)]
+        procs = d["_procedimiento"].map(lambda p_: "" if p_ == "SIN PROCEDIMIENTO" else _proc_norm(p_))
+        registros += [(_tokens(p), f, pr_) for p, f, pr_ in zip(d["_paciente"], fechas, procs)]
     faltan = []
     for _, c in ag.iterrows():
         t = _tokens(c["paciente"])
-        if len(t) < 2 or clave_agenda(c["paciente"], c["_fecha_dt"], c["procedimiento"]) in fuera:
+        if not t or clave_agenda(c["paciente"], c["_fecha_dt"], c["procedimiento"]) in fuera:
             continue
-        esta = any(len(t & r) >= 2 and (pd.isna(f) or abs((f - c["_fecha_dt"]).days) <= 62) for r, f in registros)
+        proc_c = _proc_norm(c["procedimiento"])
+
+        def misma_paciente(r: frozenset[str]) -> bool:
+            return len(t & r) >= 2 if len(t) >= 2 and len(r) >= 2 else bool(t) and (t <= r or r <= t)
+
+        esta = any(misma_paciente(r) and (not pr_ or pr_ == proc_c)
+                   and (pd.isna(f) or abs((f - c["_fecha_dt"]).days) <= 62) for r, f, pr_ in registros)
         if not esta:
             faltan.append({"Fecha": c["_fecha_dt"], "Paciente": c["paciente"], "Procedimiento": c["procedimiento"],
                            "Médico": c["medico"], "Obra social": c["obra_social"],

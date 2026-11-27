@@ -21262,7 +21262,10 @@ def render_facturacion_pro(
         # Lo que se marca «Realizado»: si es de VM se carga solo en Facturación VM; si es de VMR queda como
         # solicitud en Facturación VMR (vitae/modulos/autofacturacion.py). Nunca se mezclan.
         for _aviso_af in st.session_state.pop("agenda_autofacturacion", []) or []:
-            st.success(_aviso_af, icon=":material/receipt_long:")
+            if "quedó «" in _aviso_af:
+                st.info(_aviso_af, icon=":material/schedule:")
+            else:
+                st.success(_aviso_af, icon=":material/receipt_long:")
 
         def _guardar_agenda(df_nuevo, _antes=df_base.copy()):
             sync_df_to_sheet("agenda_quirofano", df_nuevo)

@@ -54,6 +54,29 @@ def recien_realizadas(antes: pd.DataFrame | None, despues: pd.DataFrame | None) 
     return ag_d[[_clave(r) not in ya for _, r in ag_d.iterrows()]]
 
 
+def avisos_sin_realizar(antes: pd.DataFrame | None, despues: pd.DataFrame | None) -> list[str]:
+    """Cirugías recién cargadas en la Agenda que todavía no están «Realizado»: avisar cuándo van a Facturación."""
+    from vitae.modulos import quirofano as qx
+
+    if despues is None or not isinstance(despues, pd.DataFrame) or despues.empty:
+        return []
+    _, ag_d, _ = qx._preparar_dataframe(despues)
+    ya = set()
+    if isinstance(antes, pd.DataFrame) and not antes.empty:
+        _, ag_a, _ = qx._preparar_dataframe(antes)
+        ya = {_clave(r) for _, r in ag_a.iterrows()}
+    nuevas = ag_d[(ag_d["estado"] != "Realizado") & (ag_d["paciente"].str.strip() != "")
+                  & ~ag_d["estado"].isin(["Suspendido", "Cancelado"])]
+    nuevas = nuevas[[_clave(r) not in ya for _, r in nuevas.iterrows()]]
+    out = []
+    for _, r in nuevas.iterrows():
+        emp = cf.empresa_procedimiento(r["procedimiento"])
+        donde = "se carga sola en Facturación VM" if emp == "VM" else "queda como solicitud en Facturación VMR"
+        out.append(f"{_texto(r['procedimiento']) or 'Cirugía'} de {_texto(r['paciente'])} quedó «{r['estado']}»: "
+                   f"cuando la marques «Realizado» {donde}.")
+    return out
+
+
 def documentos_de_agenda(r: pd.Series) -> list[str]:
     """Lo que la Agenda ya dice: autorización cargada y consentimiento firmado."""
     docs = []
@@ -120,11 +143,11 @@ def _vacia() -> pd.DataFrame:
 def al_guardar_agenda(antes: pd.DataFrame | None, despues: pd.DataFrame, leer: Callable[[str], pd.DataFrame | None],
                       guardar: Callable[[str, pd.DataFrame], Any], hoy: date | None = None) -> list[str]:
     """Después de guardar la Agenda: carga en Facturación lo que se acaba de realizar. Devuelve los avisos."""
+    avisos = avisos_sin_realizar(antes, despues)
     nuevas = recien_realizadas(antes, despues)
     if nuevas.empty:
-        return []
+        return avisos
     emp = nuevas["procedimiento"].map(cf.empresa_procedimiento)
-    avisos = []
     # VM: se carga sola (sólo se lee y se escribe Facturación VM)
     vm = nuevas[emp == "VM"]
     if len(vm):
