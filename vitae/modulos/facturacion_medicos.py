@@ -32,7 +32,8 @@ PORCENTAJE_DEFECTO = 5.0
 PROFESIONALES_INICIALES = ["Dr. Adrián Char", "Dra. Graciela Soler"]
 
 COL_FACTURAS = ["id", "profesional", "canal", "periodo", "fecha", "numero", "detalle", "importe", "porcentaje",
-                "estado", "fecha_cobro", "observaciones", "creado_en"]
+                "estado", "fecha_cobro", "observaciones", "creado_en", "codigo", "obra_social", "valor", "cantidad"]
+CMS = "CMS"
 COL_PAGOS = ["id", "profesional", "fecha", "importe", "medio", "periodo", "comprobante", "observaciones", "creado_en"]
 COL_PROFESIONALES = ["id", "nombre", "cuit", "porcentaje", "activo", "observaciones"]
 COLUMNAS = {TABLA_FACTURAS: COL_FACTURAS, TABLA_PAGOS: COL_PAGOS, TABLA_PROFESIONALES: COL_PROFESIONALES}
@@ -151,7 +152,12 @@ def porcentaje_de(prof: pd.DataFrame, nombre: str) -> float:
 # ---------------------------------------------------------------------------
 def preparar_facturas(df: pd.DataFrame | None) -> pd.DataFrame:
     x = normalizar(df, TABLA_FACTURAS)
+    x["_valor"] = x["valor"].map(money).astype(float)
+    x["_cantidad"] = x["cantidad"].map(money).astype(float)
     x["_importe"] = x["importe"].map(money).astype(float)
+    # CMS: el importe es valor × cantidad (si el renglón los tiene).
+    por_linea = (x["_valor"] > 0) & (x["_cantidad"] > 0)
+    x.loc[por_linea, "_importe"] = (x.loc[por_linea, "_valor"] * x.loc[por_linea, "_cantidad"]).round(2)
     x["_pct"] = x["porcentaje"].map(_pct).astype(float)
     x["_fecha"] = leer_fechas_ar(x["fecha"])
     x["_periodo"] = [_periodo(p, f) for p, f in zip(x["periodo"], x["fecha"])]
@@ -279,6 +285,50 @@ def agregar_factura(raw: pd.DataFrame | None, *, profesional: str, canal: str, f
     return pd.concat([x, pd.DataFrame([fila])], ignore_index=True), ""
 
 
+def agregar_cms(raw: pd.DataFrame | None, *, profesional: str, codigo: str, valor: Any, cantidad: Any,
+                obra_social: str, fecha: Any, porcentaje: float | None = None,
+                estado: str = "Pendiente de cobro") -> tuple[pd.DataFrame | None, str]:
+    """Un renglón de liquidación de CMS: código, valor, cantidad, obra social y fecha (importe = valor × cantidad)."""
+    x = normalizar(raw, TABLA_FACTURAS)
+    val, cant = money(valor), money(cantidad)
+    if not _txt(profesional):
+        return None, "Elegí el profesional."
+    if not _txt(codigo):
+        return None, "Falta el código."
+    if val <= 0:
+        return None, "El valor tiene que ser mayor a cero."
+    if cant <= 0:
+        return None, "La cantidad tiene que ser mayor a cero."
+    if not _txt(obra_social):
+        return None, "Falta la obra social."
+    f = _fecha_iso(fecha)
+    if not f:
+        return None, "Falta la fecha."
+    fila = {c: "" for c in COL_FACTURAS}
+    fila.update({"id": nuevo_id("FM"), "profesional": profesional, "canal": CMS, "periodo": _periodo("", f),
+                 "fecha": f, "codigo": _txt(codigo), "obra_social": _txt(obra_social).upper(), "valor": f"{val:.2f}",
+                 "cantidad": f"{cant:g}", "importe": f"{val * cant:.2f}",
+                 "porcentaje": f"{(PORCENTAJE_DEFECTO if porcentaje is None else float(porcentaje)):g}",
+                 "estado": estado or ESTADOS[0], "creado_en": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    return pd.concat([x, pd.DataFrame([fila])], ignore_index=True), ""
+
+
+def cms_por_obra_social(fac: pd.DataFrame) -> pd.DataFrame:
+    """CMS por obra social y por mes (importe liquidado), con total por obra social y por mes."""
+    c = fac[(fac["canal"] == CMS) & ~fac["_anulada"] & (fac["_periodo"] != "")]
+    if c.empty:
+        return pd.DataFrame()
+    os_ = c["obra_social"].where(c["obra_social"] != "", "SIN OBRA SOCIAL")
+    t = c.assign(_os=os_).pivot_table(index="_os", columns="_periodo", values="_facturado", aggfunc="sum",
+                                      fill_value=0.0)
+    t = t[sorted(t.columns)]
+    t.columns = [nombre_mes_es(m) for m in t.columns]
+    t["Total"] = t.sum(axis=1)
+    t = t.sort_values("Total", ascending=False)
+    t.loc["TOTAL"] = t.sum(axis=0)
+    return t.reset_index().rename(columns={"_os": "Obra social"})
+
+
 def agregar_pago(raw: pd.DataFrame | None, *, profesional: str, fecha: Any, importe: Any, medio: str = "",
                  periodo: str = "", comprobante: str = "", observaciones: str = "") -> tuple[pd.DataFrame | None, str]:
     x = normalizar(raw, TABLA_PAGOS)
@@ -315,8 +365,10 @@ def aplicar_edicion(raw: pd.DataFrame | None, tabla: str, editada: pd.DataFrame)
             v = r[c]
             if c in ("fecha", "fecha_cobro"):
                 v = _fecha_iso(v)
-            elif c == "importe":
-                v = f"{money(v):.2f}"
+            elif c in ("importe", "valor"):
+                v = f"{money(v):.2f}" if _txt(v) or c == "importe" else ""
+            elif c == "cantidad":
+                v = f"{money(v):g}" if _txt(v) else ""
             elif c == "porcentaje":
                 v = f"{_pct(v):g}"
             elif c == "activo":
@@ -327,6 +379,11 @@ def aplicar_edicion(raw: pd.DataFrame | None, tabla: str, editada: pd.DataFrame)
                 v = _txt(v)
             x.at[k, c] = v
     if tabla == TABLA_FACTURAS:
+        # CMS: con valor y cantidad, el importe es valor × cantidad.
+        val, cant = x["valor"].map(money), x["cantidad"].map(money)
+        linea = (val > 0) & (cant > 0)
+        x.loc[linea, "importe"] = (val[linea] * cant[linea]).map(lambda v: f"{v:.2f}")
+        x["obra_social"] = x["obra_social"].str.upper()
         # Cobrada sin fecha de cobro: hoy. Vuelve a pendiente: sin fecha de cobro.
         cob = x["estado"].str.lower().str.startswith("cobrad")
         x.loc[cob & (x["fecha_cobro"] == ""), "fecha_cobro"] = date.today().strftime("%Y-%m-%d")
@@ -341,6 +398,8 @@ def liquidacion_excel(fac: pd.DataFrame, pag: pd.DataFrame, profesional: str, me
     r = resumen(f, p, [profesional])
     facturas = pd.DataFrame({
         "Fecha": f["_fecha"].dt.strftime("%d/%m/%Y"), "Mes": f["_periodo"], "Canal": f["canal"], "N° factura": f["numero"],
+        "Código": f["codigo"], "Obra social": f["obra_social"], "Valor": f["_valor"].where(f["_valor"] > 0),
+        "Cantidad": f["_cantidad"].where(f["_cantidad"] > 0),
         "Detalle": f["detalle"], "Estado": f["estado"], "Importe": f["_importe"], "%": f["_pct"],
         "Honorarios facturador": f["_honorarios"]})
     pagos = pd.DataFrame({"Fecha": p["_fecha"].dt.strftime("%d/%m/%Y"), "Mes": p["_periodo"], "Medio": p["medio"],
@@ -349,6 +408,9 @@ def liquidacion_excel(fac: pd.DataFrame, pag: pd.DataFrame, profesional: str, me
     with pd.ExcelWriter(buf, engine="openpyxl") as w:
         r.to_excel(w, sheet_name="Resumen", index=False)
         facturas.to_excel(w, sheet_name="Facturas", index=False)
+        cms = cms_por_obra_social(f)
+        if not cms.empty:
+            cms.to_excel(w, sheet_name="CMS por obra social", index=False)
         pagos.to_excel(w, sheet_name="Pagos", index=False)
         if not mes:
             por_mes(fac, pag, profesional).drop(columns=["_periodo"], errors="ignore").to_excel(
@@ -408,7 +470,7 @@ class Almacen:
 # ---------------------------------------------------------------------------
 # Pantalla
 # ---------------------------------------------------------------------------
-SECCIONES = ["Resumen", "Facturas", "Pagos", "Cuenta corriente", "Profesionales"]
+SECCIONES = ["Resumen", "CMS", "Facturas", "Pagos", "Cuenta corriente", "Profesionales"]
 
 
 def _filtro_periodo(st: Any, fac: pd.DataFrame, pag: pd.DataFrame, key: str) -> tuple[str, str]:
@@ -456,8 +518,10 @@ def render(st: Any, almacen: Almacen, hoy: date | None = None) -> None:
                                    label_visibility="collapsed") or "Resumen"
     if seccion == "Resumen":
         _render_resumen(st, fac, pag, nombres)
+    elif seccion == "CMS":
+        _render_cms(st, almacen, fac, prof, nombres, hoy)
     elif seccion == "Facturas":
-        _render_facturas(st, almacen, fac, prof, nombres, hoy)
+        _render_facturas(st, almacen, fac[fac["canal"] != CMS], prof, nombres, hoy)
     elif seccion == "Pagos":
         _render_pagos(st, almacen, fac, pag, nombres, hoy)
     elif seccion == "Cuenta corriente":
@@ -492,13 +556,79 @@ def _render_resumen(st: Any, fac: pd.DataFrame, pag: pd.DataFrame, nombres: list
                 st.caption(f"Pendiente de cobro: {pesos(fila['Pendiente de cobro'])}")
 
 
+def _render_cms(st: Any, almacen: Almacen, fac: pd.DataFrame, prof: pd.DataFrame, nombres: list[str],
+                hoy: date) -> None:
+    cms = fac[fac["canal"] == CMS]
+    obras = sorted({o for o in cms["obra_social"] if o})
+    with st.expander("Cargar liquidación CMS", expanded=cms.empty):
+        with st.form("fm_nuevo_cms", clear_on_submit=True):
+            a, b, c = st.columns(3)
+            profesional = a.selectbox("Profesional", nombres, key="fm_cms_prof")
+            codigo = b.text_input("Código", key="fm_cms_codigo")
+            fecha = c.date_input("Fecha", value=hoy, format="DD/MM/YYYY", key="fm_cms_fecha")
+            d, e, g = st.columns(3)
+            valor = d.number_input("Valor", min_value=0.0, step=100.0, format="%.2f", key="fm_cms_valor")
+            cantidad = e.number_input("Cantidad", min_value=0.0, value=1.0, step=1.0, format="%g", key="fm_cms_cantidad")
+            obra = g.selectbox("Obra social", obras + ["Otra…"], key="fm_cms_os")
+            otra = st.text_input("Obra social (si es otra)", key="fm_cms_os_otra")
+            enviar = st.form_submit_button("Guardar", type="primary", use_container_width=True)
+        if enviar:
+            nuevo, error = agregar_cms(almacen.leer(TABLA_FACTURAS), profesional=profesional or "", codigo=codigo,
+                                       valor=valor, cantidad=cantidad,
+                                       obra_social=otra if (obra == "Otra…" or _txt(otra)) else obra, fecha=fecha,
+                                       porcentaje=porcentaje_de(prof, profesional or ""))
+            if error:
+                st.error(error)
+            else:
+                _guardar(st, almacen, TABLA_FACTURAS, nuevo, "Liquidación CMS guardada.")
+    f1, f2 = st.columns(2)
+    quien = f1.selectbox("Profesional", ["Todos"] + nombres, key="fm_cms_f_prof")
+    os_f = f2.selectbox("Obra social", ["Todas"] + obras, key="fm_cms_f_os")
+    anio, mes = _filtro_periodo(st, cms, cms.iloc[0:0], "fm_cms_f")
+    x = filtrar(cms, profesional="" if quien == "Todos" else quien, anio=anio, mes=mes)
+    if os_f != "Todas":
+        x = x[x["obra_social"] == os_f]
+    if x.empty:
+        st.info("No hay liquidaciones de CMS con estos filtros.")
+        return
+    c = st.columns(3)
+    c[0].metric("Liquidado CMS", pesos(x["_facturado"].sum()))
+    c[1].metric("Honorarios facturador", pesos(x["_honorarios"].sum()))
+    c[2].metric("Prestaciones", f"{x.loc[~x['_anulada'], '_cantidad'].sum():g}")
+    st.markdown("##### Por obra social y mes")
+    tabla = cms_por_obra_social(x)
+    _tabla_pesos(st, tabla, [col for col in tabla.columns if col != "Obra social"])
+    st.markdown("##### Registros")
+    x = x.sort_values("_fecha", ascending=False, na_position="last", kind="mergesort")
+    vista = pd.DataFrame({
+        "id": x["id"], "codigo": x["codigo"], "valor": x["_valor"], "cantidad": x["_cantidad"],
+        "obra_social": x["obra_social"], "fecha": x["_fecha"].dt.date, "importe": x["_importe"],
+        "profesional": x["profesional"], "estado": x["estado"], "Borrar": False})
+    cc = st.column_config
+    editada = st.data_editor(
+        vista, key="fm_cms_editor", hide_index=True, use_container_width=True, disabled=["id", "importe"],
+        column_order=[k for k in vista.columns if k != "id"],
+        column_config={
+            "codigo": cc.TextColumn("Código"), "valor": cc.NumberColumn("Valor", format="$ %.2f", min_value=0.0),
+            "cantidad": cc.NumberColumn("Cantidad", min_value=0.0, format="%g"),
+            "obra_social": cc.TextColumn("Obra social"), "fecha": cc.DateColumn("Fecha", format="DD/MM/YYYY"),
+            "importe": cc.NumberColumn("Importe", format="$ %.2f"),
+            "profesional": cc.SelectboxColumn("Profesional", options=list(dict.fromkeys(nombres + list(x["profesional"])))),
+            "estado": cc.SelectboxColumn("Estado", options=ESTADOS), "Borrar": cc.CheckboxColumn("Borrar")})
+    if st.button("Guardar cambios", type="primary", key="fm_cms_guardar"):
+        e = editada.copy()
+        e["periodo"] = ""  # el mes sale de la fecha
+        _guardar(st, almacen, TABLA_FACTURAS, aplicar_edicion(almacen.leer(TABLA_FACTURAS), TABLA_FACTURAS, e),
+                 "Cambios guardados.")
+
+
 def _render_facturas(st: Any, almacen: Almacen, fac: pd.DataFrame, prof: pd.DataFrame, nombres: list[str],
                      hoy: date) -> None:
     with st.expander("Cargar factura", expanded=fac.empty):
         with st.form("fm_nueva_factura", clear_on_submit=True):
             a, b, c = st.columns(3)
             profesional = a.selectbox("Profesional", nombres, key="fm_nf_prof")
-            canal = b.selectbox("Canal", CANALES, key="fm_nf_canal")
+            canal = b.selectbox("Canal", [c for c in CANALES if c != CMS], key="fm_nf_canal")
             fecha = c.date_input("Fecha de la factura", value=hoy, format="DD/MM/YYYY", key="fm_nf_fecha")
             d, e, g = st.columns(3)
             numero = d.text_input("N° de factura", key="fm_nf_numero")
@@ -521,7 +651,7 @@ def _render_facturas(st: Any, almacen: Almacen, fac: pd.DataFrame, prof: pd.Data
                 _guardar(st, almacen, TABLA_FACTURAS, nuevo, "Factura guardada.")
     f1, f2 = st.columns(2)
     quien = f1.selectbox("Profesional", ["Todos"] + nombres, key="fm_fac_prof")
-    canal_f = f2.selectbox("Canal", ["Todos"] + CANALES, key="fm_fac_canal")
+    canal_f = f2.selectbox("Canal", ["Todos"] + [c for c in CANALES if c != CMS], key="fm_fac_canal")
     anio, mes = _filtro_periodo(st, fac, fac.iloc[0:0], "fm_fac")
     x = filtrar(fac, profesional="" if quien == "Todos" else quien, anio=anio, mes=mes)
     if canal_f != "Todos":
